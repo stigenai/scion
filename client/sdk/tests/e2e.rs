@@ -148,20 +148,26 @@ async fn errors_carry_reasons() {
 
 #[tokio::test]
 async fn connect_refused_is_retryable_connect_error() {
-    // 绑定后立即释放端口，确保没有服务在监听
-    let addr = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind")
-        .local_addr()
-        .expect("addr");
-    let err = Client::builder()
-        .endpoint(format!("http://{addr}"))
-        .connect_timeout(std::time::Duration::from_secs(2))
-        .build()
-        .await
-        .expect_err("refused");
-    assert!(matches!(err, Error::Connect { .. }), "{err:?}");
-    assert!(err.is_retryable());
+    // A port bound and released has nobody listening, unless the server of a test running
+    // alongside took it in between: then try another
+    for _ in 0..5 {
+        let addr = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind")
+            .local_addr()
+            .expect("addr");
+        let built = Client::builder()
+            .endpoint(format!("http://{addr}"))
+            .connect_timeout(std::time::Duration::from_secs(2))
+            .build()
+            .await;
+        if let Err(err) = built {
+            assert!(matches!(err, Error::Connect { .. }), "{err:?}");
+            assert!(err.is_retryable());
+            return;
+        }
+    }
+    panic!("every free port was taken by another test's server");
 }
 
 #[tokio::test]
