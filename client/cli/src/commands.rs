@@ -514,11 +514,13 @@ impl Render for StatusOut {
                         .to_owned(),
                 ),
                 (Some(false), false) => head.push(format!(
-                    "You are currently rebasing your commit onto {}.\n  (fix conflicts and then run \"scn commit\")",
+                    "You are currently rebasing your commit onto {}.\n  (fix conflicts and then run \"scn commit\")\n  \
+                     (use \"scn sync --abort\" to go back to before the sync)",
                     self.reference
                 )),
                 (Some(false), true) => head.push(format!(
-                    "You are currently rebasing your commit onto {}.\n  (all conflicts fixed: run \"scn commit\")",
+                    "You are currently rebasing your commit onto {}.\n  (all conflicts fixed: run \"scn commit\")\n  \
+                     (use \"scn sync --abort\" to go back to before the sync)",
                     self.reference
                 )),
                 (None, _) => {}
@@ -1192,6 +1194,15 @@ fn own_author() -> Option<(String, String)> {
     }
     let settings = crate::config::load(&crate::config::path(|k| std::env::var(k).ok())).ok()?;
     crate::config::author(&settings, crate::config::git_config)
+}
+
+/// `scn sync --abort`: only while a sync waits on its conflicts.
+pub async fn abort_sync(ctx: &Ctx) -> Result<AbortOut, CliError> {
+    let (mut wc, client) = open_wc(ctx).await?;
+    wc.abort_sync(&client).await?;
+    Ok(AbortOut {
+        schema: "scion.cli.sync-abort/v1",
+    })
 }
 
 /// `scn revert --abort`: only while a revert waits on its conflicts.
@@ -1957,7 +1968,9 @@ mod tests {
             merging: Some(false),
             ..c.clone()
         };
-        assert!(rebasing.text().contains("(fix conflicts and then run \"scn commit\")"));
+        assert!(rebasing.text().contains(
+            "(fix conflicts and then run \"scn commit\")\n  (use \"scn sync --abort\" to go back to before the sync)"
+        ));
         for (kind, line) in [
             (PickKind::Revert, "You are currently reverting commit c1aaaaaaaaaa."),
             (

@@ -43,7 +43,7 @@ scn revert c1a2b3c4d5e6             # a pending commit that undoes a landed one 
 scn cherry-pick c1a2b3c4d5e6        # apply another branch's commit here, keeping its message and author (-x notes it)
 # On conflicts (scn sync, merge, revert or cherry-pick) files get <<<<<<< / >>>>>>> markers and `scn status` lists them under Unmerged paths (`-s`: UU):
 scn resolve src/main.rs             # after editing out the markers; or --ours / --theirs to take one side
-scn commit                          # finishes it, reusing the original message; `scn merge --abort` (or revert / cherry-pick --abort) gives up
+scn commit                          # finishes it, reusing the original message; `scn merge --abort` (or revert / cherry-pick --abort) gives up, as `scn sync --abort` does for a sync
 scn cat main:README.md              # read files without a working copy (add --repo outside one)
 scn ls main:                        # list a directory; every command supports --json
 scn log -n 10 -- src                # history from HEAD, newest first, optionally limited to a path (git-style: HEAD~1, A..B)

@@ -42,6 +42,7 @@ These work too, and print a hint naming the scn command they ran. They are not i
 | `scn reset --soft HEAD~1` | `scn uncommit` |
 | `scn reset --hard` | `scn restore .` |
 | `scn rebase --continue`, `scn merge --continue`, `scn revert --continue`, `scn cherry-pick --continue` | `scn commit` |
+| `scn rebase --abort` | `scn sync --abort` |
 | `scn add …` | nothing: there is no staging area, and `scn commit` takes every change |
 | `scn rm [-r] PATH…`, `scn mv FROM TO` | deletes or moves the files; the next `scn commit` takes it |
 

@@ -1413,6 +1413,104 @@ async fn several_pending_commits_stack_and_rebase_one_by_one() {
     assert!(matches!(o, Err(Error::OnPendingMerge)), "{o:?}");
 }
 
+#[tokio::test]
+async fn sync_abort_goes_back_to_before_the_sync() {
+    let srv = server().await;
+    let c = client(&srv.url).await;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (a_dir, b_dir) = (tmp.path().join("a"), tmp.path().join("b"));
+    let mut a = WorkingCopy::clone(&c, &srv.url, "mono", "main", &a_dir, Sparse::full())
+        .await
+        .expect("clone");
+    write(&a_dir, "x.txt", "x\n");
+    write(&a_dir, "y.txt", "y\n");
+    a.commit(&c, "base", None).await.expect("commit");
+    a.land(&c).await.expect("land");
+    let mut b = WorkingCopy::clone(&c, &srv.url, "mono", "main", &b_dir, Sparse::full())
+        .await
+        .expect("clone");
+    assert!(matches!(a.abort_sync(&c).await, Err(Error::NoSyncInProgress)));
+
+    write(&a_dir, "x.txt", "x1\n");
+    write(&a_dir, "new.txt", "new\n");
+    a.commit(&c, "one", None).await.expect("commit");
+    write(&a_dir, "y.txt", "y1\n");
+    a.commit(&c, "two", None).await.expect("commit");
+    let before = a.state().clone();
+    write(&b_dir, "x.txt", "bob x\n");
+    write(&b_dir, "y.txt", "bob y\n");
+    write(&b_dir, "z.txt", "z\n");
+    b.commit(&c, "bob", None).await.expect("commit");
+    b.land(&c).await.expect("land");
+
+    // Stopped on the first commit, with its new file written: abort puts everything back
+    let err = a.sync(&c).await.expect_err("conflict");
+    assert!(
+        matches!(&err, Error::Conflict(p) if p == &vec!["x.txt".to_string()]),
+        "{err:?}"
+    );
+    assert_eq!(read(&a_dir, "new.txt"), "new\n");
+    a.abort_sync(&c).await.expect("abort");
+    assert_eq!(a.state(), &before);
+    assert!(a.status().expect("status").is_clean());
+    assert_eq!(
+        (read(&a_dir, "x.txt"), read(&a_dir, "y.txt"), read(&a_dir, "new.txt")),
+        ("x1\n".into(), "y1\n".into(), "new\n".into())
+    );
+    assert!(!a_dir.join("z.txt").exists());
+
+    // Stopped again on the second commit after the first was finished: still back to the start
+    a.sync(&c).await.expect_err("conflict");
+    a.resolve(&c, &["x.txt".into()], Some(Side::Ours), false)
+        .await
+        .expect("resolve");
+    let err = a.commit(&c, "", None).await.expect_err("second conflict");
+    assert!(
+        matches!(&err, Error::Conflict(p) if p == &vec!["y.txt".to_string()]),
+        "{err:?}"
+    );
+    a.abort_sync(&c).await.expect("abort");
+    assert_eq!(a.state(), &before);
+    assert_eq!(read(&a_dir, "x.txt"), "x1\n");
+    assert!(!a_dir.join("z.txt").exists());
+
+    // A pending merge that conflicts with the new tip comes back too
+    a.sync(&c).await.expect_err("conflict");
+    a.resolve(&c, &["x.txt".into()], Some(Side::Theirs), false)
+        .await
+        .expect("resolve");
+    a.commit(&c, "", None).await.expect_err("second conflict");
+    a.resolve(&c, &["y.txt".into()], Some(Side::Theirs), false)
+        .await
+        .expect("resolve");
+    a.commit(&c, "", None).await.expect("commit");
+    a.land(&c).await.expect("land");
+    a.switch(&c, "feat", true).await.expect("feat");
+    write(&a_dir, "x.txt", "feat\n");
+    a.commit(&c, "feat", None).await.expect("commit");
+    a.land(&c).await.expect("land");
+    a.switch(&c, "main", false).await.expect("main");
+    a.merge(&c, "feat", None, None).await.expect("merge");
+    let before = a.state().clone();
+    assert!(before.head_merge.is_some());
+    b.sync(&c).await.expect("sync");
+    write(&b_dir, "x.txt", "bob again\n");
+    b.commit(&c, "bob again", None).await.expect("commit");
+    b.land(&c).await.expect("land");
+    a.sync(&c).await.expect_err("conflict");
+    a.abort_sync(&c).await.expect("abort");
+    assert_eq!(a.state(), &before);
+    assert_eq!(read(&a_dir, "x.txt"), "feat\n");
+
+    // Only a sync's conflicts: a merge's are given up with merge --abort
+    a.uncommit(&c).await.expect("uncommit");
+    a.restore(&c, &[".".into()]).await.expect("restore");
+    a.sync(&c).await.expect("sync");
+    a.merge(&c, "feat", None, None).await.expect_err("conflict");
+    assert!(matches!(a.abort_sync(&c).await, Err(Error::NoSyncInProgress)));
+    a.abort_merge(&c).await.expect("merge --abort");
+}
+
 #[cfg(unix)]
 fn chmod_x(root: &Path, rel: &str) {
     use std::os::unix::fs::PermissionsExt;

@@ -42,6 +42,7 @@
 | `scn reset --soft HEAD~1` | `scn uncommit` |
 | `scn reset --hard` | `scn restore .` |
 | `scn rebase --continue`、`scn merge --continue`、`scn revert --continue`、`scn cherry-pick --continue` | `scn commit` |
+| `scn rebase --abort` | `scn sync --abort` |
 | `scn add …` | 什么也不做：没有暂存区，`scn commit` 会带上所有改动 |
 | `scn rm [-r] PATH…`、`scn mv FROM TO` | 删除或移动文件；下一次 `scn commit` 会带上 |
 

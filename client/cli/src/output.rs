@@ -159,11 +159,20 @@ impl CliError {
             CliError::Import(scion_gitimport::Error::Diverged { .. }) => {
                 Some("the git history was rewritten; import into a new ref with --ref")
             }
+            CliError::Conflicted {
+                op: ConflictOp::Sync, ..
+            } => Some(
+                "the files now hold conflict markers: fix them, then `scn resolve PATH` \
+                 (or --ours / --theirs), then `scn commit`; `scn sync --abort` goes back to before the sync",
+            ),
             CliError::Conflicted { .. } | CliError::Wc(scion_wc::Error::Conflict(_)) => Some(
                 "the files now hold conflict markers: fix them, then `scn resolve PATH` \
                  (or --ours / --theirs), then `scn commit`; `scn merge --abort`, `scn revert --abort` or \
                  `scn cherry-pick --abort` give up instead",
             ),
+            CliError::Wc(scion_wc::Error::NoSyncInProgress) => {
+                Some("only a sync that stopped on conflicts can be aborted; `scn status` shows what is in progress")
+            }
             CliError::Wc(scion_wc::Error::Unresolved(_)) => {
                 Some("finish the conflicts first: `scn status` lists them, `scn resolve` marks them done")
             }
@@ -456,6 +465,7 @@ mod tests {
             scion_wc::Error::MergeConflicts(vec![]),
             scion_wc::Error::Unresolved(vec![]),
             scion_wc::Error::MarkersRemain(vec![]),
+            scion_wc::Error::NoSyncInProgress,
         ] {
             assert!(CliError::Wc(e).hint().is_some());
         }
@@ -543,7 +553,13 @@ mod tests {
         assert!(pick(scion_wc::PickKind::CherryPick).starts_with("could not apply c1aaaaaaaaaa;"));
         let e = error_out(&c(ConflictOp::Sync));
         assert_eq!((e.exit_code, e.conflicts.len()), (EXIT_CONFLICT, 1));
-        assert!(e.hint.expect("hint").contains("scn resolve"));
+        assert!(e.hint.expect("hint").contains("scn sync --abort"));
+        assert!(
+            error_out(&c(ConflictOp::Merge))
+                .hint
+                .expect("hint")
+                .contains("scn merge --abort")
+        );
         for (kind, git) in [
             ("content", "content"),
             ("add_add", "add/add"),

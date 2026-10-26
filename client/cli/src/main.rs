@@ -427,7 +427,13 @@ enum Command {
     /// Land the pending commits on the branch.
     Land,
     /// Update to the branch tip, rebasing the pending commits onto it one by one.
-    Sync,
+    #[command(after_help = "Examples:\n  scn sync\n  \
+        scn sync --abort    # give up a sync that stopped on conflicts: back to before it")]
+    Sync {
+        /// Abandon a sync that stopped on conflicts: back to the commit and pending commits from before it.
+        #[arg(long)]
+        abort: bool,
+    },
     /// Print a file; no working copy needed.
     #[command(after_help = "Examples:\n  scn cat README.md\n  scn cat main~1:src/lib.rs\n  \
         scn cat v1.0:Cargo.toml --repo http://scion.example.com:7080/org/app")]
@@ -1373,14 +1379,8 @@ async fn run(cli: Cli) -> ExitCode {
                 transitional("rebase --continue", "commit");
                 emit(commands::commit(&ctx, None, None).await, json)
             } else if abort {
-                fail(
-                    &CliError::Usage(
-                        "a sync that stopped on conflicts cannot be aborted: resolve the files (`scn resolve`) \
-                         and `scn commit`, or `scn restore` them to drop your changes"
-                            .into(),
-                    ),
-                    json,
-                )
+                transitional("rebase --abort", "sync --abort");
+                emit(commands::abort_sync(&ctx).await, json)
             } else {
                 fail(
                     &CliError::Usage("scn rebases with `scn sync` (and on the server during `scn land`)".into()),
@@ -1501,7 +1501,8 @@ async fn run(cli: Cli) -> ExitCode {
             )
         }
         Command::Land => emit(commands::land(&ctx).await, json),
-        Command::Sync => emit(commands::sync(&ctx).await, json),
+        Command::Sync { abort: false } => emit(commands::sync(&ctx).await, json),
+        Command::Sync { abort: true } => emit(commands::abort_sync(&ctx).await, json),
         Command::Ls { spec } => emit(commands::ls(&ctx, spec.as_deref()).await, json),
         Command::Archive {
             spec,
@@ -1953,6 +1954,8 @@ mod tests {
             &["scn", "reset", "--soft", "HEAD~1"],
             &["scn", "reset", "--hard"],
             &["scn", "rebase", "--continue"],
+            &["scn", "rebase", "--abort"],
+            &["scn", "sync", "--abort"],
             &["scn", "merge", "--continue"],
             &["scn", "add", "-A"],
             &["scn", "rm", "-r", "dir"],

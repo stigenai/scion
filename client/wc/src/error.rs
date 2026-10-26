@@ -54,6 +54,8 @@ pub enum Error {
     MarkersRemain(Vec<String>),
     #[error("no merge is in progress")]
     NoMergeInProgress,
+    #[error("no sync is in progress")]
+    NoSyncInProgress,
     /// `revert` / `cherry-pick` of a commit that changed files the sparse checkout leaves out:
     /// the commit that finishes it is made from local files.
     #[error("the commit changes files outside the sparse checkout: {}", .0.join(", "))]

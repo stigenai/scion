@@ -71,6 +71,28 @@ impl State {
         self.head.as_deref().or(self.base.as_deref()).map(parse_id).transpose()
     }
 
+    /// Where the working copy is and what it has pending.
+    pub fn pending_state(&self) -> Pending {
+        Pending {
+            base: self.base.clone(),
+            head: self.head.clone(),
+            stack: self.stack.clone(),
+            head_message: self.head_message.clone(),
+            head_author: self.head_author.clone(),
+            head_merge: self.head_merge.clone(),
+        }
+    }
+
+    /// Puts back what [`State::pending_state`] returned.
+    pub fn set_pending_state(&mut self, p: Pending) {
+        self.base = p.base;
+        self.head = p.head;
+        self.stack = p.stack;
+        self.head_message = p.head_message;
+        self.head_author = p.head_author;
+        self.head_merge = p.head_merge;
+    }
+
     /// The pending (committed, not landed) commits, oldest first.
     pub fn pending(&self) -> Result<Vec<ObjectId>> {
         self.stack.iter().chain(&self.head).map(|s| parse_id(s)).collect()
@@ -104,6 +126,22 @@ pub struct ConflictState {
     /// rebase, oldest first), which the commit that finishes it goes on with.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rest: Vec<String>,
+    /// For a sync: the working copy as it was before, which `scn sync --abort` goes back to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<Box<Pending>>,
+}
+
+/// Where a working copy was and what it had pending, as [`State`] records them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pending {
+    pub base: Option<String>,
+    pub head: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stack: Vec<String>,
+    pub head_message: Option<String>,
+    pub head_author: Option<(String, String)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_merge: Option<String>,
 }
 
 /// A revert or cherry-pick of one commit (see [`crate::WorkingCopy::pick`]).

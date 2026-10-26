@@ -587,6 +587,23 @@ async fn sync_rebases_a_stack_of_commits_one_by_one() {
 
         let out = scn_in(&a, &["sync"]);
         assert_eq!(out.status.code(), Some(3), "{}", text(&out));
+        assert!(text(&out).contains("`scn sync --abort` goes back"), "{}", text(&out));
+        let out = scn_in(&a, &["status"]);
+        assert!(
+            text(&out).contains("(use \"scn sync --abort\" to go back to before the sync)"),
+            "{}",
+            text(&out)
+        );
+        // Giving up puts both pending commits back as they were
+        let v = json_of(&scn_in(&a, &["sync", "--abort", "--json"]));
+        assert_eq!(v["schema"], "scion.cli.sync-abort/v1");
+        assert_eq!(std::fs::read_to_string(a.join("x.txt")).expect("x"), "ax\n");
+        assert_eq!(
+            text(&scn_in(&a, &["status", "-sb", "--no-ahead-behind"])),
+            "## main [ahead 2]\n"
+        );
+        let out = scn_in(&a, &["sync"]);
+        assert_eq!(out.status.code(), Some(3), "{}", text(&out));
         json_of(&scn_in(&a, &["resolve", "--ours", "x.txt", "--json"]));
         // Finishing the first goes on with the second, which conflicts too
         let out = scn_in(&a, &["commit"]);
@@ -1048,7 +1065,9 @@ async fn clone_commit_land_sync_workflow() {
         hinted(&scn_in(&wc, &["pull", "--rebase", "origin", "legacy"]), "sync");
         hinted(&scn_in(&wc, &["checkout", "main"]), "switch BRANCH");
         assert_eq!(scn_in(&wc, &["reset", "--hard", "HEAD~3"]).status.code(), Some(2));
-        assert_eq!(scn_in(&wc, &["rebase", "--abort"]).status.code(), Some(2));
+        let out = scn_in(&wc, &["rebase", "--abort"]);
+        assert_eq!(out.status.code(), Some(1), "no sync to abort: {out:?}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("use `scn sync --abort` instead"));
         assert_eq!(scn_in(&wc, &["rebase"]).status.code(), Some(2));
         for cont in [&["rebase", "--continue"][..], &["merge", "--continue"]] {
             let out = scn_in(&wc, cont);

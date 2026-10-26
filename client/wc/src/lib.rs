@@ -21,7 +21,7 @@ use scion_object::{EntryMode, ObjectId, Tree};
 pub use error::{Error, Result};
 pub use merge::{ConflictKind, MergeConflict};
 pub use sparse::Sparse;
-pub use state::{ConflictState, DirState, FileRecord, Mode, Pick, PickKind, Sides, State, Version};
+pub use state::{ConflictState, DirState, FileRecord, Mode, Pending, Pick, PickKind, Sides, State, Version};
 
 use crate::fsutil::Found;
 use crate::state::Paths;
@@ -674,8 +674,9 @@ impl WorkingCopy {
                 self.state.conflict = None;
                 self.paths.save_state(&self.state)?;
                 // A sync that stopped on a commit now left out goes on with the rest
-                self.continue_sync(client, conflict.map(|c| c.rest).unwrap_or_default())
-                    .await?;
+                if let Some(c) = conflict {
+                    self.continue_sync(client, c.rest, c.before).await?;
+                }
             }
             return Ok(None);
         }
@@ -762,7 +763,7 @@ impl WorkingCopy {
         self.state.conflict = None;
         self.paths.save_state(&self.state)?;
         if let Some(c) = conflict {
-            self.continue_sync(client, c.rest).await?;
+            self.continue_sync(client, c.rest, c.before).await?;
         }
         Ok(Some((created, stat)))
     }
@@ -775,8 +776,9 @@ impl WorkingCopy {
     }
 
     /// After the commit that finished a sync stopped on conflicts: rebases the pending
-    /// commits it had not got to yet onto it.
-    async fn continue_sync(&mut self, client: &Client, rest: Vec<String>) -> Result<()> {
+    /// commits it had not got to yet onto it. `before` is where the sync started, for
+    /// `scn sync --abort` should it stop again.
+    async fn continue_sync(&mut self, client: &Client, rest: Vec<String>, before: Option<Box<Pending>>) -> Result<()> {
         if rest.is_empty() {
             return Ok(());
         }
@@ -789,7 +791,8 @@ impl WorkingCopy {
         };
         let base = base.parse().map_err(|e| Error::Corrupt(format!("base: {e}")))?;
         let made = self.state.pending()?;
-        self.replay(client, rest, base, at, made, at).await.map(|_| ())
+        let before = before.map_or_else(|| self.state.pending_state(), |b| *b);
+        self.replay(client, rest, base, at, made, at, before).await.map(|_| ())
     }
 
     /// Replaces the pending commit with one that also includes the current local changes, with
@@ -1175,6 +1178,36 @@ impl WorkingCopy {
         Ok(())
     }
 
+    /// Abandons a sync that stopped on conflicts: the working copy goes back to the commit it
+    /// was on, with its pending commits as they were, and files the sync created are removed.
+    /// The commits the sync had already rebased stay unused on the server.
+    pub async fn abort_sync(&mut self, client: &Client) -> Result<()> {
+        let _lock = self.paths.lock()?;
+        let (before, created) = match &self.state.conflict {
+            Some(ConflictState {
+                before: Some(b),
+                created,
+                ..
+            }) => ((**b).clone(), created.clone()),
+            _ => return Err(Error::NoSyncInProgress),
+        };
+        for p in &created {
+            fsutil::remove_file(self.root(), p)?;
+        }
+        self.restore_locked(client, &[".".to_owned()]).await?;
+        let from = self.state.current()?;
+        self.state.set_pending_state(before);
+        if let (Some(from), Some(to)) = (from, self.state.current()?) {
+            let mut dirstate = self.paths.load_dirstate()?;
+            let delta = tree_delta(client, from, to, &self.sparse()?).await?;
+            self.apply(client, &mut dirstate, &delta).await?;
+            self.paths.save_dirstate(&mut dirstate)?;
+        }
+        self.state.conflict = None;
+        self.paths.save_state(&self.state)?;
+        Ok(())
+    }
+
     /// Moves the working copy to another ref (creating it at the current snapshot when
     /// `create`). Needs no pending commit and no modified or deleted files; added files are
     /// kept unless the target has a file at the same path.
@@ -1318,6 +1351,7 @@ impl WorkingCopy {
                 created,
                 pick: None,
                 rest: Vec::new(),
+                before: None,
             });
             self.paths.save_state(&self.state)?;
             return Err(Error::Conflict(paths));
@@ -1442,6 +1476,7 @@ impl WorkingCopy {
                     commit: commit.to_string(),
                 }),
                 rest: Vec::new(),
+                before: None,
             });
             self.paths.save_state(&self.state)?;
             return Err(Error::Conflict(paths));
@@ -1490,13 +1525,16 @@ impl WorkingCopy {
             if self.state.base.as_deref() == Some(tip.changeset.to_string().as_str()) {
                 return Ok(SyncOutcome::UpToDate);
             }
+            let before = self.state.pending_state();
             if let Some(theirs) = self.head_merge()? {
-                return self.redo_merge(client, tip.changeset, tip.root_tree, theirs).await;
+                return self
+                    .redo_merge(client, tip.changeset, tip.root_tree, theirs, before)
+                    .await;
             }
             let local = self.state.current()?.ok_or(Error::NothingToLand)?;
             let commits = self.state.pending()?;
             return self
-                .replay(client, commits, tip.changeset, tip.changeset, Vec::new(), local)
+                .replay(client, commits, tip.changeset, tip.changeset, Vec::new(), local, before)
                 .await;
         }
         let from = self.state.current()?;
@@ -1586,6 +1624,7 @@ impl WorkingCopy {
         onto: ObjectId,
         onto_root: ObjectId,
         theirs: ObjectId,
+        before: Pending,
     ) -> Result<SyncOutcome> {
         let message = self.state.head_message.clone().unwrap_or_default();
         let author = self.state.head_author.clone();
@@ -1598,7 +1637,17 @@ impl WorkingCopy {
         self.state.base = Some(onto.to_string());
         self.paths.save_state(&self.state)?;
         let author = author.as_ref().map(|(n, e)| (n.as_str(), e.as_str()));
-        match self.merge_locked(client, theirs, message, author).await? {
+        let merged = match self.merge_locked(client, theirs, message, author).await {
+            Err(Error::Conflict(paths)) => {
+                if let Some(c) = &mut self.state.conflict {
+                    c.before = Some(Box::new(before));
+                    self.paths.save_state(&self.state)?;
+                }
+                return Err(Error::Conflict(paths));
+            }
+            r => r?,
+        };
+        match merged {
             MergeOutcome::Merged {
                 head,
                 written: w,
@@ -1632,6 +1681,7 @@ impl WorkingCopy {
     /// On a conflict the working tree moves to the last commit made, with the conflicting
     /// commit's merged files (text conflicts with markers) as local changes; the commits after
     /// it wait in [`ConflictState::rest`] for the `scn commit` that finishes it.
+    #[allow(clippy::too_many_arguments)]
     async fn replay(
         &mut self,
         client: &Client,
@@ -1640,6 +1690,7 @@ impl WorkingCopy {
         onto: ObjectId,
         mut made: Vec<ObjectId>,
         local: ObjectId,
+        before: Pending,
     ) -> Result<SyncOutcome> {
         let sparse = self.sparse()?;
         let mut tip = onto;
@@ -1678,7 +1729,7 @@ impl WorkingCopy {
                 self.apply(client, &mut dirstate, &tree_delta(client, local, tip, &sparse).await?)
                     .await?;
                 self.paths.save_dirstate(&mut dirstate)?;
-                self.write_results(client, &changes, &t).await?;
+                let created = self.write_results(client, &changes, &t).await?;
                 let conflicted: Vec<String> = sides.keys().cloned().collect();
                 self.set_pending(base, &made);
                 self.state.conflict = Some(ConflictState {
@@ -1686,9 +1737,10 @@ impl WorkingCopy {
                     message: Some(e.message),
                     author: Some((e.author.name, e.author.email)),
                     merge: None,
-                    created: Vec::new(),
+                    created,
                     pick: None,
                     rest: commits[i + 1..].iter().map(ToString::to_string).collect(),
+                    before: Some(Box::new(before)),
                 });
                 self.paths.save_state(&self.state)?;
                 return Err(Error::Conflict(conflicted));

@@ -43,7 +43,7 @@ scn revert c1a2b3c4d5e6             # 生成一个撤销已合入提交的待合
 scn cherry-pick c1a2b3c4d5e6        # 把别的分支上的提交应用到这里，保留原提交说明和作者（-x 注明原提交）
 # 有冲突时（scn sync、merge、revert 或 cherry-pick），文件里会出现 <<<<<<< / >>>>>>> 标记，`scn status` 把它们列在 Unmerged paths 下（`-s` 显示 UU）：
 scn resolve src/main.rs             # 删掉冲突标记之后执行；或者用 --ours / --theirs 直接取一边
-scn commit                          # 完成合并，沿用原来的提交说明；`scn merge --abort`（或 revert / cherry-pick --abort）放弃
+scn commit                          # 完成合并，沿用原来的提交说明；`scn merge --abort`（或 revert / cherry-pick --abort）放弃，sync 用 `scn sync --abort`
 scn cat main:README.md              # 不需要工作副本就能读文件（在工作副本外加 --repo）
 scn ls main:                        # 列出目录；所有命令都支持 --json
 scn log -n 10 -- src                # 从 HEAD 开始的历史，从新到旧，可以只看某个路径（git 写法：HEAD~1、A..B）

@@ -30,6 +30,7 @@ English | [简体中文](coming-from-git.zh-CN.md)
 | `git remote -v`, `git remote set-url origin URL` | `scn remote -v`, `scn remote set-url URL` | The server's new address, or another repository with the same commits (a fork); checked before it is saved |
 | `git push` | `scn land` | The server rebases when the branch moved |
 | `git pull --rebase` | `scn sync` | Moves to the branch tip and rebases the pending commits one by one; no separate `fetch` |
+| `git rebase --abort` | `scn sync --abort` | Gives up a sync that stopped on conflicts: the working copy goes back to its commit and pending commits from before the sync |
 | `git fetch` + `git log origin/main` | `scn log main` (or `origin/main`), `scn diff HEAD main` | Commands read the server, so there is nothing to fetch; the working copy stays as it is |
 | `git branch` | `scn branch` (or `scn branch ls`) | |
 | `git branch NAME [REV]` | `scn branch NAME [REV]` (or `scn branch create`) | Branches are server refs. A branch named `ls`, `create` or `rm` needs the `create` form |
@@ -72,10 +73,11 @@ They are not listed in `scn --help` and may be removed later, so scripts should 
 | `scn reset --soft [HEAD~1]` | `scn uncommit` |
 | `scn reset --hard [HEAD]` | `scn restore .` |
 | `scn rebase --continue`, `scn merge --continue`, `scn revert --continue`, `scn cherry-pick --continue` | `scn commit` |
+| `scn rebase --abort` | `scn sync --abort` |
 | `scn add ...` | nothing: there is no staging area |
 | `scn rm [-r] PATH...`, `scn mv FROM TO` | deletes / moves the files; the next `scn commit` picks it up |
 
-Other forms, like `reset --hard HEAD~3` or `rebase --abort`, fail with a message that explains the scn way.
+Other forms, like `reset --hard HEAD~3` or a bare `rebase`, fail with a message that explains the scn way.
 
 ## Revisions
 
@@ -96,4 +98,3 @@ Suffixes combine as in git, for example `main~2^2`. A branch whose name literall
 - **Working copy**: checking out an old revision, `stash`, `clean`, interactive rebase, partial commits (`add -p`).
 - **Queries**: annotated tags, `grep`, `bisect`, `reflog`.
 - **Collaboration**: `remote add`, `fetch`. The git CLI itself can clone, fetch and push a Scion repository (see [git clients](git-clients.md)).
-- **Rebase conflicts**: a sync that stops on conflicts has no `--abort`. The commit it stopped on becomes local changes on top of the new tip (and the commits rebased before it); `scn commit` finishes it and goes on with the pending commits after it.

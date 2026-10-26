@@ -30,6 +30,7 @@
 | `git remote -v`、`git remote set-url origin URL` | `scn remote -v`、`scn remote set-url URL` | 服务端的新地址，或有相同提交的另一个仓库（如 fork）；保存前会先检查 |
 | `git push` | `scn land` | 分支已经前进时由服务端 rebase |
 | `git pull --rebase` | `scn sync` | 移到分支最新提交，并把待合入的提交逐个 rebase；没有单独的 `fetch` |
+| `git rebase --abort` | `scn sync --abort` | 放弃停在冲突上的 sync：工作区回到 sync 之前所在的提交和待合入提交 |
 | `git fetch` + `git log origin/main` | `scn log main`（或 `origin/main`）、`scn diff HEAD main` | 命令直接读服务端，不需要 fetch；工作副本保持不变 |
 | `git branch` | `scn branch`（或 `scn branch ls`） | |
 | `git branch NAME [REV]` | `scn branch NAME [REV]`（或 `scn branch create`） | 分支是服务端的 ref。名为 `ls`、`create` 或 `rm` 的分支要用 `create` 的写法 |
@@ -72,10 +73,11 @@ hint: `scn push` is a transitional git-style spelling; use `scn land` instead
 | `scn reset --soft [HEAD~1]` | `scn uncommit` |
 | `scn reset --hard [HEAD]` | `scn restore .` |
 | `scn rebase --continue`、`scn merge --continue`、`scn revert --continue`、`scn cherry-pick --continue` | `scn commit` |
+| `scn rebase --abort` | `scn sync --abort` |
 | `scn add ...` | 什么也不做：没有暂存区 |
 | `scn rm [-r] PATH...`、`scn mv FROM TO` | 删除 / 移动文件；下一次 `scn commit` 会带上 |
 
-其它写法，例如 `reset --hard HEAD~3` 或 `rebase --abort`，会报错并说明 scn 里的做法。
+其它写法，例如 `reset --hard HEAD~3` 或不带参数的 `rebase`，会报错并说明 scn 里的做法。
 
 ## 版本号
 
@@ -96,4 +98,3 @@ hint: `scn push` is a transitional git-style spelling; use `scn land` instead
 - **工作副本**：检出旧版本、`stash`、`clean`、交互式 rebase、部分提交（`add -p`）。
 - **查询**：附注标签、`grep`、`bisect`、`reflog`。
 - **协作**：`remote add`、`fetch`。git 命令行本身可以克隆、拉取和推送 Scion 仓库（见 [git 客户端](git-clients.zh-CN.md)）。
-- **rebase 冲突**：停在冲突上的 sync 没有 `--abort`。停下的那个提交变成本地改动，留在新的最新提交（以及它之前已经 rebase 好的提交）之上；`scn commit` 完成它，并接着 rebase 后面的待合入提交。
