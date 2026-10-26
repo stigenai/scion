@@ -482,8 +482,8 @@ async fn history_queries_end_to_end() {
     let other = c.log("main", Some("other"), 10, None).await.expect("log");
     assert_eq!(
         other.entries.iter().map(|e| e.id).collect::<Vec<_>>(),
-        vec![m.id, d.id],
-        "d reached via the second parent"
+        vec![d.id],
+        "d reached via the second parent; the merge took the file from it, so git leaves it out"
     );
 
     assert!(c.is_ancestor(&d.id.to_string(), "main").await.expect("ok"));

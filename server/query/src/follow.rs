@@ -131,6 +131,12 @@ mod tests {
         page.entries.iter().map(|e| e.record.id).collect()
     }
 
+    async fn path_log(r: &Repo, start: ObjectId) -> Vec<ObjectId> {
+        ids(&log(&r.store, &r.store, REPO, &[start], Some("f"), 100, 1000)
+            .await
+            .expect("log"))
+    }
+
     const TEXT: &str = "one\ntwo\nthree\nfour\n";
 
     async fn renamed_history(indexed: bool) {
@@ -162,6 +168,25 @@ mod tests {
             .expect("log");
         assert_eq!(ids(&plain), [c5, c3]);
         assert_eq!(plain.renamed_from, None);
+    }
+
+    #[tokio::test]
+    async fn path_log_leaves_out_merges_that_took_the_file_from_a_branch() {
+        for indexed in [true, false] {
+            let mut r = Repo::with_index(indexed).await;
+            let a = r.commit(&[], &[("f", Some("base\n")), ("g", Some("g"))]).await;
+            let side = r.commit(&[a], &[("f", Some("side\n"))]).await;
+            let main = r.commit(&[a], &[("g", Some("g2"))]).await;
+            let m = r.commit(&[main, side], &[("f", Some("side\n"))]).await;
+            assert_eq!(path_log(&r, m).await, [side, a]);
+            // A merge that resolved the file differently from every parent stays
+            let main2 = r.commit(&[m], &[("f", Some("main\n"))]).await;
+            let side2 = r.commit(&[m], &[("f", Some("other\n"))]).await;
+            let m2 = r.commit(&[main2, side2], &[("f", Some("both\n"))]).await;
+            let got = path_log(&r, m2).await;
+            assert_eq!((got[0], &got[3..]), (m2, &[side, a][..]));
+            assert!(got[1..3].contains(&main2) && got[1..3].contains(&side2), "{got:?}");
+        }
     }
 
     #[tokio::test]

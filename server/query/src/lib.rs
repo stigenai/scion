@@ -305,6 +305,19 @@ fn touches(cs: &Changeset, path: &str) -> bool {
         .any(|c| c.path == path || under(&c.path, path) || under(path, &c.path))
 }
 
+/// Whether `path` in merge `rec` is the same as in one of its parents after the first.
+async fn same_as_a_side(g: &mut Graph<'_>, blobs: &dyn BlobStore, rec: &ChangesetRecord, path: &str) -> Result<bool> {
+    let trees = blame::Trees(blobs);
+    let ours = scion_tree::lookup(&trees, rec.root_tree, path).await?.map(|e| e.id);
+    for p in rec.parents.iter().skip(1) {
+        let root = g.get(*p).await?.root_tree;
+        if scion_tree::lookup(&trees, root, path).await?.map(|e| e.id) == ours {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// 读取并解码提交对象。
 pub async fn load_changeset(blobs: &dyn BlobStore, id: ObjectId) -> Result<Changeset> {
     let bytes = blobs
@@ -425,6 +438,13 @@ async fn log_with(
                 if touches(&changeset, p) {
                     entries.push(LogEntry { record, changeset });
                 }
+            }
+        }
+        // As git's history simplification: a merge that took `path` as one of the other parents
+        // had it changed nothing there itself; that parent's commits show the change
+        if let (Some(p), Some(e)) = (path, entries.last()) {
+            if e.record.id == id && e.record.parents.len() > 1 && same_as_a_side(&mut g, blobs, &e.record, p).await? {
+                entries.pop();
             }
         }
         if let (true, Some(p), Some(e)) = (follow, path, entries.last()) {
