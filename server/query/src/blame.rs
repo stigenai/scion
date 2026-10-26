@@ -4,7 +4,9 @@
 //! 未变的行沿用上一版的归属，新增的行归到引入提交。每个版本的结果按 (引入提交, 路径) 存为派生数据，
 //! 下次往回走到已有结果就停止，只计算增量。
 //!
-//! M2 只沿第一父提交链追溯：经由合并进来的改动归到合并提交上。
+//! Versions are found along the first-parent chain. At a merge, lines the first parent does not
+//! have but another parent does keep that parent's blame (computed the same way, and cached), as
+//! in git; only lines no parent has go to the merge commit.
 
 use std::collections::HashMap;
 
@@ -18,7 +20,8 @@ use crate::{Graph, QueryError, Result, on_first_parent_chain};
 /// 派生数据种类与算法版本。
 pub const BLAME_KIND: &str = "blame";
 /// 2: lines are carried with an exact (LCS) diff where affordable, matching git more closely.
-pub const BLAME_VERSION: u32 = 2;
+/// 3: lines a merge brings from another parent keep that parent's blame.
+pub const BLAME_VERSION: u32 = 3;
 
 /// 某个版本文件的逐行归属。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -178,6 +181,55 @@ fn carry(old: &[u8], old_lines: &[ObjectId], new: &[u8], introduced_by: ObjectId
         }
     }
     out
+}
+
+/// Lines of `new` still blamed on `merge` that `old` (another parent's version, blamed as
+/// `old_lines`) has unchanged take their blame from `old`.
+fn adopt(old: &[u8], old_lines: &[ObjectId], new: &[u8], lines: &mut [ObjectId], merge: ObjectId) {
+    let diff = similar::TextDiff::configure()
+        .algorithm(diff_algorithm(old, new))
+        .diff_lines(old, new);
+    for op in diff.ops() {
+        if op.tag() == similar::DiffTag::Equal {
+            for (o, n) in op.old_range().zip(op.new_range()) {
+                if lines[n] == merge {
+                    lines[n] = old_lines[o];
+                }
+            }
+        }
+    }
+}
+
+/// When `merge` (which introduced the version `data`) has more parents than the first, the lines
+/// blamed on it that one of them already had keep that parent's blame. Boxed: it recurses into
+/// [`blame`].
+#[allow(clippy::too_many_arguments)]
+fn from_other_parents<'a>(
+    meta: &'a dyn MetaStore,
+    blobs: &'a dyn BlobStore,
+    g: &'a mut Graph<'_>,
+    trees: &'a Trees<'_>,
+    repo: &'a str,
+    merge: ObjectId,
+    path: &'a str,
+    data: &'a [u8],
+    lines: &'a mut [ObjectId],
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+    Box::pin(async move {
+        let parents = g.get(merge).await?.parents.clone();
+        for p in parents.iter().skip(1) {
+            if !lines.contains(&merge) {
+                break;
+            }
+            let Some(blob) = file_at(g, trees, *p, path).await? else {
+                continue;
+            };
+            let side = blame(meta, blobs, repo, *p, path).await?;
+            let old = content(blobs, &blob).await?;
+            adopt(&old, &side.lines, data, lines, merge);
+        }
+        Ok(())
+    })
 }
 
 fn line_count(data: &[u8]) -> usize {
@@ -395,7 +447,14 @@ pub async fn blame(
     let (_, (first_cs, first_blob)) = iter.next().ok_or_else(|| QueryError::PathNotFound(path.to_owned()))?;
     let mut prev = content(blobs, &first_blob).await?;
     let from_cache = base.is_some();
-    let mut lines = base.unwrap_or_else(|| vec![first_cs; line_count(&prev)]);
+    let mut lines = match base {
+        Some(lines) => lines,
+        None => {
+            let mut lines = vec![first_cs; line_count(&prev)];
+            from_other_parents(meta, blobs, &mut g, &trees, repo, first_cs, path, &prev, &mut lines).await?;
+            lines
+        }
+    };
     if !from_cache && total == 1 {
         save(meta, repo, &first_cs, path, &lines).await?;
     }
@@ -403,6 +462,18 @@ pub async fn blame(
     for (i, (introduced_by, blob)) in iter {
         let data = content(blobs, &blob).await?;
         lines = carry(&prev, &lines, &data, introduced_by);
+        from_other_parents(
+            meta,
+            blobs,
+            &mut g,
+            &trees,
+            repo,
+            introduced_by,
+            path,
+            &data,
+            &mut lines,
+        )
+        .await?;
         if i + 1 == total || i % CHECKPOINT_EVERY == 0 {
             save(meta, repo, &introduced_by, path, &lines).await?;
         }
@@ -604,13 +675,43 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn merge_attributes_to_merge_commit_along_first_parent() {
+    async fn lines_a_merge_brings_keep_the_other_parents_blame() {
         let mut r = Repo::new().await;
         let a = r.commit(&[], &[("f", Some("base\n"))]).await;
         let side = r.commit(&[a], &[("f", Some("base\nside\n"))]).await;
         let main = r.commit(&[a], &[("g", Some("g"))]).await;
         let m = r.commit(&[main, side], &[("f", Some("base\nside\n"))]).await;
-        assert_eq!(r.blame(m, "f").await.expect("blame").lines, vec![a, m]);
+        assert_eq!(r.blame(m, "f").await.expect("blame").lines, vec![a, side]);
+        // A line the merge itself wrote (resolving a conflict) stays on the merge
+        let main2 = r.commit(&[main], &[("f", Some("base\nmain\n"))]).await;
+        let m2 = r
+            .commit(&[main2, side], &[("f", Some("base\nmain\nside\nboth\n"))])
+            .await;
+        assert_eq!(r.blame(m2, "f").await.expect("blame").lines, vec![a, main2, side, m2]);
+        // A file added on a branch and merged keeps the branch's commits
+        let b1 = r.commit(&[a], &[("new", Some("one\n"))]).await;
+        let b2 = r.commit(&[b1], &[("new", Some("one\ntwo\n"))]).await;
+        let m3 = r.commit(&[m2, b2], &[("new", Some("one\ntwo\n"))]).await;
+        let later = r.commit(&[m3], &[("new", Some("one\ntwo\nthree\n"))]).await;
+        assert_eq!(r.blame(later, "new").await.expect("blame").lines, vec![b1, b2, later]);
+        // Octopus: each parent is tried in order; a parent without the file is skipped
+        let c1 = r.commit(&[a], &[("o", Some("c\n"))]).await;
+        let d1 = r.commit(&[a], &[("o", Some("d\n"))]).await;
+        let e1 = r.commit(&[a], &[("g", Some("e"))]).await;
+        let m4 = r.commit(&[later, e1, c1, d1], &[("o", Some("c\nd\nm\n"))]).await;
+        assert_eq!(r.blame(m4, "o").await.expect("blame").lines, vec![c1, d1, m4]);
+    }
+
+    #[tokio::test]
+    async fn merges_agree_with_and_without_the_index() {
+        for indexed in [true, false] {
+            let mut r = Repo::with_index(indexed).await;
+            let a = r.commit(&[], &[("f", Some("base\n"))]).await;
+            let side = r.commit(&[a], &[("f", Some("base\nside\n"))]).await;
+            let main = r.commit(&[a], &[("f", Some("main\nbase\n"))]).await;
+            let m = r.commit(&[main, side], &[("f", Some("main\nbase\nside\n"))]).await;
+            assert_eq!(r.blame(m, "f").await.expect("blame").lines, vec![main, a, side]);
+        }
     }
 
     #[tokio::test]

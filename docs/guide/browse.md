@@ -17,7 +17,7 @@ QueryService.ListLastCommits(repo, revision, path, offset, limit)
 
 - **Scope:** `path` is a directory, empty for the root. Entries are sorted by name and paged with `offset` and `limit`; `limit` defaults to 1000, which is also its maximum, and `total` is the number of entries.
 - **`commits`:** the commits `entries` refer to, without duplicates, newest generation first, with author, time and message, so they need no further queries. For 40-digit git SHAs, pass these ids to `GetGitShas` (see [git-compatible commit SHAs](git-sha.md)).
-- **Semantics:** as for Blame, along the first-parent chain:
+- **Semantics:** along the first-parent chain:
   - an entry is changed by a commit when it is among the commit's changes against its first parent;
   - a subdirectory is changed when any file below it is;
   - changes brought in by a merge count for the merge commit.

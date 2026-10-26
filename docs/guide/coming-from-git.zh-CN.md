@@ -50,7 +50,7 @@
 | `git log [REV] [-n N] [--oneline] [--follow] [-- PATH]` | `scn log [REV] [-n N] [--oneline] [--follow] [-- PATH]` | 与 git 格式相同（默认 20 个提交）；也可以用 `--path PATH`。`--follow` 跨越重命名继续查看一个文件的历史：服务端找出它来自哪个被删除的文件（内容相同，或至少 50% 相似，即 git 默认的 `-M50%`），遇到没有读权限的旧路径就停在那里。和 git 一样从工作副本当前的提交（HEAD）开始；`scn log main` 看服务端的分支，包括上次 `scn sync` 之后别人合入的提交。服务端 rebase 过的提交还会显示 `CommitDate:` 和 `Rebased-from:`（提交原来的 id）；提交时间按合入顺序排列，作者时间是写下改动的时间 |
 | `git show [REV] [-- PATH]` | `scn show [REV] [--name-only | --name-status | --stat] [-- PATH]` | |
 | `git diff`、`git diff A B`、`A..B`、`A...B` | `scn diff`、`scn diff A B`、`A..B`、`A...B` | `--name-only`、`--name-status`、`--stat`、`-- PATH` |
-| `git blame [REV] -- PATH` | `scn blame [REV:]PATH` | 单独的 `PATH` 相对当前目录，`log`、`show`、`diff` 的路径也是这样；`REV:PATH` 从根目录算起，与 git 相同 |
+| `git blame [REV] -- PATH` | `scn blame [REV:]PATH` | 单独的 `PATH` 相对当前目录，`log`、`show`、`diff` 的路径也是这样；`REV:PATH` 从根目录算起，与 git 相同。合并带进来的行沿用它所在分支的归属，与 git 相同；和 git 不同的是，遇到重命名就停止 |
 | `git grep [-n] [-l] [-i] [-F] PATTERN [REV] [-- PATH...]` | 相同，另有 `-m N` | 在服务端对某个提交（默认 HEAD）搜索，所以不需要检出，稀疏检出没检出的部分也能搜到；不搜索本地改动。使用 Rust 正则语法（接近 `-E`）。跳过二进制文件、超过 1 MiB 的文件、符号链接和被 redact 的文件；默认找到 1000 行就停止，`-m` 可以调整（最多 10000）。什么也没找到时退出码为 1 |
 | `git reflog [BRANCH]` | `scn reflog [BRANCH] [-n N]` | 由服务端保存，每个分支和标签都有，所以包括所有人的合入，而不只是某一个 clone 的：`ID main@{N}: 时间 created / fast-forward / forced: 标题`，从新到旧。暂时不记录是谁移动的分支；删除分支会同时删除它的记录 |
 | `git show REV:PATH` | `scn cat REV:PATH` | 不需要工作副本 |

@@ -17,7 +17,7 @@ QueryService.ListLastCommits(repo, revision, path, offset, limit)
 
 - **范围**：`path` 为目录路径，空表示根目录。条目按名字排序，用 `offset` 和 `limit` 分页，`limit` 默认和最大都是 1000，`total` 是条目总数。
 - **`commits`**：`entries` 引用到的提交，去重后按代数从新到旧排列，包含作者、时间和提交说明，不需要再逐个查询。需要 40 位 git sha 时，用这些提交 id 调用 `GetGitShas`（见 [git 兼容的提交 sha](git-sha.zh-CN.md)）。
-- **语义**：与 Blame 相同，沿第一父提交链追溯：
+- **语义**：沿第一父提交链追溯：
   - 条目出现在某个提交的改动中（相对第一父提交），就算被这个提交改动；
   - 子目录被改动，指它下面的任意文件被改动；
   - 经由合并带进来的改动，归到合并提交上。

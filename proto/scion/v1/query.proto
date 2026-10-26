@@ -20,7 +20,8 @@ service QueryService {
   rpc MergeBase(MergeBaseRequest) returns (MergeBaseResponse);
   // 两个版本之间的文件级差异，按路径排序分批流式返回。
   rpc Diff(DiffRequest) returns (stream DiffResponse);
-  // 文件每一行最后被改动的提交。沿第一父提交链追溯：经由合并进来的改动归到合并提交上。
+  // The commit that last changed each line of a file. As in git, a line a merge brought from
+  // another parent keeps that parent's blame; only lines no parent had go to the merge commit.
   rpc Blame(BlameRequest) returns (BlameResponse);
   // 把 revision（ref 名、提交 id 文本或 40 位 git sha）解析为提交。
   rpc ResolveRevision(ResolveRevisionRequest) returns (ResolveRevisionResponse);
@@ -32,7 +33,7 @@ service QueryService {
   rpc GetGitShas(GetGitShasRequest) returns (GetGitShasResponse);
   // 把一个版本（或其中的目录）打包成 tar.gz / zip / tar，分块流式返回。
   rpc Archive(ArchiveRequest) returns (stream ArchiveResponse);
-  // 目录中每个条目最后一次被改动的提交（沿第一父提交链，与 Blame 相同），按名字分页。
+  // 目录中每个条目最后一次被改动的提交（沿第一父提交链：经由合并进来的改动归到合并提交上），按名字分页。
   rpc ListLastCommits(ListLastCommitsRequest) returns (ListLastCommitsResponse);
   // 目录（含全部子目录）下的文件数、子目录数与总字节数；path 为空表示整个仓库。
   rpc GetTreeStats(GetTreeStatsRequest) returns (GetTreeStatsResponse);
