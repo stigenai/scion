@@ -82,6 +82,9 @@ pub struct TreeStatsInfo {
 pub struct LogPage {
     pub entries: Vec<LogItem>,
     pub next_page_token: Option<String>,
+    /// From [`Client::log_follow`]: the path the file had before the page's last commit, which
+    /// renamed it. Pass it as the path for the next page.
+    pub renamed_from: Option<String>,
 }
 
 /// 一个文件的变化：`old` 为 None 表示新增，`new` 为 None 表示删除。
@@ -217,17 +220,43 @@ impl Client {
         page_size: u32,
         page_token: Option<&str>,
     ) -> Result<LogPage> {
+        self.log_page(revision, path.unwrap_or_default(), false, page_size, page_token)
+            .await
+    }
+
+    /// [`Client::log`] of one file that follows it across renames, like `git log --follow`. A
+    /// page ends at the commit that renamed the file, with [`LogPage::renamed_from`] set.
+    pub async fn log_follow(
+        &self,
+        revision: &str,
+        path: &str,
+        page_size: u32,
+        page_token: Option<&str>,
+    ) -> Result<LogPage> {
+        self.log_page(revision, path, true, page_size, page_token).await
+    }
+
+    async fn log_page(
+        &self,
+        revision: &str,
+        path: &str,
+        follow: bool,
+        page_size: u32,
+        page_token: Option<&str>,
+    ) -> Result<LogPage> {
         let req = LogRequest {
             repo: self.repo()?,
             revision: revision.to_owned(),
-            path: path.unwrap_or_default().to_owned(),
+            path: path.to_owned(),
             page_size,
             page_token: page_token.unwrap_or_default().to_owned(),
+            follow,
         };
         let resp = self.query().log(self.request(req)?).await?.into_inner();
         Ok(LogPage {
             entries: resp.entries.into_iter().map(item).collect::<Result<_>>()?,
             next_page_token: Some(resp.next_page_token).filter(|t| !t.is_empty()),
+            renamed_from: Some(resp.renamed_from).filter(|p| !p.is_empty()),
         })
     }
 

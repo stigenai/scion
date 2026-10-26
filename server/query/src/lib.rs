@@ -5,6 +5,7 @@
 
 mod archive;
 mod blame;
+mod follow;
 mod gitsha;
 mod grep;
 mod lastcommit;
@@ -13,6 +14,7 @@ mod treestats;
 
 pub use archive::{ArchiveFormat, ArchiveOptions, Emit, redacted_placeholder, write_archive};
 pub use blame::{BLAME_KIND, BLAME_VERSION, BlameResult, blame};
+pub use follow::MIN_SIMILARITY;
 pub use gitsha::{
     GIT_BLOB_ID_KIND, GIT_BLOB_KIND, GIT_COMMIT_KIND, GIT_OBJECT_VERSION, GIT_SHA1_EXTENSION, GIT_TREE_ID_KIND,
     GIT_TREE_KIND, GITSHA_KIND, GITSHA_VERSION, SCION_ID_HEADER, cached_git_shas, derive_git_sha, git_commit_body,
@@ -290,6 +292,9 @@ pub struct LogEntry {
 pub struct LogPage {
     pub entries: Vec<LogEntry>,
     pub next: Option<Vec<ObjectId>>,
+    /// When following renames: the path the file had before the last entry, which renamed it.
+    /// The page stops there; the next one continues with this path.
+    pub renamed_from: Option<String>,
 }
 
 /// 提交是否改动了 `path`（相对第一个父提交）：改动的路径等于它、在它下面，或是它的上级。
@@ -322,7 +327,33 @@ pub async fn log(
     limit: usize,
     max_scan: usize,
 ) -> Result<LogPage> {
-    log_with(meta, blobs, repo, start, path, limit, max_scan, PATH_CANDIDATES).await
+    log_with(meta, blobs, repo, start, path, false, limit, max_scan, PATH_CANDIDATES).await
+}
+
+/// [`log`] of a file that also follows it across renames, like `git log --follow`: a page ends
+/// at the commit that renamed the file there, with [`LogPage::renamed_from`] set to the old path
+/// for the next page. One path is followed at a time, across all branches, as in git.
+pub async fn log_follow(
+    meta: &dyn MetaStore,
+    blobs: &dyn BlobStore,
+    repo: &str,
+    start: &[ObjectId],
+    path: &str,
+    limit: usize,
+    max_scan: usize,
+) -> Result<LogPage> {
+    log_with(
+        meta,
+        blobs,
+        repo,
+        start,
+        Some(path),
+        true,
+        limit,
+        max_scan,
+        PATH_CANDIDATES,
+    )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -332,6 +363,7 @@ async fn log_with(
     repo: &str,
     start: &[ObjectId],
     path: Option<&str>,
+    follow: bool,
     limit: usize,
     max_scan: usize,
     candidate_limit: usize,
@@ -359,6 +391,7 @@ async fn log_with(
         None => None,
     };
     let mut entries = Vec::new();
+    let mut renamed_from = None;
     let mut scanned = 0;
     while entries.len() < limit.max(1) && scanned < max_scan.max(1) {
         // 候选被截断时，低于最后一个候选代数的部分留到下一页（下一页会重新读取索引）
@@ -394,6 +427,14 @@ async fn log_with(
                 }
             }
         }
+        if let (true, Some(p), Some(e)) = (follow, path, entries.last()) {
+            if e.record.id == id {
+                renamed_from = follow::renamed_from(&mut g, blobs, id, &e.changeset, p).await?;
+                if renamed_from.is_some() {
+                    break;
+                }
+            }
+        }
     }
     let next = if queue.is_empty() {
         None
@@ -402,7 +443,11 @@ async fn log_with(
         frontier.dedup();
         Some(frontier)
     };
-    Ok(LogPage { entries, next })
+    Ok(LogPage {
+        entries,
+        next,
+        renamed_from,
+    })
 }
 
 #[cfg(test)]
@@ -741,7 +786,7 @@ pub(crate) mod tests {
         let mut start = vec![n];
         let mut seen = Vec::new();
         for _ in 0..20 {
-            let page = log_with(&b.store, &b.store, REPO, &start, Some("src"), 100, 1000, 1)
+            let page = log_with(&b.store, &b.store, REPO, &start, Some("src"), false, 100, 1000, 1)
                 .await
                 .expect("log");
             seen.extend(ids(&page));

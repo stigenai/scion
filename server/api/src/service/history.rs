@@ -99,12 +99,19 @@ pub(crate) async fn log(meta: &dyn MetaStore, blobs: &dyn BlobStore, req: LogReq
         0 => DEFAULT_PAGE_SIZE,
         n => n.min(MAX_PAGE_SIZE),
     } as usize;
-    let page = scion_query::log(meta, blobs, &req.repo, &start, Some(req.path.as_str()), limit, MAX_SCAN)
-        .await
-        .map_err(from_query)?;
+    let page = if req.follow {
+        if req.path.is_empty() {
+            return Err(Status::invalid_argument("follow needs a path"));
+        }
+        scion_query::log_follow(meta, blobs, &req.repo, &start, &req.path, limit, MAX_SCAN).await
+    } else {
+        scion_query::log(meta, blobs, &req.repo, &start, Some(req.path.as_str()), limit, MAX_SCAN).await
+    }
+    .map_err(from_query)?;
     Ok(LogResponse {
         entries: page.entries.into_iter().map(log_entry).collect(),
         next_page_token: page.next.map(|f| encode_token(&f)).unwrap_or_default(),
+        renamed_from: page.renamed_from.unwrap_or_default(),
     })
 }
 
@@ -471,6 +478,7 @@ mod tests {
             path: path.into(),
             page_size,
             page_token: token.into(),
+            follow: false,
         }
     }
 
@@ -519,6 +527,12 @@ mod tests {
         );
         assert_eq!(
             code(log(store.as_ref(), store.as_ref(), log_req("", "", 1, "zz")).await),
+            Err(Code::InvalidArgument)
+        );
+        let mut follow = log_req("main", "", 1, "");
+        follow.follow = true;
+        assert_eq!(
+            code(log(store.as_ref(), store.as_ref(), follow).await),
             Err(Code::InvalidArgument)
         );
         let unknown = encode_token(&[cs(99)]);

@@ -267,9 +267,17 @@ impl QueryService for QuerySvc {
         let p = principal(&request);
         let req = request.into_inner();
         self.authorize_read(&p, &req.repo, &req.path).await?;
-        Ok(Response::new(
-            history::log(self.meta.as_ref(), self.blobs.as_ref(), req).await?,
-        ))
+        let repo = req.repo.clone();
+        let mut resp = history::log(self.meta.as_ref(), self.blobs.as_ref(), req).await?;
+        // Following into a path the caller cannot read ends the history there
+        if !resp.renamed_from.is_empty() {
+            let req = AuthRequest::repo(&repo, Action::Read).with_path(&resp.renamed_from);
+            if !self.guard.check(&p, &req).await.map_err(to_status)? {
+                resp.renamed_from.clear();
+                resp.next_page_token.clear();
+            }
+        }
+        Ok(Response::new(resp))
     }
 
     async fn is_ancestor(&self, request: Request<IsAncestorRequest>) -> Result<Response<IsAncestorResponse>, Status> {

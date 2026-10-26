@@ -886,6 +886,66 @@ async fn reflog_lists_moves_newest_first() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn log_follow_crosses_renames() {
+    use scion_store::MetaStore;
+    let store = Arc::new(MemStore::new());
+    store.create_repo("app").await.expect("repo");
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let url = format!("http://{}", listener.local_addr().expect("addr"));
+    let app = App {
+        config: Arc::new(ServerConfig::default()),
+        meta: store.clone(),
+        blobs: store,
+    };
+    tokio::spawn(serve(listener, app, std::future::pending()));
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let wc = root.join("app");
+        json_of(&scn_in(&root, &["clone", &format!("{url}/app"), "--json"]));
+        let commit = |subject: &str| {
+            json_of(&scn_in(&wc, &["commit", "-m", subject, "--json"]));
+            json_of(&scn_in(&wc, &["land", "--json"]));
+        };
+        std::fs::write(wc.join("old.txt"), "one\ntwo\nthree\n").expect("write");
+        commit("add");
+        std::fs::write(wc.join("old.txt"), "one\ntwo\nthree\nfour\n").expect("write");
+        commit("edit");
+        std::fs::create_dir(wc.join("docs")).expect("mkdir");
+        let out = scn_in(&wc, &["mv", "old.txt", "docs/new.txt"]);
+        assert!(out.status.success(), "{out:?}");
+        std::fs::write(wc.join("docs/new.txt"), "one\ntwo\nthree\nfour\nfive\n").expect("write");
+        commit("move");
+        std::fs::write(wc.join("docs/new.txt"), "1\n").expect("write");
+        commit("rewrite");
+
+        let subjects = |args: &[&str]| -> Vec<String> {
+            let out = scn_in(&wc, &[&["log", "--oneline"][..], args].concat());
+            assert!(out.status.success(), "{out:?}");
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(|l| l.split_once(' ').expect("id subject").1.to_owned())
+                .collect()
+        };
+        assert_eq!(subjects(&["--", "docs/new.txt"]), ["rewrite", "move"]);
+        assert_eq!(
+            subjects(&["--follow", "--", "docs/new.txt"]),
+            ["rewrite", "move", "edit", "add"]
+        );
+        assert_eq!(
+            subjects(&["--follow", "-n", "3", "--", "docs/new.txt"]),
+            ["rewrite", "move", "edit"]
+        );
+        let out = scn_in(&wc, &["log", "--follow"]);
+        assert_eq!(out.status.code(), Some(2), "{out:?}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("--follow needs one file path"));
+    })
+    .await
+    .expect("test");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn switch_detach_checks_out_an_old_commit() {
     use scion_store::MetaStore;
     let store = Arc::new(MemStore::new());

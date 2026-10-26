@@ -79,6 +79,9 @@ message LogRequest {
   uint32 page_size = 4;
   // 上一页返回的 next_page_token；非空时忽略 revision。
   string page_token = 5;
+  // Follow the file in `path` across renames, like `git log --follow`. A page ends at the commit
+  // that renamed it, with `renamed_from` set; ask for the next page with that path.
+  bool follow = 6;
 }
 
 message LogEntry {
@@ -96,6 +99,9 @@ message LogResponse {
   repeated LogEntry entries = 1;
   // 为空表示没有更多。按路径过滤时，一页可能少于 page_size 甚至为空，但仍可继续。
   string next_page_token = 2;
+  // With `follow`: the path the file had before the page's last commit, which renamed it. Empty
+  // when there was no rename, or the caller cannot read the old path (history stops there).
+  string renamed_from = 3;
 }
 
 message IsAncestorRequest {

@@ -537,6 +537,9 @@ enum Command {
         /// One line per commit: its short id and subject.
         #[arg(long)]
         oneline: bool,
+        /// Follow the file across renames, like git (one file path).
+        #[arg(long)]
+        follow: bool,
         /// git's `--pretty=oneline` / `--format=oneline`; other formats are not supported.
         #[arg(long, alias = "format", value_name = "FORMAT", value_parser = ["oneline", "medium"])]
         pretty: Option<String>,
@@ -1712,6 +1715,7 @@ async fn run(cli: Cli) -> ExitCode {
             path,
             max_count,
             oneline,
+            follow,
             pretty,
             paths,
         } => match one_path(path, paths) {
@@ -1720,6 +1724,7 @@ async fn run(cli: Cli) -> ExitCode {
                     &ctx,
                     revision.as_deref(),
                     path.as_deref(),
+                    follow,
                     max_count,
                     oneline || pretty.as_deref() == Some("oneline"),
                 )

@@ -380,16 +380,28 @@ pub async fn log(
     ctx: &Ctx,
     revision: Option<&str>,
     path: Option<&str>,
+    follow: bool,
     limit: usize,
     oneline: bool,
 ) -> Result<LogOut, CliError> {
+    if follow && path.is_none() {
+        return Err(CliError::Usage("--follow needs one file path".into()));
+    }
     let (client, default_rev) = query_client(ctx).await?;
     let revision = ctx.expand_rev(&revision.map_or(default_rev, str::to_owned))?;
     let mut entries = Vec::new();
     let mut token: Option<String> = None;
+    // With --follow, the name the file has in the commits still to come
+    let mut current = path.map(str::to_owned);
     while entries.len() < limit {
         let want = u32::try_from(limit - entries.len()).unwrap_or(u32::MAX).min(1000);
-        let page = client.log(&revision, path, want, token.as_deref()).await?;
+        let page = match (&current, follow) {
+            (Some(p), true) => client.log_follow(&revision, p, want, token.as_deref()).await?,
+            _ => client.log(&revision, path, want, token.as_deref()).await?,
+        };
+        if let Some(old) = page.renamed_from {
+            current = Some(old);
+        }
         entries.extend(page.entries.into_iter().map(log_line));
         match page.next_page_token {
             Some(t) => token = Some(t),

@@ -276,6 +276,26 @@ async fn tokens_and_acl_are_enforced() {
     let changed = cc.diff(None, "main", None).await.expect("diff");
     assert!(changed.iter().all(|f| f.path.starts_with("src/ui")), "{changed:?}");
     assert_eq!(cc.log("main", None, 10, None).await.expect("log").entries.len(), 1);
+    // log --follow: a rename from a path the caller cannot read ends the history there
+    let mv = c
+        .changeset(Some(tip.changeset))
+        .delete("src/core.rs")
+        .put("src/ui/core.rs", "core")
+        .create()
+        .await
+        .expect("move");
+    c.land("main", &mv.id).await.expect("land");
+    let page = c.log_follow("main", "src/ui/core.rs", 10, None).await.expect("follow");
+    assert_eq!(page.entries.len(), 1);
+    assert_eq!(page.renamed_from.as_deref(), Some("src/core.rs"));
+    let older = c
+        .log_follow("main", "src/core.rs", 10, page.next_page_token.as_deref())
+        .await
+        .expect("older");
+    assert_eq!((older.entries.len(), older.renamed_from), (1, None));
+    let page = cc.log_follow("main", "src/ui/core.rs", 10, None).await.expect("follow");
+    assert_eq!(page.entries.len(), 1);
+    assert_eq!((page.renamed_from, page.next_page_token), (None, None));
     // 上传对象（写入前的准备）只需在仓库里有写权限
     assert!(cc.missing_objects(&[ObjectId::of_blob(b"x")]).await.is_ok());
     drop(s.store);

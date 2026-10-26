@@ -32,7 +32,7 @@ pub struct BlameResult {
 }
 
 /// 从 `&dyn BlobStore` 读取目录树。
-struct Trees<'a>(&'a dyn BlobStore);
+pub(crate) struct Trees<'a>(pub(crate) &'a dyn BlobStore);
 
 #[async_trait]
 impl TreeSource for Trees<'_> {
@@ -426,7 +426,7 @@ async fn save(meta: &dyn MetaStore, repo: &str, intro: &ObjectId, path: &str, li
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use bytes::Bytes;
     use scion_object::{Changeset, FileChange, Signature};
@@ -435,26 +435,26 @@ mod tests {
 
     const REPO: &str = "r";
 
-    struct Repo {
-        store: MemStore,
+    pub(crate) struct Repo {
+        pub(crate) store: MemStore,
         n: u8,
         /// 是否写 PathHistory 索引（false 模拟索引建立之前的旧数据）。
         indexed: bool,
     }
 
     impl Repo {
-        async fn new() -> Self {
+        pub(crate) async fn new() -> Self {
             Self::with_index(true).await
         }
 
-        async fn with_index(indexed: bool) -> Self {
+        pub(crate) async fn with_index(indexed: bool) -> Self {
             let store = MemStore::new();
             store.create_repo(REPO).await.expect("repo");
             Self { store, n: 0, indexed }
         }
 
         /// 提交：用 scion-tree 真正建树，写入内容、目录树、提交对象与记录。
-        async fn commit(&mut self, parents: &[ObjectId], files: &[(&str, Option<&str>)]) -> ObjectId {
+        pub(crate) async fn commit(&mut self, parents: &[ObjectId], files: &[(&str, Option<&str>)]) -> ObjectId {
             self.n += 1;
             let sig = Signature {
                 name: "a".into(),
