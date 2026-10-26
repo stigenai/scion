@@ -58,6 +58,9 @@ pub enum Error {
     NoSyncInProgress,
     #[error("no stash entry stash@{{{0}}}")]
     NoStash(usize),
+    /// A command that makes or publishes commits on a detached working copy.
+    #[error("not on a branch (detached at {})", &.0[..12.min(.0.len())])]
+    Detached(String),
     /// `commit PATH...` with a path that has no local change.
     #[error("no local changes in {}", .0.join(", "))]
     NoChangesIn(Vec<String>),

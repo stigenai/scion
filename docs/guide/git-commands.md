@@ -18,6 +18,7 @@ A quick reference: which git commands you can type in `scn` as they are, which w
 | `git clean -n`, `-f`, `-fd`, `-fdx` [PATH...] | the same | Untracked files; `-x` ignored ones too; nested repositories stay |
 | `git stash [push] [-m MSG]`, `list`, `show [-p]`, `pop`, `apply`, `drop` [`stash@{N}`] | the same | Every local change, new files included; `pop` and `apply` need a clean tree |
 | `git switch B`, `git switch -c B` | `scn switch B`, `scn switch -c B` | |
+| `git switch --detach REV`, `git checkout REV` | `scn switch --detach REV` | On no branch: nothing can be committed there |
 | `git merge B`, `git merge --abort` | `scn merge B`, `scn merge --abort` | Then `scn land` to publish |
 | `git revert REV`, `-m N`, `--abort` | the same | One commit at a time, as a pending commit; then `scn land` |
 | `git cherry-pick REV`, `-x`, `-m N`, `--abort` | the same | One commit at a time; keeps its message and author |
@@ -42,6 +43,7 @@ These work too, and print a hint naming the scn command they ran. They are not i
 | `scn push` | `scn land` |
 | `scn pull`, `scn pull --rebase` | `scn sync` |
 | `scn checkout BRANCH`, `scn checkout -b NAME` | `scn switch BRANCH`, `scn switch -c NAME` |
+| `scn checkout REV` (no such branch) | `scn switch --detach REV` |
 | `scn checkout -- PATH`, `scn checkout PATH` | `scn restore PATH` |
 | `scn reset --soft HEAD~1` | `scn uncommit` |
 | `scn reset --hard` | `scn restore .` |

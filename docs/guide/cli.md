@@ -41,6 +41,7 @@ scn land                            # land on main; if main moved, the server re
 scn sync                            # pull others' changes; rebases the pending commits one by one (three-way, line level)
 scn tag v1.0                        # tag the current commit; `scn tag` lists, `scn log v1.0` uses it
 scn switch -c feature               # create a branch at the current snapshot and switch to it; `scn switch main` back
+scn switch --detach v1.0            # the files of v1.0 on no branch, to build or test; `scn switch main` back
 scn merge feature                   # merge a branch as a pending merge commit (three-way, line level); then `scn land`
 scn revert c1a2b3c4d5e6             # a pending commit that undoes a landed one (-m 1 for a merge); then `scn land`
 scn cherry-pick c1a2b3c4d5e6        # apply another branch's commit here, keeping its message and author (-x notes it)

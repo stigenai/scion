@@ -1726,6 +1726,80 @@ async fn stash_puts_changes_aside_and_back() {
     assert_eq!(a.state().stash.len(), 1);
 }
 
+#[tokio::test]
+async fn detach_looks_at_an_old_commit_on_no_branch() {
+    let srv = server().await;
+    let c = client(&srv.url).await;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let dir = tmp.path().join("wc");
+    let mut wc = WorkingCopy::clone(&c, &srv.url, "mono", "main", &dir, Sparse::full())
+        .await
+        .expect("clone");
+    let mut ids = Vec::new();
+    for (i, extra) in [None, Some("b.txt"), None].into_iter().enumerate() {
+        write(&dir, "a.txt", &format!("{i}\n"));
+        if let Some(f) = extra {
+            write(&dir, f, "b\n");
+        }
+        ids.push(
+            wc.commit(&c, &format!("c{i}"), None)
+                .await
+                .expect("commit")
+                .expect("changes")
+                .id,
+        );
+        wc.land(&c).await.expect("land");
+    }
+
+    // An added file that the old commit also has is not overwritten
+    std::fs::remove_file(dir.join("b.txt")).expect("rm");
+    assert!(matches!(wc.detach(&c, ids[1]).await, Err(Error::Dirty)));
+    wc.restore(&c, &[".".into()]).await.expect("restore");
+    let s = wc.detach(&c, ids[0]).await.expect("detach");
+    assert_eq!(s.tip, Some(ids[0]));
+    assert!(wc.state().detached && wc.state().reference == "main");
+    assert_eq!(read(&dir, "a.txt"), "0\n");
+    assert!(!dir.join("b.txt").exists());
+    write(&dir, "b.txt", "mine\n");
+    assert!(matches!(wc.detach(&c, ids[1]).await, Err(Error::WouldOverwrite(_))));
+    std::fs::remove_file(dir.join("b.txt")).expect("rm");
+
+    // Nothing that makes or publishes commits
+    write(&dir, "a.txt", "edit\n");
+    let e = wc.commit(&c, "no", None).await;
+    assert!(
+        matches!(&e, Err(Error::Detached(id)) if *id == ids[0].to_string()),
+        "{e:?}"
+    );
+    assert!(
+        e.expect_err("detached")
+            .to_string()
+            .starts_with("not on a branch (detached at c1")
+    );
+    wc.restore(&c, &[".".into()]).await.expect("restore");
+    assert!(matches!(wc.land(&c).await, Err(Error::Detached(_))));
+    assert!(matches!(wc.sync(&c).await, Err(Error::Detached(_))));
+    assert!(matches!(
+        wc.merge(&c, "main", None, None).await,
+        Err(Error::Detached(_))
+    ));
+    let o = wc
+        .pick(&c, PickKind::Revert, ids[1], None, "r".into(), None, None)
+        .await;
+    assert!(matches!(o, Err(Error::Detached(_))), "{o:?}");
+
+    // Back to the branch, or a new branch from here
+    wc.switch(&c, "main", false).await.expect("main");
+    assert!(!wc.state().detached);
+    assert_eq!(read(&dir, "a.txt"), "2\n");
+    wc.detach(&c, ids[1]).await.expect("detach");
+    wc.switch(&c, "fix", true).await.expect("new branch");
+    assert!(!wc.state().detached && wc.state().reference == "fix");
+    assert_eq!(c.resolve_ref("fix").await.expect("ref").expect("fix").changeset, ids[1]);
+    write(&dir, "a.txt", "fix\n");
+    wc.commit(&c, "fix", None).await.expect("commit").expect("changes");
+}
+
 #[cfg(unix)]
 fn chmod_x(root: &Path, rel: &str) {
     use std::os::unix::fs::PermissionsExt;

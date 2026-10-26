@@ -18,6 +18,7 @@
 | `git clean -n`、`-f`、`-fd`、`-fdx` [PATH...] | 相同 | 删除未跟踪的文件；`-x` 连被忽略的文件一起删；嵌套的仓库不动 |
 | `git stash [push] [-m MSG]`、`list`、`show [-p]`、`pop`、`apply`、`drop` [`stash@{N}`] | 相同 | 包括新增文件在内的所有本地改动；`pop` 和 `apply` 要求工作区干净 |
 | `git switch B`、`git switch -c B` | `scn switch B`、`scn switch -c B` | |
+| `git switch --detach REV`、`git checkout REV` | `scn switch --detach REV` | 不在任何分支上：不能在这里提交 |
 | `git merge B`、`git merge --abort` | `scn merge B`、`scn merge --abort` | 之后用 `scn land` 发布 |
 | `git revert REV`、`-m N`、`--abort` | 相同 | 一次撤销一个提交，生成待合入的提交；之后用 `scn land` 发布 |
 | `git cherry-pick REV`、`-x`、`-m N`、`--abort` | 相同 | 一次一个提交；保留原提交说明和作者 |
@@ -42,6 +43,7 @@
 | `scn push` | `scn land` |
 | `scn pull`、`scn pull --rebase` | `scn sync` |
 | `scn checkout BRANCH`、`scn checkout -b NAME` | `scn switch BRANCH`、`scn switch -c NAME` |
+| `scn checkout REV`（没有这个分支时） | `scn switch --detach REV` |
 | `scn checkout -- PATH`、`scn checkout PATH` | `scn restore PATH` |
 | `scn reset --soft HEAD~1` | `scn uncommit` |
 | `scn reset --hard` | `scn restore .` |

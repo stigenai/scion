@@ -196,6 +196,9 @@ impl CliError {
                 Some("run `scn commit` without paths to finish, then commit further changes on their own")
             }
             CliError::Wc(scion_wc::Error::NoStash(_)) => Some("`scn stash list` lists the entries"),
+            CliError::Wc(scion_wc::Error::Detached(_)) => {
+                Some("`scn switch BRANCH` goes back to a branch; `scn switch -c NAME` starts one at this commit")
+            }
             CliError::Wc(scion_wc::Error::NoSyncInProgress) => {
                 Some("only a sync that stopped on conflicts can be aborted; `scn status` shows what is in progress")
             }
@@ -493,6 +496,7 @@ mod tests {
             scion_wc::Error::MarkersRemain(vec![]),
             scion_wc::Error::NoSyncInProgress,
             scion_wc::Error::NoStash(1),
+            scion_wc::Error::Detached("c1".into()),
             scion_wc::Error::NoChangesIn(vec![]),
             scion_wc::Error::PartialFinish,
         ] {

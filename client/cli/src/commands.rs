@@ -337,6 +337,8 @@ pub struct StatusOut {
     pub pending: Option<String>,
     /// How many commits are pending (committed, not landed).
     pub ahead: usize,
+    /// On no branch, looking at `base` (`scn switch --detach`).
+    pub detached: bool,
     pub added: Vec<String>,
     pub modified: Vec<String>,
     pub deleted: Vec<String>,
@@ -446,7 +448,9 @@ impl Render for StatusOut {
                     .filter(|b| b.count > 0)
                     .map(|b| format!("behind {}{}", b.count, if b.exact { "" } else { "+" }));
                 let marks: Vec<String> = ahead.into_iter().chain(behind).collect();
-                lines.push(if marks.is_empty() {
+                lines.push(if self.detached {
+                    "## HEAD (no branch)".to_owned()
+                } else if marks.is_empty() {
                     format!("## {}", self.reference)
                 } else {
                     format!("## {} [{}]", self.reference, marks.join(", "))
@@ -456,7 +460,15 @@ impl Render for StatusOut {
             lines.extend(changes.iter().map(|(_, code, p)| format!("{code} {p}")));
             return lines.join("\n");
         }
-        let mut head = vec![format!("On branch {}", self.reference)];
+        let mut head = vec![if self.detached {
+            format!(
+                "HEAD detached at {}\n  (use \"scn switch {}\" to go back, \"scn switch -c NAME\" to start a branch here)",
+                short(self.base.as_deref().unwrap_or_default()),
+                self.reference
+            )
+        } else {
+            format!("On branch {}", self.reference)
+        }];
         match (&self.pending, &self.base) {
             (Some(p), _) if self.ahead > 1 => head.push(format!(
                 "Your {} commits are not landed yet; the newest is {}.\n  (use \"scn land\" to publish them)",
@@ -558,6 +570,7 @@ pub fn status_out(wc: &WorkingCopy, s: Status) -> StatusOut {
         base: wc.state().base.clone(),
         pending: wc.state().head.clone(),
         ahead: wc.state().stack.len() + usize::from(wc.state().head.is_some()),
+        detached: wc.state().detached,
         added: s.added,
         modified: s.modified,
         deleted: s.deleted,
@@ -586,7 +599,7 @@ pub async fn status(ctx: &Ctx, short: bool, ahead_behind: bool) -> Result<Status
     let wc = WorkingCopy::open(&ctx.cwd)?;
     let s = wc.status()?;
     let cwd = wc_relative(wc.root(), &ctx.cwd, &[".".to_owned()])?.remove(0);
-    let behind = if ahead_behind {
+    let behind = if ahead_behind && !wc.state().detached {
         tokio::time::timeout(std::time::Duration::from_secs(2), behind(ctx, &wc))
             .await
             .ok()
@@ -1141,12 +1154,16 @@ pub struct SwitchOut {
     /// Already on that branch.
     #[serde(skip)]
     pub already: bool,
+    /// `--detach`: on no branch, at `tip`.
+    pub detached: bool,
 }
 
 /// Like `git switch`.
 impl Render for SwitchOut {
     fn text(&self) -> String {
-        if self.created {
+        if self.detached {
+            format!("HEAD is now at {}", short(self.tip.as_deref().unwrap_or_default()))
+        } else if self.created {
             format!("Switched to a new branch '{}'", self.reference)
         } else if self.already {
             format!("Already on '{}'", self.reference)
@@ -1158,7 +1175,7 @@ impl Render for SwitchOut {
 
 pub async fn switch(ctx: &Ctx, reference: &str, create: bool) -> Result<SwitchOut, CliError> {
     let (mut wc, client) = open_wc(ctx).await?;
-    let already = wc.state().reference == reference;
+    let already = wc.state().reference == reference && !wc.state().detached;
     let s = wc.switch(&client, reference, create).await?;
     Ok(SwitchOut {
         schema: "scion.cli.switch/v1",
@@ -1168,6 +1185,24 @@ pub async fn switch(ctx: &Ctx, reference: &str, create: bool) -> Result<SwitchOu
         written: s.written,
         removed: s.removed,
         already,
+        detached: false,
+    })
+}
+
+/// `scn switch --detach REV`: the working tree becomes REV's files, on no branch.
+pub async fn switch_detach(ctx: &Ctx, revision: &str) -> Result<SwitchOut, CliError> {
+    let (mut wc, client) = open_wc(ctx).await?;
+    let commit = client.resolve_revision(&ctx.expand_rev(revision)?).await?.id;
+    let s = wc.detach(&client, commit).await?;
+    Ok(SwitchOut {
+        schema: "scion.cli.switch/v1",
+        reference: wc.state().reference.clone(),
+        created: false,
+        tip: Some(commit.to_string()),
+        written: s.written,
+        removed: s.removed,
+        already: false,
+        detached: true,
     })
 }
 
@@ -2073,6 +2108,7 @@ mod tests {
             base: None,
             pending: None,
             ahead: 0,
+            detached: false,
             added: vec![],
             modified: vec![],
             deleted: vec![],
@@ -2401,6 +2437,7 @@ mod tests {
             written: 0,
             removed: 0,
             already: false,
+            detached: false,
         };
         assert_eq!(sw.text(), "Switched to a new branch 'dev'");
         let sw = SwitchOut { created: false, ..sw };

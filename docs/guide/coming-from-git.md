@@ -40,6 +40,7 @@ English | [简体中文](coming-from-git.zh-CN.md)
 | `git branch -d NAME` / `-D` | `scn branch -d NAME` / `-D` (or `scn branch rm`) | |
 | `git tag`, `git tag NAME [REV]`, `git tag -d NAME` | `scn tag`, `scn tag NAME [REV]`, `scn tag -d NAME` | Lightweight tags only (no messages). Stored as refs `tags/NAME` that the server never moves. A tag name works as a revision (`scn log v1.0`) unless a branch has the same name |
 | `git switch B`, `git switch -c B` | `scn switch B`, `scn switch -c B` | Refuses with a pending commit or modified files; added files are carried over |
+| `git switch --detach REV`, `git checkout REV` | `scn switch --detach REV` | The files of any revision (`v1.0`, `main~3`, an id) to look at, build or test, on no branch: `scn status` says `HEAD detached at …`, and commit, land, sync, merge, revert and cherry-pick refuse. `scn switch BRANCH` goes back; `scn switch -c NAME` starts a branch there |
 | `git merge B` | `scn merge B` | Makes a pending merge commit; `scn land` publishes it |
 | `git merge --abort` | `scn merge --abort` | |
 | `git revert REV` | `scn revert REV` | Makes a pending commit that undoes REV (`Revert "…"`, `This reverts commit …`); later changes to the same lines are kept, overlaps conflict as in a merge. A merge commit needs `-m 1`. `scn revert --abort` gives up |
@@ -73,6 +74,7 @@ They are not listed in `scn --help` and may be removed later, so scripts should 
 | `scn push` | `scn land` |
 | `scn pull [--rebase]` | `scn sync` |
 | `scn checkout BRANCH`, `scn checkout -b NAME` | `scn switch BRANCH`, `scn switch -c NAME` |
+| `scn checkout REV` (no such branch) | `scn switch --detach REV` |
 | `scn checkout -- PATH`, `scn checkout PATH` (an existing path) | `scn restore PATH` |
 | `scn reset --soft [HEAD~1]` | `scn uncommit` |
 | `scn reset --hard [HEAD]` | `scn restore .` |
@@ -99,6 +101,6 @@ Suffixes combine as in git, for example `main~2^2`. A branch whose name literall
 
 ## Not available yet
 
-- **Working copy**: checking out an old revision, interactive rebase, committing part of a file (`add -p`).
+- **Working copy**: commits on a detached working copy, interactive rebase, committing part of a file (`add -p`).
 - **Queries**: annotated tags, `grep`, `bisect`, `REF@{N}` revisions (use the id `scn reflog` prints).
 - **Collaboration**: `remote add`, `fetch`. The git CLI itself can clone, fetch and push a Scion repository (see [git clients](git-clients.md)).

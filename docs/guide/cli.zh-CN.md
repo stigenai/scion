@@ -41,6 +41,7 @@ scn land                            # 合入 main；main 已经前进时，服�
 scn sync                            # 拉取别人的改动；待合入的提交逐个按行三方合并 rebase
 scn tag v1.0                        # 给当前提交打标签；`scn tag` 列出标签，`scn log v1.0` 可以直接用它
 scn switch -c feature               # 在当前快照上建分支并切换过去；`scn switch main` 切回来
+scn switch --detach v1.0            # 检出 v1.0 的文件（不在任何分支上），用来构建或测试；`scn switch main` 切回来
 scn merge feature                   # 把一个分支合并成待合入的合并提交（三方、按行合并）；然后 `scn land`
 scn revert c1a2b3c4d5e6             # 生成一个撤销已合入提交的待合入提交（合并提交加 -m 1）；然后 `scn land`
 scn cherry-pick c1a2b3c4d5e6        # 把别的分支上的提交应用到这里，保留原提交说明和作者（-x 注明原提交）

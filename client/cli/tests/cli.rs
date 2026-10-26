@@ -886,6 +886,69 @@ async fn reflog_lists_moves_newest_first() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn switch_detach_checks_out_an_old_commit() {
+    use scion_store::MetaStore;
+    let store = Arc::new(MemStore::new());
+    store.create_repo("app").await.expect("repo");
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let url = format!("http://{}", listener.local_addr().expect("addr"));
+    let app = App {
+        config: Arc::new(ServerConfig::default()),
+        meta: store.clone(),
+        blobs: store,
+    };
+    tokio::spawn(serve(listener, app, std::future::pending()));
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let wc = root.join("app");
+        let author = ["--author", "Ada <ada@example.com>"];
+        let text = |args: &[&str]| {
+            let out = scn_in(&wc, args);
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            )
+        };
+        json_of(&scn_in(&root, &["clone", &format!("{url}/app"), "--json"]));
+        let mut ids = Vec::new();
+        for i in 0..2 {
+            std::fs::write(wc.join("a.txt"), format!("{i}")).expect("write");
+            let v = json_of(&scn_in(&wc, &[&["commit", "-m", "c", "--json"][..], &author].concat()));
+            ids.push(v["changeset"].as_str().expect("id").to_owned());
+            json_of(&scn_in(&wc, &["land", "--json"]));
+        }
+
+        let out = text(&["switch", "--detach", "main~1"]);
+        assert_eq!(out, format!("HEAD is now at {}\n", &ids[0][..12]));
+        assert_eq!(std::fs::read_to_string(wc.join("a.txt")).expect("a"), "0");
+        assert!(text(&["status"]).starts_with(&format!("HEAD detached at {}\n", &ids[0][..12])));
+        assert_eq!(text(&["status", "-sb"]), "## HEAD (no branch)\n");
+        let v = json_of(&scn_in(&wc, &["status", "--json"]));
+        assert_eq!(v["detached"], true);
+        std::fs::write(wc.join("a.txt"), "edit").expect("write");
+        let out = scn_in(&wc, &["commit", "-m", "no"]);
+        assert_eq!(out.status.code(), Some(1), "{out:?}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("scn switch -c NAME"));
+        json_of(&scn_in(&wc, &["restore", ".", "--json"]));
+
+        // git's checkout of a revision that is no branch
+        let out = text(&["checkout", &ids[1]]);
+        assert!(
+            out.contains("use `scn switch --detach REV` instead") && out.contains("HEAD is now at"),
+            "{out}"
+        );
+        assert_eq!(text(&["switch", "main"]), "Switched to branch 'main'\n");
+        assert_eq!(text(&["switch", "main"]), "Already on 'main'\n");
+        assert!(text(&["status"]).starts_with("On branch main"));
+    })
+    .await
+    .expect("test");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn clone_commit_land_sync_workflow() {
     use scion_store::MetaStore;
     let store = Arc::new(MemStore::new());

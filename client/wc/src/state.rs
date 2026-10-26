@@ -46,6 +46,10 @@ pub struct State {
     /// 稀疏检出的目录；None 为全部检出。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sparse: Option<Vec<String>>,
+    /// Looking at `base` on no branch (`scn switch --detach`): nothing can be committed until
+    /// the working copy switches to a branch. `reference` is the branch it was on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub detached: bool,
     /// Stashed local changes (`scn stash`), newest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stash: Vec<StashEntry>,
@@ -74,6 +78,7 @@ impl State {
             head_merge: None,
             conflict: None,
             sparse: None,
+            detached: false,
             stash: Vec::new(),
         }
     }

@@ -837,6 +837,7 @@ impl WorkingCopy {
         merge: Option<ObjectId>,
         only: &[String],
     ) -> Result<Option<(CreatedChangeset, Vec<FileStat>)>> {
+        self.check_attached()?;
         // Finishing a sync or merge that stopped on conflicts: its message, author and merge
         // parent are the defaults
         let conflict = self.state.conflict.clone();
@@ -1156,6 +1157,7 @@ impl WorkingCopy {
     /// 有未提交的改动时只允许快进：rebase 后要把上游改动写入工作区，不能和本地未提交的改动交织。
     pub async fn land(&mut self, client: &Client) -> Result<Landed> {
         let _lock = self.paths.lock()?;
+        self.check_attached()?;
         let head = match &self.state.head {
             Some(h) => h
                 .parse::<ObjectId>()
@@ -1398,14 +1400,7 @@ impl WorkingCopy {
     /// kept unless the target has a file at the same path.
     pub async fn switch(&mut self, client: &Client, reference: &str, create: bool) -> Result<Switched> {
         let _lock = self.paths.lock()?;
-        self.check_no_conflict()?;
-        if self.state.head.is_some() {
-            return Err(Error::PendingCommit);
-        }
-        let (status, _) = self.changes()?;
-        if !status.modified.is_empty() || !status.deleted.is_empty() {
-            return Err(Error::Dirty);
-        }
+        let added = self.movable()?;
         let tip = if create {
             let from = self
                 .state
@@ -1419,27 +1414,69 @@ impl WorkingCopy {
                 None => return Err(Error::RefNotFound(reference.to_owned())),
             }
         };
+        let (written, removed) = self.move_files(client, tip, &added).await?;
+        self.state.reference = reference.to_owned();
+        self.state.base = tip.map(|t| t.to_string());
+        self.state.detached = false;
+        self.paths.save_state(&self.state)?;
+        Ok(Switched { tip, written, removed })
+    }
+
+    /// `scn switch --detach REV`: puts the files of `commit` in the working tree to look at,
+    /// build or test, on no branch: commands that make commits refuse until `scn switch BRANCH`
+    /// (or `scn switch -c NAME`, which starts a branch there). Needs what [`WorkingCopy::switch`] does.
+    pub async fn detach(&mut self, client: &Client, commit: ObjectId) -> Result<Switched> {
+        let _lock = self.paths.lock()?;
+        let added = self.movable()?;
+        let (written, removed) = self.move_files(client, Some(commit), &added).await?;
+        self.state.base = Some(commit.to_string());
+        self.state.detached = true;
+        self.paths.save_state(&self.state)?;
+        Ok(Switched {
+            tip: Some(commit),
+            written,
+            removed,
+        })
+    }
+
+    /// Checks that the working copy can move to another commit: no conflict, no pending commit,
+    /// no modified or deleted files. Returns the added files, which move along.
+    fn movable(&self) -> Result<Vec<String>> {
+        self.check_no_conflict()?;
+        if self.state.head.is_some() {
+            return Err(Error::PendingCommit);
+        }
+        let (status, _) = self.changes()?;
+        if !status.modified.is_empty() || !status.deleted.is_empty() {
+            return Err(Error::Dirty);
+        }
+        Ok(status.added)
+    }
+
+    /// Makes the tracked files those of `tip` (none for None), refusing when that would
+    /// overwrite an added file. Returns (written, removed).
+    async fn move_files(&self, client: &Client, tip: Option<ObjectId>, added: &[String]) -> Result<(usize, usize)> {
         let target = match tip {
             Some(t) => flatten(client, client.root_tree(&t.to_string()).await?, &self.sparse()?).await?,
             None => BTreeMap::new(),
         };
-        let clash: Vec<String> = status
-            .added
-            .iter()
-            .filter(|p| target.contains_key(*p))
-            .cloned()
-            .collect();
+        let clash: Vec<String> = added.iter().filter(|p| target.contains_key(*p)).cloned().collect();
         if !clash.is_empty() {
             return Err(Error::WouldOverwrite(clash));
         }
         let mut dirstate = self.paths.load_dirstate()?;
         let delta = diff(&snapshot(&dirstate)?, &target);
-        let (written, removed) = self.apply(client, &mut dirstate, &delta).await?;
+        let moved = self.apply(client, &mut dirstate, &delta).await?;
         self.paths.save_dirstate(&mut dirstate)?;
-        self.state.reference = reference.to_owned();
-        self.state.base = tip.map(|t| t.to_string());
-        self.paths.save_state(&self.state)?;
-        Ok(Switched { tip, written, removed })
+        Ok(moved)
+    }
+
+    /// Fails on a detached working copy, which has no branch to commit to.
+    fn check_attached(&self) -> Result<()> {
+        if self.state.detached {
+            return Err(Error::Detached(self.state.base.clone().unwrap_or_default()));
+        }
+        Ok(())
     }
 
     /// Merges `other` (a ref) into the current branch as a pending merge commit with parents
@@ -1456,6 +1493,7 @@ impl WorkingCopy {
         author: Option<(&str, &str)>,
     ) -> Result<MergeOutcome> {
         let _lock = self.paths.lock()?;
+        self.check_attached()?;
         self.check_no_conflict()?;
         if self.state.head.is_some() {
             return Err(Error::PendingCommit);
@@ -1599,6 +1637,7 @@ impl WorkingCopy {
         committer: Option<Signature>,
     ) -> Result<PickOutcome> {
         let _lock = self.paths.lock()?;
+        self.check_attached()?;
         self.check_no_conflict()?;
         if self.state.head_merge.is_some() {
             return Err(Error::OnPendingMerge);
@@ -1696,6 +1735,7 @@ impl WorkingCopy {
     /// `scn resolve` and `scn commit` finish it.
     pub async fn sync(&mut self, client: &Client) -> Result<SyncOutcome> {
         let _lock = self.paths.lock()?;
+        self.check_attached()?;
         self.check_no_conflict()?;
         if !self.changes()?.0.is_clean() {
             return Err(Error::Dirty);

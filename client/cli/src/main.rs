@@ -199,14 +199,22 @@ enum Command {
         #[arg(value_name = "PATH")]
         paths: Vec<String>,
     },
-    /// Move the working copy to another branch (-c creates it at the current snapshot).
+    /// Move the working copy to another branch (-c creates it at the current snapshot), or with
+    /// --detach to any commit, to look at it on no branch.
+    #[command(after_help = "Examples:\n  scn switch feature\n  scn switch -c fix\n  \
+        scn switch --detach v1.0       # the files of v1.0, on no branch\n  \
+        scn switch --detach main~3")]
     Switch {
-        /// The branch to switch to.
+        /// The branch to switch to (with --detach: any revision).
         #[arg(value_name = "BRANCH")]
         reference: String,
         /// Create the branch at the current snapshot first.
         #[arg(short = 'c', long)]
         create: bool,
+        /// Check out the revision on no branch: nothing can be committed there until you switch
+        /// to a branch (`-c NAME` starts one).
+        #[arg(long, conflicts_with = "create")]
+        detach: bool,
     },
     /// Merge another branch into this one as a pending merge commit (`scn land` publishes it).
     /// On conflicts the files get conflict markers; see `scn resolve`.
@@ -1330,7 +1338,12 @@ async fn run(cli: Cli) -> ExitCode {
             json,
         ),
         Command::Uncommit => emit(commands::uncommit(&ctx).await, json),
-        Command::Switch { reference, create } => emit(commands::switch(&ctx, &reference, create).await, json),
+        Command::Switch {
+            reference,
+            detach: true,
+            ..
+        } => emit(commands::switch_detach(&ctx, &reference).await, json),
+        Command::Switch { reference, create, .. } => emit(commands::switch(&ctx, &reference, create).await, json),
         Command::Merge { abort: true, .. } => emit(commands::abort_merge(&ctx).await, json),
         Command::Revert { abort: true, .. } => emit(commands::abort_pick(&ctx, scion_wc::PickKind::Revert).await, json),
         Command::Revert { cont: true, .. } => {
@@ -1428,10 +1441,17 @@ async fn run(cli: Cli) -> ExitCode {
                 transitional("checkout PATH", "restore PATH");
                 emit(commands::restore(&ctx, &[t], None).await, json)
             }
-            (false, Some(name), true) => {
-                transitional("checkout BRANCH", "switch BRANCH");
-                emit(commands::switch(&ctx, &name, false).await, json)
-            }
+            // A branch, else any revision on no branch
+            (false, Some(name), true) => match commands::switch(&ctx, &name, false).await {
+                Err(CliError::Wc(scion_wc::Error::RefNotFound(_))) => {
+                    transitional("checkout REV", "switch --detach REV");
+                    emit(commands::switch_detach(&ctx, &name).await, json)
+                }
+                r => {
+                    transitional("checkout BRANCH", "switch BRANCH");
+                    emit(r, json)
+                }
+            },
             _ => fail(
                 &CliError::Usage(
                     "scn supports `checkout BRANCH`, `checkout -b NAME` and `checkout -- PATH`; \
