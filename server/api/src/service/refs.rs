@@ -332,6 +332,7 @@ impl RefService for RefSvc {
                 changeset_id: Bytes::copy_from_slice(&e.target.to_bytes()),
                 updated_at_ms: e.updated_at_ms,
                 r#move: ref_move.into(),
+                actor: e.actor.clone(),
             });
         }
         let next_before_version = if rows.len() > limit {
@@ -381,7 +382,7 @@ impl RefService for RefSvc {
         };
         let state = self
             .meta
-            .cas_ref(&req.repo, &req.r#ref, RefExpect::Absent, target)
+            .cas_ref_as(&req.repo, &req.r#ref, RefExpect::Absent, target, &p.subject)
             .await
             .map_err(status::from_store)?;
         // After the ref, so a refused create leaves an existing tag's annotation alone; if it
@@ -419,7 +420,7 @@ impl RefService for RefSvc {
         };
         let state = self
             .meta
-            .cas_ref(&req.repo, &req.r#ref, RefExpect::Version(expect), target)
+            .cas_ref_as(&req.repo, &req.r#ref, RefExpect::Version(expect), target, &p.subject)
             .await
             .map_err(status::from_store)?;
         let info = self.written(&p, &req.repo, &req.r#ref, state, "updated").await;

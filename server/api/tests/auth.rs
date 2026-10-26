@@ -285,6 +285,10 @@ async fn tokens_and_acl_are_enforced() {
         .await
         .expect("move");
     c.land("main", &mv.id).await.expect("land");
+    // The ref log names who moved the branch
+    let (moves, _) = c.ref_log("main", None, 10).await.expect("ref log");
+    let actors: Vec<&str> = moves.iter().map(|m| m.actor.as_str()).collect();
+    assert_eq!(actors, ["bob", "bob"]);
     let page = c.log_follow("main", "src/ui/core.rs", 10, None).await.expect("follow");
     assert_eq!(page.entries.len(), 1);
     assert_eq!(page.renamed_from.as_deref(), Some("src/core.rs"));

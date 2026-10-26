@@ -152,7 +152,7 @@ impl LandSvc {
         tip: ObjectId,
         fast_forward_only: bool,
     ) -> Result<LandOutcome, Status> {
-        self.land_with_id(repo, reference, tip, fast_forward_only, None)
+        self.land_with_id(repo, reference, tip, fast_forward_only, None, "")
             .await
             .map_err(|e| to_status(reference, e))
     }
@@ -164,6 +164,7 @@ impl LandSvc {
         tip: ObjectId,
         fast_forward_only: bool,
         request_id: Option<&str>,
+        actor: &str,
     ) -> Result<LandOutcome, LandError> {
         let out = self
             .coordinator
@@ -173,6 +174,7 @@ impl LandSvc {
                 tip,
                 fast_forward_only,
                 request_id,
+                actor,
             })
             .await?;
         self.notify(repo, reference, out.state).await;
@@ -238,7 +240,14 @@ impl LandService for LandSvc {
         }
         let request_id = Some(req.request_id.as_str()).filter(|id| !id.is_empty());
         let out = match self
-            .land_with_id(&req.repo, &req.r#ref, cs_id, req.fast_forward_only, request_id)
+            .land_with_id(
+                &req.repo,
+                &req.r#ref,
+                cs_id,
+                req.fast_forward_only,
+                request_id,
+                &p.subject,
+            )
             .await
         {
             Ok(out) => out,

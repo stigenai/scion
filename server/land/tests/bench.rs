@@ -77,6 +77,7 @@ async fn land_throughput_on_one_ref() {
             tip: base,
             fast_forward_only: false,
             request_id: None,
+            actor: "",
         })
         .await
         .expect("base lands");
@@ -135,6 +136,7 @@ async fn land_throughput_on_one_ref() {
                         tip: *tip,
                         fast_forward_only: false,
                         request_id: Some(&id),
+                        actor: "",
                     })
                     .await
                     .expect("land");

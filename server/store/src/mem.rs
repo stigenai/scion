@@ -373,11 +373,11 @@ impl MetaStore for MemStore {
             .rev()
             .filter(|e| before.is_none_or(|b| e.version < b))
             .take(limit)
-            .copied()
+            .cloned()
             .collect())
     }
 
-    async fn land_commit(
+    async fn land_commit_as(
         &self,
         repo: &str,
         name: &str,
@@ -385,6 +385,7 @@ impl MetaStore for MemStore {
         target: ObjectId,
         landed: &[LandedChange],
         requests: &[IdempotencyRecord],
+        actor: &str,
     ) -> Result<RefState> {
         let mut inner = self.write()?;
         let data = repo_mut(&mut inner, repo)?;
@@ -411,6 +412,7 @@ impl MetaStore for MemStore {
             version: next_version,
             target,
             updated_at_ms: now_ms(),
+            actor: actor.to_owned(),
         });
         for l in landed {
             data.landed.entry((name.to_owned(), l.change_id)).or_insert(*l);

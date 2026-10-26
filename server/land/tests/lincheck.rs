@@ -139,6 +139,7 @@ fn request(tip: ObjectId, request_id: Option<&str>) -> LandRequest<'_> {
         tip,
         fast_forward_only: false,
         request_id,
+        actor: "",
     }
 }
 

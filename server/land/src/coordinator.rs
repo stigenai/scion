@@ -88,6 +88,7 @@ struct Job {
     fast_forward_only: bool,
     request_id: Option<String>,
     fingerprint: Vec<u8>,
+    actor: String,
     reply: oneshot::Sender<Result<LandOutcome>>,
 }
 
@@ -229,6 +230,7 @@ impl Coordinator {
             fast_forward_only: req.fast_forward_only,
             request_id: req.request_id.map(str::to_owned),
             fingerprint,
+            actor: req.actor.to_owned(),
             reply: tx,
         };
         let started = std::time::Instant::now();
@@ -443,8 +445,13 @@ async fn process(shared: &Shared, repo: &str, batch: Vec<Job>) {
         let state = RefState { target, version };
         let mut changes = Vec::new();
         let mut requests = Vec::new();
+        // The batch moves the ref once for everyone in it
+        let mut actors: Vec<&str> = Vec::new();
         for (job, p) in &planned {
             let Planned::Accepted(p) = p else { continue };
+            if !actors.contains(&job.actor.as_str()) {
+                actors.push(&job.actor);
+            }
             changes.extend(p.landed.iter().map(|l| LandedChange {
                 change_id: l.change_id,
                 changeset: l.original,
@@ -465,7 +472,15 @@ async fn process(shared: &Shared, repo: &str, batch: Vec<Job>) {
             return fail_all(planned.into_iter().map(|(j, _)| j).collect(), e);
         }
         match meta
-            .land_commit(repo, &reference, expect, target, &changes, &requests)
+            .land_commit_as(
+                repo,
+                &reference,
+                expect,
+                target,
+                &changes,
+                &requests,
+                &actors.join(", "),
+            )
             .await
         {
             Ok(state) => {

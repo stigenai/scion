@@ -29,6 +29,8 @@ pub struct LandRequest<'a> {
     pub fast_forward_only: bool,
     /// 客户端生成的请求 id；为空时不做幂等记录。
     pub request_id: Option<&'a str>,
+    /// Who asks (the authenticated subject), for the ref log.
+    pub actor: &'a str,
 }
 
 /// 直接用条件更新合入（服务端设计文档 §6.2 中冷 ref 的路径）。
@@ -75,6 +77,7 @@ impl Lander {
             tip,
             fast_forward_only,
             request_id,
+            actor,
         } = req;
         validate_ref_name(reference)?;
         if crate::is_tag(reference) {
@@ -140,7 +143,7 @@ impl Lander {
                 .collect();
             self.writer.persist(repo, batch.built()).await?;
             match meta
-                .land_commit(repo, reference, expect, prepared.tip, &changes, &requests)
+                .land_commit_as(repo, reference, expect, prepared.tip, &changes, &requests, actor)
                 .await
             {
                 Ok(state) => return Ok(LandOutcome { state, ..outcome }),

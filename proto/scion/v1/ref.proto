@@ -39,6 +39,10 @@ message RefLogEntry {
   bytes changeset_id = 2;
   int64 updated_at_ms = 3;
   RefMove move = 4;
+  // Who moved it: the subjects whose requests the move carried out (several when the server
+  // landed their requests together), comma-separated; `anonymous` without authentication. Empty
+  // for moves recorded before servers kept this, and for the server's own.
+  string actor = 5;
 }
 
 // How a ref got to an entry from the one before.

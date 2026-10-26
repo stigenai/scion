@@ -858,11 +858,11 @@ async fn reflog_lists_moves_newest_first() {
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 2, "{text}");
         assert!(
-            lines[0].contains(" main@{0}: ") && lines[0].ends_with(" fast-forward: second"),
+            lines[0].contains(" main@{0}: ") && lines[0].ends_with(" fast-forward by anonymous: second"),
             "{text}"
         );
         assert!(
-            lines[1].contains(" main@{1}: ") && lines[1].ends_with(" created: first"),
+            lines[1].contains(" main@{1}: ") && lines[1].ends_with(" created by anonymous: first"),
             "{text}"
         );
         let v = json_of(&scn_in(
@@ -872,6 +872,7 @@ async fn reflog_lists_moves_newest_first() {
         assert_eq!(v["schema"], "scion.cli.reflog/v1");
         assert_eq!(v["entries"].as_array().map(Vec::len), Some(1));
         assert_eq!(v["entries"][0]["move"], "fast-forward");
+        assert_eq!(v["entries"][0]["actor"], "anonymous");
         let v = json_of(&scn_in(&wc, &["reflog", "v1", "--json"]));
         assert_eq!(
             (v["ref"].as_str(), v["entries"][0]["move"].as_str()),

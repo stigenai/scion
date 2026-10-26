@@ -119,12 +119,16 @@ pub struct TagAnnotation {
 }
 
 /// One move of a ref, from its audit log.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefLogEntry {
     /// The version after the move (1: created).
     pub version: u64,
     pub target: ObjectId,
     pub updated_at_ms: i64,
+    /// Who moved it: the subjects whose requests the move carried out, comma-separated (`anonymous`
+    /// without authentication). Empty for moves recorded before this was kept, and for the
+    /// server's own (admin commands).
+    pub actor: String,
 }
 
 /// 合入过 ref 的 change（`landed` 表）：同一 ref 上每个 change id 只合入一次。
@@ -186,6 +190,18 @@ pub trait MetaStore: Send + Sync + 'static {
         self.land_commit(repo, name, expect, target, &[], &[]).await
     }
 
+    /// [`MetaStore::cas_ref`] on behalf of `actor`, who the ref log names.
+    async fn cas_ref_as(
+        &self,
+        repo: &str,
+        name: &str,
+        expect: RefExpect,
+        target: ObjectId,
+        actor: &str,
+    ) -> Result<RefState> {
+        self.land_commit_as(repo, name, expect, target, &[], &[], actor).await
+    }
+
     /// 合入的原子提交（服务端设计文档 §6.2）：在同一个事务里条件更新 ref、登记合入的 change
     /// （`landed`）和请求结果（`requests`，用于幂等）。ref 条件不满足时什么都不写。
     ///
@@ -198,6 +214,22 @@ pub trait MetaStore: Send + Sync + 'static {
         target: ObjectId,
         landed: &[LandedChange],
         requests: &[IdempotencyRecord],
+    ) -> Result<RefState> {
+        self.land_commit_as(repo, name, expect, target, landed, requests, "")
+            .await
+    }
+
+    /// [`MetaStore::land_commit`] on behalf of `actor`, who the ref log names.
+    #[allow(clippy::too_many_arguments)]
+    async fn land_commit_as(
+        &self,
+        repo: &str,
+        name: &str,
+        expect: RefExpect,
+        target: ObjectId,
+        landed: &[LandedChange],
+        requests: &[IdempotencyRecord],
+        actor: &str,
     ) -> Result<RefState>;
 
     /// 查询 change 是否已经合入过 ref，返回已登记的记录（顺序不定）。

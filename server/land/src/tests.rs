@@ -21,6 +21,7 @@ fn req<'a>(repo: &'a str, reference: &'a str, tip: ObjectId, fast_forward_only: 
         tip,
         fast_forward_only,
         request_id: None,
+        actor: "",
     }
 }
 
@@ -456,6 +457,7 @@ async fn request_id_replays_first_result_and_rejects_reuse() {
     l.land(req(REPO, "main", a, false)).await.expect("a");
     let with_id = |tip, id| LandRequest {
         request_id: Some(id),
+        actor: "",
         ..req(REPO, "main", tip, false)
     };
     let first = l.land(with_id(b, "req-1")).await.expect("b");
@@ -573,6 +575,7 @@ async fn corrupt_stored_result_is_reported() {
     assert!(matches!(l.status(REPO, "bad").await, Err(LandError::Corrupt(_))));
     let r = LandRequest {
         request_id: Some("bad"),
+        actor: "",
         ..req(REPO, "main", a, false)
     };
     assert!(matches!(l.land(r).await, Err(LandError::Corrupt(_))));
@@ -676,7 +679,7 @@ impl MetaStore for Hooked {
     async fn get_ref(&self, r: &str, n: &str) -> scion_store::Result<Option<scion_store::RefState>> {
         self.inner.get_ref(r, n).await
     }
-    async fn land_commit(
+    async fn land_commit_as(
         &self,
         r: &str,
         n: &str,
@@ -684,6 +687,7 @@ impl MetaStore for Hooked {
         t: ObjectId,
         l: &[scion_store::LandedChange],
         q: &[scion_store::IdempotencyRecord],
+        a: &str,
     ) -> scion_store::Result<scion_store::RefState> {
         if let Some(gate) = &self.gate {
             gate.acquire().await.expect("gate").forget();
@@ -698,7 +702,7 @@ impl MetaStore for Hooked {
                 current: None,
             });
         }
-        self.inner.land_commit(r, n, e, t, l, q).await
+        self.inner.land_commit_as(r, n, e, t, l, q, a).await
     }
     async fn landed_changes(
         &self,
@@ -912,6 +916,7 @@ fn coordinator(w: Arc<ChangesetWriter>) -> Coordinator {
 fn with_id<'a>(tip: ObjectId, id: &'a str) -> LandRequest<'a> {
     LandRequest {
         request_id: Some(id),
+        actor: "",
         ..req(REPO, "main", tip, false)
     }
 }
@@ -990,8 +995,10 @@ async fn coordinator_batches_concurrent_lands() {
             let c = c.clone();
             tokio::spawn(async move {
                 let id = format!("req-{i}");
+                let actor = format!("agent-{}", i % 2);
                 c.land(LandRequest {
                     request_id: Some(&id),
+                    actor: &actor,
                     ..req(REPO, "main", t, false)
                 })
                 .await
@@ -1006,6 +1013,16 @@ async fn coordinator_batches_concurrent_lands() {
     }
     let head = fx.store.get_ref(REPO, "main").await.expect("get").expect("ref");
     assert_eq!(fx.chain(head.target).await.len(), N + 1);
+    // One move per batch, naming everyone whose request it carried out
+    let log = fx.store.ref_log(REPO, "main", None, 1000).await.expect("log");
+    let actors: std::collections::BTreeSet<&str> = log[..log.len() - 1].iter().map(|e| e.actor.as_str()).collect();
+    assert!(
+        actors
+            .iter()
+            .all(|a| ["agent-0", "agent-1", "agent-0, agent-1", "agent-1, agent-0"].contains(a)),
+        "{actors:?}"
+    );
+    assert!(actors.iter().any(|a| a.contains(", ")), "{actors:?}");
     for i in 0..N {
         assert_eq!(fx.read(head.target, &format!("f{i}")).await.as_deref(), Some("x"));
     }

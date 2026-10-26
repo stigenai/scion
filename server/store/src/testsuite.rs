@@ -1515,10 +1515,10 @@ pub async fn ref_log<S: MetaStore + ?Sized>(s: &S) {
     s.create_repo("log/a").await.expect("create");
     let (x, y, z) = (cs(111), cs(112), cs(113));
     s.cas_ref("log/a", "main", RefExpect::Absent, x).await.expect("create");
-    s.land_commit("log/a", "main", RefExpect::Version(1), y, &[], &[])
+    s.land_commit_as("log/a", "main", RefExpect::Version(1), y, &[], &[], "alice, bob")
         .await
         .expect("land");
-    s.cas_ref("log/a", "main", RefExpect::Version(2), z)
+    s.cas_ref_as("log/a", "main", RefExpect::Version(2), z, "carl")
         .await
         .expect("move");
     assert!(s.cas_ref("log/a", "main", RefExpect::Version(1), x).await.is_err());
@@ -1527,6 +1527,8 @@ pub async fn ref_log<S: MetaStore + ?Sized>(s: &S) {
     let brief = |v: Vec<crate::RefLogEntry>| v.into_iter().map(|e| (e.version, e.target)).collect::<Vec<_>>();
     let all = s.ref_log("log/a", "main", None, 10).await.expect("log");
     assert!(all.iter().all(|e| e.updated_at_ms > 0));
+    let actors: Vec<&str> = all.iter().map(|e| e.actor.as_str()).collect();
+    assert_eq!(actors, ["carl", "alice, bob", ""]);
     assert_eq!(brief(all), [(3, z), (2, y), (1, x)]);
     assert_eq!(
         brief(s.ref_log("log/a", "main", None, 1).await.expect("page")),

@@ -54,7 +54,7 @@ scn ls main:                        # 列出目录；所有命令都支持 --jso
 scn log -n 10 -- src                # 从 HEAD 开始的历史，从新到旧，可以只看某个路径（git 写法：HEAD~1、A..B）
 scn log main                        # 服务端的分支，包括上次 sync 之后别人合入的提交
 scn log --follow -- docs/guide.md   # 跨越重命名查看一个文件的历史，与 git 相同
-scn reflog main                     # 分支的移动记录：新建、快进（合入）或强制移动，以及时间
+scn reflog main                     # 分支的移动记录：新建、快进（合入）或强制移动，以及时间和操作人
 scn grep -n TODO -- src             # 在服务端搜索提交里的文件（HEAD；不含本地改动）
 scn watch                           # 跟踪服务端的分支：每合入一个提交打印一行（agent 用 --json）
 scn diff                            # 未提交的本地改动（unified diff）

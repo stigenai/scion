@@ -87,7 +87,7 @@ impl MetaStore for CachedMeta {
         self.inner.get_ref(repo, name).await
     }
 
-    async fn land_commit(
+    async fn land_commit_as(
         &self,
         repo: &str,
         name: &str,
@@ -95,9 +95,10 @@ impl MetaStore for CachedMeta {
         target: ObjectId,
         landed: &[LandedChange],
         requests: &[IdempotencyRecord],
+        actor: &str,
     ) -> Result<RefState> {
         self.inner
-            .land_commit(repo, name, expect, target, landed, requests)
+            .land_commit_as(repo, name, expect, target, landed, requests, actor)
             .await
     }
 
@@ -508,7 +509,7 @@ mod tests {
         async fn get_ref(&self, repo: &str, name: &str) -> Result<Option<RefState>> {
             self.inner.get_ref(repo, name).await
         }
-        async fn land_commit(
+        async fn land_commit_as(
             &self,
             repo: &str,
             name: &str,
@@ -516,9 +517,10 @@ mod tests {
             target: ObjectId,
             landed: &[LandedChange],
             requests: &[IdempotencyRecord],
+            actor: &str,
         ) -> Result<RefState> {
             self.inner
-                .land_commit(repo, name, expect, target, landed, requests)
+                .land_commit_as(repo, name, expect, target, landed, requests, actor)
                 .await
         }
 

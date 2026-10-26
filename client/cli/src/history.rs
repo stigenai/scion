@@ -205,18 +205,27 @@ pub struct ReflogLine {
     /// `created`, `fast-forward`, `forced`, or `unknown` (the entry before is gone).
     #[serde(rename = "move")]
     pub how: &'static str,
+    /// Who moved it (comma-separated when several requests landed together); empty when the
+    /// server did not record it.
+    pub actor: String,
     pub subject: String,
 }
 
-/// git's `ID REF@{N}: WHAT: SUBJECT`, with the time of the move (UTC) after `REF@{N}`.
+/// git's `ID REF@{N}: WHAT: SUBJECT`, with the time of the move (UTC) after `REF@{N}` and who
+/// made it after the move (`fast-forward by alice`).
 impl Render for ReflogOut {
     fn text(&self) -> String {
         self.entries
             .iter()
             .enumerate()
             .map(|(i, e)| {
+                let by = if e.actor.is_empty() {
+                    String::new()
+                } else {
+                    format!(" by {}", e.actor)
+                };
                 format!(
-                    "{} {}@{{{i}}}: {} {}: {}",
+                    "{} {}@{{{i}}}: {} {}{by}: {}",
                     &e.changeset[..e.changeset.len().min(12)],
                     self.reference,
                     format_time(e.time_ms, 0),
@@ -281,6 +290,7 @@ pub async fn reflog(ctx: &Ctx, reference: Option<&str>, limit: usize) -> Result<
                 scion_proto::v1::RefMove::Forced => "forced",
                 scion_proto::v1::RefMove::Unspecified => "unknown",
             },
+            actor: m.actor,
             subject,
         });
     }
@@ -1094,6 +1104,28 @@ mod tests {
         assert_eq!(split_range("..b"), Some(("", "b", false)));
         assert_eq!(split_range("a..."), Some(("a", "", true)));
         assert_eq!(split_range("main~1"), None);
+    }
+
+    #[test]
+    fn reflog_names_who_moved_it_when_known() {
+        let line = |actor: &str| ReflogLine {
+            version: 1,
+            changeset: "c1abcdef0123456789".into(),
+            time_ms: 0,
+            how: "created",
+            actor: actor.into(),
+            subject: "first".into(),
+        };
+        let out = ReflogOut {
+            schema: "scion.cli.reflog/v1",
+            reference: "main".into(),
+            entries: vec![line("alice, bob"), line("")],
+        };
+        assert_eq!(
+            out.text(),
+            "c1abcdef0123 main@{0}: 1970-01-01 00:00 +0000 created by alice, bob: first\n\
+             c1abcdef0123 main@{1}: 1970-01-01 00:00 +0000 created: first"
+        );
     }
 
     #[test]

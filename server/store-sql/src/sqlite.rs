@@ -210,7 +210,7 @@ impl MetaStore for SqliteMetaStore {
 
     async fn ref_log(&self, repo: &str, name: &str, before: Option<u64>, limit: usize) -> Result<Vec<RefLogEntry>> {
         let repo_id = self.repo_id(repo).await?;
-        let rows: Vec<(i64, Vec<u8>, i64)> = sqlx::query_as("SELECT version, target, updated_at_ms FROM ref_log WHERE repo_id = ?1 AND name = ?2 AND version < ?3 ORDER BY version DESC LIMIT ?4")
+        let rows: Vec<(i64, Vec<u8>, i64, String)> = sqlx::query_as("SELECT version, target, updated_at_ms, actor FROM ref_log WHERE repo_id = ?1 AND name = ?2 AND version < ?3 ORDER BY version DESC LIMIT ?4")
             .bind(repo_id)
             .bind(name)
             .bind(before.map_or(Ok(i64::MAX), version_to_db)?)
@@ -219,17 +219,18 @@ impl MetaStore for SqliteMetaStore {
             .await
             .map_err(|e| backend("read ref log", e))?;
         rows.into_iter()
-            .map(|(version, target, updated_at_ms)| {
+            .map(|(version, target, updated_at_ms, actor)| {
                 Ok(RefLogEntry {
                     version: version_from_db(version)?,
                     target: id_from_db(&target)?,
                     updated_at_ms,
+                    actor,
                 })
             })
             .collect()
     }
 
-    async fn land_commit(
+    async fn land_commit_as(
         &self,
         repo: &str,
         name: &str,
@@ -237,6 +238,7 @@ impl MetaStore for SqliteMetaStore {
         target: ObjectId,
         landed: &[LandedChange],
         requests: &[IdempotencyRecord],
+        actor: &str,
     ) -> Result<RefState> {
         let repo_id = self.repo_id(repo).await?;
         let target_bytes = target.to_bytes().to_vec();
@@ -281,15 +283,18 @@ impl MetaStore for SqliteMetaStore {
                 current,
             });
         }
-        sqlx::query("INSERT INTO ref_log (repo_id, name, version, target, updated_at_ms) VALUES (?, ?, ?, ?, ?)")
-            .bind(repo_id)
-            .bind(name)
-            .bind(version_to_db(new_version)?)
-            .bind(&target_bytes)
-            .bind(now_ms())
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| backend("append ref log", e))?;
+        sqlx::query(
+            "INSERT INTO ref_log (repo_id, name, version, target, updated_at_ms, actor) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(repo_id)
+        .bind(name)
+        .bind(version_to_db(new_version)?)
+        .bind(&target_bytes)
+        .bind(now_ms())
+        .bind(actor)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| backend("append ref log", e))?;
 
         // 事件：变化前的提交取自审计日志中的上一版本（新建时没有）
         let old: Option<Vec<u8>> = match new_version.checked_sub(1).filter(|v| *v > 0) {

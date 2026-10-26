@@ -16,13 +16,16 @@ use crate::client::Client;
 use crate::error::{Error, Result};
 
 /// One move of a ref (`scn reflog`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefLogEntry {
     /// The ref's version after the move (1: created).
     pub version: u64,
     pub changeset: ObjectId,
     pub updated_at_ms: i64,
     pub how: v1::RefMove,
+    /// Who moved it, comma-separated when several requests landed together; empty when the
+    /// server did not record it.
+    pub actor: String,
 }
 
 /// ref 当前状态。
@@ -369,6 +372,7 @@ impl Client {
                     changeset: id_from(&e.changeset_id, "changeset id")?,
                     updated_at_ms: e.updated_at_ms,
                     how: e.r#move(),
+                    actor: e.actor.clone(),
                 })
             })
             .collect::<Result<_>>()?;
