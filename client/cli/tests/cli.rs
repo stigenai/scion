@@ -1021,6 +1021,76 @@ async fn grep_searches_the_commit_on_the_server() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn annotated_tags_carry_a_message_and_a_tagger() {
+    use scion_store::MetaStore;
+    let store = Arc::new(MemStore::new());
+    store.create_repo("app").await.expect("repo");
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let url = format!("http://{}", listener.local_addr().expect("addr"));
+    let app = App {
+        config: Arc::new(ServerConfig::default()),
+        meta: store.clone(),
+        blobs: store,
+    };
+    tokio::spawn(serve(listener, app, std::future::pending()));
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let wc = root.join("app");
+        let as_ada = |args: &[&str]| {
+            Command::new(env!("CARGO_BIN_EXE_scn"))
+                .current_dir(&wc)
+                .args(args)
+                .env_remove("SCION_ENDPOINT")
+                .env_remove("SCION_TOKEN")
+                .env_remove("SCION_REPO")
+                .env("SCION_AUTHOR", "Ada <ada@example.com>")
+                .env("SCION_NO_DAEMON", "1")
+                .output()
+                .expect("run scn")
+        };
+        let text = |o: std::process::Output| String::from_utf8_lossy(&o.stdout).into_owned();
+        json_of(&scn_in(&root, &["clone", &format!("{url}/app"), "--json"]));
+        std::fs::write(wc.join("a.txt"), "a").expect("write");
+        json_of(&as_ada(&["commit", "-m", "first", "--json"]));
+        json_of(&as_ada(&["land", "--json"]));
+
+        json_of(&as_ada(&["tag", "v0", "--json"]));
+        json_of(&as_ada(&[
+            "tag",
+            "-a",
+            "v1",
+            "-m",
+            "Release 1",
+            "-m",
+            "Notes.",
+            "--json",
+        ]));
+        assert_eq!(text(as_ada(&["tag"])), "v0\nv1\n");
+        assert_eq!(text(as_ada(&["tag", "-n"])), "v0\nv1              Release 1\n");
+        let v = json_of(&as_ada(&["tag", "--json"]));
+        assert_eq!(v["tags"][1]["message"], "Release 1\n\nNotes.");
+        assert!(v["tags"][0].get("message").is_none());
+
+        let shown = text(as_ada(&["show", "v1"]));
+        assert!(
+            shown.starts_with("tag v1\nTagger: Ada <ada@example.com>\nDate:   ")
+                && shown.contains("\n\nRelease 1\n\nNotes.\n\ncommit c1"),
+            "{shown}"
+        );
+        assert!(text(as_ada(&["show", "v0"])).starts_with("commit c1"));
+        assert!(text(as_ada(&["show", "tags/v1"])).starts_with("tag v1\n"));
+        let v = json_of(&as_ada(&["show", "v1", "--json"]));
+        assert_eq!(v["tag"]["name"], "v1");
+        // -a needs a message
+        assert_eq!(as_ada(&["tag", "-a", "v2"]).status.code(), Some(2));
+    })
+    .await
+    .expect("test");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn clone_commit_land_sync_workflow() {
     use scion_store::MetaStore;
     let store = Arc::new(MemStore::new());

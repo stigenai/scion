@@ -295,6 +295,7 @@ pub async fn serve(
     let hub_for_shutdown = hub.clone();
     let ref_svc = Arc::new(
         RefSvc::new(app.meta.clone(), hub)
+            .with_blobs(app.blobs.clone())
             .with_guard(guard.clone())
             .with_pre_land(pre_land),
     );

@@ -107,6 +107,17 @@ pub struct RefState {
     pub version: u64,
 }
 
+/// What an annotated tag says about the commit it names. It counts only while `target` is
+/// still the tag ref's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagAnnotation {
+    pub target: ObjectId,
+    pub tagger: scion_object::Signature,
+    pub message: String,
+    /// The git tag object it came from (a push or an import), kept byte for byte.
+    pub git_object: Option<Vec<u8>>,
+}
+
 /// One move of a ref, from its audit log.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RefLogEntry {
@@ -499,6 +510,17 @@ pub trait MetaStore: Send + Sync + 'static {
     /// [`Error::RefVersionMismatch`]（`current` 为当前版本）。
     async fn delete_ref(&self, _repo: &str, _name: &str, _expect: Option<u64>) -> Result<()> {
         Err(unsupported("ref deletion"))
+    }
+
+    /// Saves (or replaces) the annotation of tag ref `name`.
+    async fn put_tag_annotation(&self, _repo: &str, _name: &str, _annotation: &TagAnnotation) -> Result<()> {
+        Err(unsupported("tag annotations"))
+    }
+
+    /// The annotations of the repository's tags, by ref name (rows whose target the ref has since
+    /// left included: callers compare).
+    async fn tag_annotations(&self, _repo: &str) -> Result<HashMap<String, TagAnnotation>> {
+        Err(unsupported("tag annotations"))
     }
 
     /// The ref's moves, newest first: versions below `before` (all when None), at most `limit`.

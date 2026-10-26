@@ -1392,7 +1392,7 @@ pub async fn pick(
 }
 
 /// A signature made now, in UTC.
-fn signature_now(name: String, email: String) -> scion_client::Signature {
+pub(crate) fn signature_now(name: String, email: String) -> scion_client::Signature {
     let time_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as i64);
@@ -1405,7 +1405,7 @@ fn signature_now(name: String, email: String) -> scion_client::Signature {
 }
 
 /// Who makes new commits here: SCION_AUTHOR, else the configured author; no hint when unset.
-fn own_author() -> Option<(String, String)> {
+pub(crate) fn own_author() -> Option<(String, String)> {
     if let Some(a) = std::env::var("SCION_AUTHOR").ok().and_then(|a| parse_author(&a).ok()) {
         return Some(a);
     }

@@ -12,7 +12,8 @@ use crate::repo::validate_repo_name;
 use crate::{
     BlobStore, ChangesetRecord, IdempotencyRecord, IndexedObject, LandedChange, Lease, MetaStore, OrgMember, OrgRecord,
     PackLocation, PackedObject, PathChange, PathHistoryEntry, Redaction, RedactionFilter, RefEvent, RefExpect,
-    RefLogEntry, RefState, RepoFilter, RepoInfo, RepoPatch, TokenRecord, path_within, prefix_upper_bound,
+    RefLogEntry, RefState, RepoFilter, RepoInfo, RepoPatch, TagAnnotation, TokenRecord, path_within,
+    prefix_upper_bound,
 };
 
 #[derive(Clone)]
@@ -30,6 +31,8 @@ struct RepoData {
     idempotency: HashMap<String, IdempotencyRecord>,
     /// ref → its moves, oldest first.
     ref_log: HashMap<String, Vec<RefLogEntry>>,
+    /// tag ref → its annotation.
+    tags: HashMap<String, TagAnnotation>,
 }
 
 impl RepoData {
@@ -44,6 +47,7 @@ impl RepoData {
             landed: HashMap::new(),
             idempotency: HashMap::new(),
             ref_log: HashMap::new(),
+            tags: HashMap::new(),
         }
     }
 
@@ -260,6 +264,8 @@ impl MetaStore for MemStore {
                 info,
                 landed: HashMap::new(),
                 idempotency: HashMap::new(),
+                // As in SQL: a fork's ref log starts afresh
+                ref_log: HashMap::new(),
                 ..src
             },
         );
@@ -327,6 +333,7 @@ impl MetaStore for MemStore {
             }),
             (Some(_), _) => {
                 data.ref_log.remove(name);
+                data.tags.remove(name);
                 if let Some(old) = data.refs.remove(name) {
                     inner.push_event(repo, name, Some(old.target), None, old.version);
                 }
@@ -342,6 +349,19 @@ impl MetaStore for MemStore {
     async fn get_ref(&self, repo: &str, name: &str) -> Result<Option<RefState>> {
         let inner = self.read()?;
         Ok(repo_ref(&inner, repo)?.refs.get(name).copied())
+    }
+
+    async fn put_tag_annotation(&self, repo: &str, name: &str, annotation: &TagAnnotation) -> Result<()> {
+        let mut inner = self.write()?;
+        repo_mut(&mut inner, repo)?
+            .tags
+            .insert(name.to_owned(), annotation.clone());
+        Ok(())
+    }
+
+    async fn tag_annotations(&self, repo: &str) -> Result<HashMap<String, TagAnnotation>> {
+        let inner = self.read()?;
+        Ok(repo_ref(&inner, repo)?.tags.clone())
     }
 
     async fn ref_log(&self, repo: &str, name: &str, before: Option<u64>, limit: usize) -> Result<Vec<RefLogEntry>> {
@@ -907,6 +927,7 @@ mod tests {
         testsuite::repo_admin(&MemStore::new()).await;
         testsuite::ref_events(&MemStore::new()).await;
         testsuite::ref_log(&MemStore::new()).await;
+        testsuite::tag_annotations(&MemStore::new()).await;
     }
 
     #[tokio::test]

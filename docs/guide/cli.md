@@ -40,6 +40,7 @@ scn uncommit                        # drop the newest pending commit, keep its c
 scn land                            # land on main; if main moved, the server rebases (three-way merge)
 scn sync                            # pull others' changes; rebases the pending commits one by one (three-way, line level)
 scn tag v1.0                        # tag the current commit; `scn tag` lists, `scn log v1.0` uses it
+scn tag -a v1.1 -m "Release 1.1"    # an annotated tag, with a message; `scn show v1.1` shows it
 scn switch -c feature               # create a branch at the current snapshot and switch to it; `scn switch main` back
 scn switch --detach v1.0            # the files of v1.0 on no branch, to build or test; `scn switch main` back
 scn merge feature                   # merge a branch as a pending merge commit (three-way, line level); then `scn land`

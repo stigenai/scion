@@ -128,9 +128,88 @@ pub fn rebuilds(raw: &[u8], c: &GitCommit) -> bool {
     commit_body(None, &c.tree, &c.parents, &c.author, &c.committer, &c.message) == raw
 }
 
+/// The body of a git tag object naming commit `object` (an annotated tag, as `git tag -a` writes
+/// it: the message ends in a newline).
+pub fn tag_body(object: &[u8; 20], name: &str, tagger: &Signature, message: &str) -> Vec<u8> {
+    let mut out = format!(
+        "object {}\ntype commit\ntag {name}\ntagger {}\n\n{message}",
+        hex::encode(object),
+        ident(tagger)
+    );
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.into_bytes()
+}
+
+/// A git tag object's fields.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitTag {
+    pub object: [u8; 20],
+    /// What it tags: `commit`, `tree`, `blob` or `tag`.
+    pub kind: String,
+    pub name: String,
+    /// Old tags may have none.
+    pub tagger: Option<Signature>,
+    /// The message, a signature included; bytes that are not UTF-8 are replaced.
+    pub message: String,
+}
+
+/// Parses a tag object; `None` when `object`, `type` or `tag` is missing or malformed.
+pub fn parse_tag(raw: &[u8]) -> Option<GitTag> {
+    let split = raw.windows(2).position(|w| w == b"\n\n");
+    let (head, message) = match split {
+        Some(i) => (&raw[..i], &raw[i + 2..]),
+        None => (raw, &raw[raw.len()..]),
+    };
+    let head = std::str::from_utf8(head).ok()?;
+    let (mut object, mut kind, mut name, mut tagger) = (None, None, None, None);
+    for line in head.lines() {
+        match line.split_once(' ') {
+            Some(("object", v)) if object.is_none() => object = Some(sha(v)?),
+            Some(("type", v)) if kind.is_none() => kind = Some(v.to_owned()),
+            Some(("tag", v)) if name.is_none() => name = Some(v.to_owned()),
+            Some(("tagger", v)) if tagger.is_none() => tagger = Some(parse_ident(v)?),
+            _ => {}
+        }
+    }
+    Some(GitTag {
+        object: object?,
+        kind: kind?,
+        name: name?,
+        tagger,
+        message: String::from_utf8_lossy(message).into_owned(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tag_objects_round_trip() {
+        let tagger = sig("Ada", 1_700_000_000_000, 480);
+        let body = tag_body(&[7; 20], "v1.0", &tagger, "Release 1.0");
+        assert_eq!(
+            String::from_utf8_lossy(&body),
+            format!(
+                "object {}\ntype commit\ntag v1.0\ntagger {}\n\nRelease 1.0\n",
+                "07".repeat(20),
+                ident(&tagger)
+            )
+        );
+        let t = parse_tag(&body).expect("parse");
+        assert_eq!(
+            (t.object, t.kind.as_str(), t.name.as_str(), t.tagger, t.message.as_str()),
+            ([7; 20], "commit", "v1.0", Some(tagger.clone()), "Release 1.0\n")
+        );
+        assert_eq!(tag_body(&[7; 20], "v1.0", &tagger, "Release 1.0\n"), body);
+        let old = format!("object {}\ntype tree\ntag t", "07".repeat(20));
+        let t = parse_tag(old.as_bytes()).expect("no tagger, no message");
+        assert_eq!((t.kind.as_str(), t.tagger, t.message.as_str()), ("tree", None, ""));
+        assert!(parse_tag(b"type commit\ntag x\n\nm").is_none());
+        assert!(parse_tag(b"object zz\ntype commit\ntag x\n").is_none());
+    }
 
     fn sig(name: &str, time_ms: i64, tz: i32) -> Signature {
         Signature {

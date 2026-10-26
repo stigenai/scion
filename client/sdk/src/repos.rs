@@ -11,7 +11,23 @@ use scion_proto::v1::{
 
 use crate::client::Client;
 use crate::error::{Error, Result};
-use crate::ops::id_from;
+use crate::ops::{Signature, id_from};
+
+/// A tag, and for an annotated one what it says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagInfo {
+    /// Without `tags/`.
+    pub name: String,
+    pub target: ObjectId,
+    pub annotation: Option<TagNote>,
+}
+
+/// What an annotated tag says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagNote {
+    pub message: String,
+    pub tagger: Signature,
+}
 
 /// 仓库属性。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,15 +196,78 @@ impl Client {
 
     /// 在当前仓库创建 ref（分支），返回 (提交, 版本)。
     pub async fn create_ref(&self, name: &str, target: &ObjectId) -> Result<(ObjectId, u64)> {
+        self.create_ref_with(name, target, None).await
+    }
+
+    /// Creates the annotated tag `name` (without `tags/`) on `target`, with `message` and
+    /// `tagger` (None: the server takes the caller and the time).
+    pub async fn create_annotated_tag(
+        &self,
+        name: &str,
+        target: &ObjectId,
+        message: &str,
+        tagger: Option<&Signature>,
+    ) -> Result<(ObjectId, u64)> {
+        let annotation = v1::TagAnnotation {
+            message: message.to_owned(),
+            tagger: tagger.map(Signature::to_proto),
+            git_object: Bytes::new(),
+        };
+        self.create_ref_with(&format!("tags/{name}"), target, Some(annotation))
+            .await
+    }
+
+    async fn create_ref_with(
+        &self,
+        name: &str,
+        target: &ObjectId,
+        annotation: Option<v1::TagAnnotation>,
+    ) -> Result<(ObjectId, u64)> {
         let req = CreateRefRequest {
             repo: self.repo()?,
             r#ref: name.to_owned(),
             changeset_id: Bytes::copy_from_slice(&target.to_bytes()),
+            annotation,
         };
         let resp = RefServiceClient::new(self.channel.clone())
             .create_ref(self.request(req)?)
             .await?;
         ref_of(resp.into_inner().r#ref)
+    }
+
+    /// The repository's tags, by name, with what the annotated ones say.
+    pub async fn list_tags(&self) -> Result<Vec<TagInfo>> {
+        let req = v1::ListRefsRequest { repo: self.repo()? };
+        let resp = RefServiceClient::new(self.channel.clone())
+            .list_refs(self.request(req)?)
+            .await?
+            .into_inner();
+        resp.refs
+            .into_iter()
+            .filter_map(|r| {
+                let name = r.name.strip_prefix("tags/")?.to_owned();
+                Some((name, r))
+            })
+            .map(|(name, r)| {
+                let annotation = r.annotation.map(|a| {
+                    let t = a.tagger.unwrap_or_default();
+                    TagNote {
+                        message: a.message,
+                        tagger: Signature {
+                            name: t.name,
+                            email: t.email,
+                            time_ms: t.time_ms,
+                            tz_offset_minutes: t.tz_offset_minutes,
+                        },
+                    }
+                });
+                Ok(TagInfo {
+                    name,
+                    target: id_from(&r.changeset_id, "changeset id")?,
+                    annotation,
+                })
+            })
+            .collect()
     }
 
     /// 把 ref 直接指向 `target`（可以不是快进）。`expected_version` 为 `None` 时不检查版本。
@@ -289,6 +368,7 @@ mod tests {
             name: "x".into(),
             changeset_id: Bytes::from_static(b"short"),
             version: 1,
+            annotation: None,
         };
         assert!(ref_of(Some(bad)).is_err());
         assert_eq!(opt_id(&[]).expect("empty"), None);

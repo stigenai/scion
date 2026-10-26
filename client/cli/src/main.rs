@@ -144,7 +144,9 @@ enum Command {
     },
     /// Tags: fixed names for commits. `scn tag` lists, `scn tag NAME [REV]` creates (default
     /// HEAD), `scn tag -d NAME` deletes. A tag name works as a revision (`scn log v1.0`).
-    #[command(after_help = "Examples:\n  scn tag\n  scn tag v1.0\n  scn tag v0.9 main~5\n  scn tag -d v0.9")]
+    #[command(after_help = "Examples:\n  scn tag\n  scn tag v1.0\n  scn tag v0.9 main~5\n  \
+        scn tag -a v1.1 -m \"Release 1.1\"   # an annotated tag: a message and who tagged\n  \
+        scn tag -n\n  scn tag -d v0.9")]
     Tag {
         /// Create this tag.
         name: Option<String>,
@@ -157,6 +159,15 @@ enum Command {
         /// List the tags (what `scn tag` with no name does).
         #[arg(short = 'l', long, conflicts_with_all = ["name", "delete"])]
         list: bool,
+        /// Make an annotated tag (needs -m).
+        #[arg(short = 'a', long, requires = "message")]
+        annotate: bool,
+        /// The annotated tag's message (makes it annotated). Several -m become paragraphs.
+        #[arg(short, long, requires = "name")]
+        message: Vec<String>,
+        /// List with the first line of each annotated tag's message.
+        #[arg(short = 'n', conflicts_with_all = ["name", "delete"])]
+        notes: bool,
     },
     /// Show local changes, like `git status`.
     Status {
@@ -1313,11 +1324,19 @@ async fn run(cli: Cli) -> ExitCode {
             }
         },
         Command::Tag {
-            name, revision, delete, ..
+            name,
+            revision,
+            delete,
+            message,
+            notes,
+            ..
         } => match (name, delete) {
-            (Some(name), _) => emit(repos::create_tag(&ctx, &name, revision.as_deref()).await, json),
+            (Some(name), _) => emit(
+                repos::create_tag(&ctx, &name, revision.as_deref(), paragraphs(&message).as_deref()).await,
+                json,
+            ),
             (None, Some(name)) => emit(repos::delete_tag(&ctx, &name).await, json),
-            (None, None) => emit(repos::tags(&ctx).await, json),
+            (None, None) => emit(repos::tags(&ctx, notes).await, json),
         },
         Command::Status {
             short,

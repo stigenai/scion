@@ -9,7 +9,7 @@ use scion_object::ObjectId;
 use scion_store::{
     ChangesetRecord, Error, IdempotencyRecord, IndexedObject, LandedChange, Lease, MetaStore, OrgMember, OrgRecord,
     PackLocation, PackedObject, PathChange, PathHistoryEntry, Redaction, RedactionFilter, RefEvent, RefExpect,
-    RefLogEntry, RefState, RepoFilter, RepoInfo, RepoPatch, Result, TokenRecord, prefix_upper_bound,
+    RefLogEntry, RefState, RepoFilter, RepoInfo, RepoPatch, Result, TagAnnotation, TokenRecord, prefix_upper_bound,
     validate_repo_name,
 };
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
@@ -245,6 +245,50 @@ impl MetaStore for PgMetaStore {
             })
         })
         .transpose()
+    }
+
+    async fn put_tag_annotation(&self, repo: &str, name: &str, a: &TagAnnotation) -> Result<()> {
+        let repo_id = self.repo_id(repo).await?;
+        sqlx::query("INSERT INTO tag_annotations (repo_id, name, target, tagger_name, tagger_email, time_ms, tz_offset_min, message, git_object) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (repo_id, name) DO UPDATE SET target = excluded.target, tagger_name = excluded.tagger_name, tagger_email = excluded.tagger_email, time_ms = excluded.time_ms, tz_offset_min = excluded.tz_offset_min, message = excluded.message, git_object = excluded.git_object")
+            .bind(repo_id)
+            .bind(name)
+            .bind(a.target.to_bytes().to_vec())
+            .bind(&a.tagger.name)
+            .bind(&a.tagger.email)
+            .bind(a.tagger.time_ms)
+            .bind(a.tagger.tz_offset_minutes)
+            .bind(&a.message)
+            .bind(a.git_object.as_deref())
+            .execute(&self.pool)
+            .await
+            .map_err(|e| backend("put tag annotation", e))?;
+        Ok(())
+    }
+
+    async fn tag_annotations(&self, repo: &str) -> Result<HashMap<String, TagAnnotation>> {
+        let repo_id = self.repo_id(repo).await?;
+        type Row = (String, Vec<u8>, String, String, i64, i32, String, Option<Vec<u8>>);
+        let rows: Vec<Row> = sqlx::query_as("SELECT name, target, tagger_name, tagger_email, time_ms, tz_offset_min, message, git_object FROM tag_annotations WHERE repo_id = $1")
+            .bind(repo_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| backend("read tag annotations", e))?;
+        rows.into_iter()
+            .map(|(name, target, tagger_name, email, time_ms, tz, message, git_object)| {
+                let a = TagAnnotation {
+                    target: id_from_db(&target)?,
+                    tagger: scion_object::Signature {
+                        name: tagger_name,
+                        email,
+                        time_ms,
+                        tz_offset_minutes: tz,
+                    },
+                    message,
+                    git_object,
+                };
+                Ok((name, a))
+            })
+            .collect()
     }
 
     async fn ref_log(&self, repo: &str, name: &str, before: Option<u64>, limit: usize) -> Result<Vec<RefLogEntry>> {
@@ -1096,6 +1140,12 @@ impl MetaStore for PgMetaStore {
         )
         .await?;
         // 重新创建的 ref 版本从 1 开始，旧的审计记录会与之冲突：随 ref 一起删除
+        sqlx::query("DELETE FROM tag_annotations WHERE repo_id = $1 AND name = $2")
+            .bind(repo_id)
+            .bind(name)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| backend("delete tag annotation", e))?;
         sqlx::query("DELETE FROM ref_log WHERE repo_id = $1 AND name = $2")
             .bind(repo_id)
             .bind(name)
@@ -1878,6 +1928,7 @@ mod tests {
         testsuite::repo_admin(&s).await;
         testsuite::ref_events(&s).await;
         testsuite::ref_log(&s).await;
+        testsuite::tag_annotations(&s).await;
     }
 
     #[tokio::test]

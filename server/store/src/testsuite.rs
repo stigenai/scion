@@ -1456,6 +1456,60 @@ pub async fn repo_admin<S: MetaStore + ?Sized>(s: &S) {
 }
 
 /// ref 变化的事件流：与 ref 修改同一事务写入，按 seq 递增；失败的 CAS 不产生事件；fork 为每个 ref 产生创建事件。
+/// Tag annotations: saved, replaced, copied by a fork, gone with the ref.
+pub async fn tag_annotations<S: MetaStore + ?Sized>(s: &S) {
+    use crate::TagAnnotation;
+    s.create_repo("tags/a").await.expect("create");
+    let note = |target, message: &str, git_object: Option<Vec<u8>>| TagAnnotation {
+        target,
+        tagger: scion_object::Signature {
+            name: "Ada".into(),
+            email: "ada@example.com".into(),
+            time_ms: 1_700_000_000_000,
+            tz_offset_minutes: -300,
+        },
+        message: message.into(),
+        git_object,
+    };
+    assert!(s.tag_annotations("tags/a").await.expect("none").is_empty());
+    s.cas_ref("tags/a", "tags/v1", RefExpect::Absent, cs(121))
+        .await
+        .expect("tag");
+    s.put_tag_annotation("tags/a", "tags/v1", &note(cs(121), "first", None))
+        .await
+        .expect("put");
+    s.put_tag_annotation(
+        "tags/a",
+        "tags/v1",
+        &note(cs(121), "v1\n\nnotes", Some(b"object ...".to_vec())),
+    )
+    .await
+    .expect("replace");
+    s.cas_ref("tags/a", "tags/v2", RefExpect::Absent, cs(122))
+        .await
+        .expect("tag");
+    s.put_tag_annotation("tags/a", "tags/v2", &note(cs(122), "v2", None))
+        .await
+        .expect("put");
+    let all = s.tag_annotations("tags/a").await.expect("list");
+    assert_eq!(all.len(), 2);
+    assert_eq!(
+        all["tags/v1"],
+        note(cs(121), "v1\n\nnotes", Some(b"object ...".to_vec()))
+    );
+    s.delete_ref("tags/a", "tags/v2", None).await.expect("delete");
+    let left: Vec<String> = s.tag_annotations("tags/a").await.expect("list").into_keys().collect();
+    assert_eq!(left, ["tags/v1"]);
+    s.fork_repo("tags/a", "tags/fork", 1).await.expect("fork");
+    let forked: Vec<String> = s
+        .tag_annotations("tags/fork")
+        .await
+        .expect("list")
+        .into_keys()
+        .collect();
+    assert_eq!(forked, ["tags/v1"]);
+}
+
 /// The ref log: one entry per move, newest first, paged by version, gone with the ref.
 pub async fn ref_log<S: MetaStore + ?Sized>(s: &S) {
     s.create_repo("log/a").await.expect("create");

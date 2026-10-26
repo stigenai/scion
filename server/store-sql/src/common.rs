@@ -240,6 +240,7 @@ pub fn repo_from_row(r: RepoRow) -> scion_store::RepoInfo {
 pub const REPO_TABLES: &[(&str, &str)] = &[
     ("refs", "name"),
     ("ref_log", "name, version"),
+    ("tag_annotations", "name"),
     ("landed", "ref, change_id"),
     ("idempotency", "request_id"),
     ("redactions", "object_id"),
@@ -263,6 +264,10 @@ pub const FORK_TABLES: &[(&str, &str)] = &[
     ),
     ("derived", "kind, version, key, value"),
     ("path_changes", "path, cs_id, generation, deleted"),
+    (
+        "tag_annotations",
+        "name, target, tagger_name, tagger_email, time_ms, tz_offset_min, message, git_object",
+    ),
 ];
 
 /// 一批删除的行数（每次清除调用最多删除这么多行）。

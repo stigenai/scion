@@ -40,6 +40,7 @@ scn uncommit                        # 撤掉最新的一个待合入提交，它
 scn land                            # 合入 main；main 已经前进时，服务端会 rebase（三方合并）
 scn sync                            # 拉取别人的改动；待合入的提交逐个按行三方合并 rebase
 scn tag v1.0                        # 给当前提交打标签；`scn tag` 列出标签，`scn log v1.0` 可以直接用它
+scn tag -a v1.1 -m "Release 1.1"    # 附注标签，带一段说明；`scn show v1.1` 显示它
 scn switch -c feature               # 在当前快照上建分支并切换过去；`scn switch main` 切回来
 scn switch --detach v1.0            # 检出 v1.0 的文件（不在任何分支上），用来构建或测试；`scn switch main` 切回来
 scn merge feature                   # 把一个分支合并成待合入的合并提交（三方、按行合并）；然后 `scn land`

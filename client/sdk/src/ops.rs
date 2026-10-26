@@ -95,7 +95,7 @@ pub struct Signature {
 }
 
 impl Signature {
-    fn to_proto(&self) -> v1::Signature {
+    pub(crate) fn to_proto(&self) -> v1::Signature {
         v1::Signature {
             name: self.name.clone(),
             email: self.email.clone(),

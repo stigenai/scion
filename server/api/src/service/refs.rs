@@ -9,13 +9,14 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use scion_object::ObjectId;
+use scion_proto::v1;
 use scion_proto::v1::ref_service_server::RefService;
 use scion_proto::v1::{
     CreateRefRequest, CreateRefResponse, DeleteRefRequest, DeleteRefResponse, ListRefLogRequest, ListRefLogResponse,
     ListRefsRequest, ListRefsResponse, RefEvent, RefInfo, RefLogEntry, RefMove, ResolveRefRequest, ResolveRefResponse,
     UpdateRefRequest, UpdateRefResponse, WatchRefsRequest, WatchRefsResponse,
 };
-use scion_store::{MetaStore, RefExpect, RefState};
+use scion_store::{BlobStore, MetaStore, RefExpect, RefState, TagAnnotation};
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
@@ -38,6 +39,8 @@ pub struct RefSvc {
     hub: Arc<RefHub>,
     guard: Arc<Guard>,
     pre_land: Option<Arc<crate::prehook::PreLand>>,
+    /// For a tag's git object: its target's git SHA is computed from the objects.
+    blobs: Option<Arc<dyn BlobStore>>,
 }
 
 impl RefSvc {
@@ -47,7 +50,73 @@ impl RefSvc {
             hub,
             guard: Guard::disabled(),
             pre_land: None,
+            blobs: None,
         }
+    }
+
+    pub fn with_blobs(mut self, blobs: Arc<dyn BlobStore>) -> Self {
+        self.blobs = Some(blobs);
+        self
+    }
+
+    /// Checks an annotation for tag `reference` on `target` and fills in what is left out: the
+    /// caller as the tagger, now as the time. A git object must be a tag of that name on the
+    /// target's commit.
+    async fn annotation(
+        &self,
+        p: &Principal,
+        repo: &str,
+        reference: &str,
+        target: ObjectId,
+        a: v1::TagAnnotation,
+    ) -> Result<TagAnnotation, Status> {
+        let Some(name) = reference.strip_prefix(scion_land::TAG_PREFIX) else {
+            return Err(Status::invalid_argument("only tags (tags/NAME) can be annotated"));
+        };
+        let tagger = match a.tagger {
+            Some(t) if !t.name.is_empty() => {
+                if t.tz_offset_minutes.abs() > 1440 {
+                    return Err(Status::invalid_argument("tagger time zone out of range"));
+                }
+                scion_object::Signature {
+                    name: t.name,
+                    email: t.email,
+                    time_ms: t.time_ms,
+                    tz_offset_minutes: t.tz_offset_minutes,
+                }
+            }
+            _ => scion_object::Signature {
+                name: p.subject.clone(),
+                email: String::new(),
+                time_ms: crate::service::repos::now_ms(),
+                tz_offset_minutes: 0,
+            },
+        };
+        let git_object = if a.git_object.is_empty() {
+            None
+        } else {
+            let tag = scion_object::git::parse_tag(&a.git_object)
+                .ok_or_else(|| Status::invalid_argument("git_object is not a git tag object"))?;
+            let blobs = self
+                .blobs
+                .as_ref()
+                .ok_or_else(|| Status::unimplemented("this server does not take git tag objects"))?;
+            let sha = scion_query::derive_git_sha(self.meta.as_ref(), blobs.as_ref(), repo, target)
+                .await
+                .map_err(crate::service::history::from_query)?;
+            if tag.kind != "commit" || tag.name != name || tag.object != sha {
+                return Err(Status::invalid_argument(format!(
+                    "git_object must be the tag {name:?} of the target commit"
+                )));
+            }
+            Some(a.git_object.to_vec())
+        };
+        Ok(TagAnnotation {
+            target,
+            tagger,
+            message: a.message,
+            git_object,
+        })
     }
 
     /// 创建或移动 ref 之前调用外部检查（与合入相同）。
@@ -100,6 +169,20 @@ fn ref_info(name: String, s: RefState) -> RefInfo {
         name,
         changeset_id: Bytes::copy_from_slice(&s.target.to_bytes()),
         version: s.version,
+        annotation: None,
+    }
+}
+
+pub(crate) fn proto_annotation(a: &TagAnnotation) -> v1::TagAnnotation {
+    v1::TagAnnotation {
+        message: a.message.clone(),
+        tagger: Some(v1::Signature {
+            name: a.tagger.name.clone(),
+            email: a.tagger.email.clone(),
+            time_ms: a.tagger.time_ms,
+            tz_offset_minutes: a.tagger.tz_offset_minutes,
+        }),
+        git_object: a.git_object.clone().map(Bytes::from).unwrap_or_default(),
     }
 }
 
@@ -268,8 +351,23 @@ impl RefService for RefSvc {
         authorize_any(&self.guard, &p, &req.repo, Action::Read).await?;
         check_repo(self.meta.as_ref(), &req.repo).await?;
         let refs = self.meta.list_refs(&req.repo).await.map_err(status::from_store)?;
+        let notes = if refs.iter().any(|(n, _)| scion_land::is_tag(n)) {
+            self.meta.tag_annotations(&req.repo).await.map_err(status::from_store)?
+        } else {
+            Default::default()
+        };
         Ok(Response::new(ListRefsResponse {
-            refs: refs.into_iter().map(|(name, s)| ref_info(name, s)).collect(),
+            refs: refs
+                .into_iter()
+                .map(|(name, s)| {
+                    // Only while the tag still names the commit it was annotated on
+                    let annotation = notes.get(&name).filter(|a| a.target == s.target).map(proto_annotation);
+                    RefInfo {
+                        annotation,
+                        ..ref_info(name, s)
+                    }
+                })
+                .collect(),
         }))
     }
 
@@ -277,12 +375,25 @@ impl RefService for RefSvc {
         let p = principal(&request);
         let req = request.into_inner();
         let target = self.writable(&p, &req.repo, &req.r#ref, &req.changeset_id).await?;
+        let annotation = match req.annotation {
+            Some(a) => Some(self.annotation(&p, &req.repo, &req.r#ref, target, a).await?),
+            None => None,
+        };
         let state = self
             .meta
             .cas_ref(&req.repo, &req.r#ref, RefExpect::Absent, target)
             .await
             .map_err(status::from_store)?;
-        let info = self.written(&p, &req.repo, &req.r#ref, state, "created").await;
+        // After the ref, so a refused create leaves an existing tag's annotation alone; if it
+        // cannot be saved, the tag goes again rather than stay without it
+        if let Some(a) = &annotation {
+            if let Err(e) = self.meta.put_tag_annotation(&req.repo, &req.r#ref, a).await {
+                let _ = self.meta.delete_ref(&req.repo, &req.r#ref, Some(state.version)).await;
+                return Err(status::from_store(e));
+            }
+        }
+        let mut info = self.written(&p, &req.repo, &req.r#ref, state, "created").await;
+        info.annotation = annotation.as_ref().map(proto_annotation);
         Ok(Response::new(CreateRefResponse { r#ref: Some(info) }))
     }
 
@@ -434,6 +545,7 @@ mod tests {
             repo: REPO.into(),
             r#ref: "main".into(),
             changeset_id: id(a.id),
+            annotation: None,
         }))
         .await
         .expect("create");
@@ -488,6 +600,107 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn annotated_tags_keep_what_they_say() {
+        let (store, w) = svc().await;
+        let hub = RefHub::new(store.clone(), std::time::Duration::from_secs(3600));
+        let refs = RefSvc::new(store.clone(), hub.clone()).with_blobs(store.clone());
+        let a = w
+            .create(REPO, &spec_to_changeset(spec(&[], vec![]), 10).expect("s"))
+            .await
+            .expect("a");
+        let create = |name: &str, annotation| CreateRefRequest {
+            repo: REPO.into(),
+            r#ref: name.into(),
+            changeset_id: Bytes::copy_from_slice(&a.id.to_bytes()),
+            annotation,
+        };
+        let note = |message: &str, git_object: Vec<u8>| v1::TagAnnotation {
+            message: message.into(),
+            tagger: None,
+            git_object: git_object.into(),
+        };
+        // The caller tags, now
+        let made = refs
+            .create_ref(Request::new(create("tags/v1", Some(note("Release 1", vec![])))))
+            .await
+            .expect("tag")
+            .into_inner()
+            .r#ref
+            .expect("ref");
+        let tagger = made.annotation.as_ref().and_then(|a| a.tagger.clone()).expect("tagger");
+        assert!(tagger.time_ms > 0, "{tagger:?}");
+        // Creating it again is refused and leaves the annotation alone
+        let err = refs
+            .create_ref(Request::new(create("tags/v1", Some(note("other", vec![])))))
+            .await
+            .expect_err("exists");
+        assert_eq!(err.code(), Code::FailedPrecondition);
+        let listed = refs
+            .list_refs(Request::new(ListRefsRequest { repo: REPO.into() }))
+            .await
+            .expect("list")
+            .into_inner()
+            .refs;
+        assert_eq!(
+            listed[0].annotation.as_ref().map(|a| a.message.as_str()),
+            Some("Release 1")
+        );
+
+        // A git tag object must be that tag of that commit
+        let sha = scion_query::derive_git_sha(store.as_ref(), store.as_ref(), REPO, a.id)
+            .await
+            .expect("sha");
+        let sig = scion_object::Signature {
+            name: "Ada".into(),
+            email: "ada@example.com".into(),
+            time_ms: 1_700_000_000_000,
+            tz_offset_minutes: 60,
+        };
+        let raw = scion_object::git::tag_body(&sha, "v2", &sig, "signed\n");
+        let v2 = refs
+            .create_ref(Request::new(create("tags/v2", Some(note("signed\n", raw.clone())))))
+            .await
+            .expect("git tag")
+            .into_inner()
+            .r#ref
+            .expect("ref");
+        assert_eq!(v2.annotation.expect("note").git_object.as_ref(), raw.as_slice());
+        let wrong = scion_object::git::tag_body(&[0; 20], "v3", &sig, "x");
+        for (name, annotation, code) in [
+            ("tags/v3", note("x", wrong), Code::InvalidArgument),
+            ("tags/v3", note("x", raw), Code::InvalidArgument),
+            ("tags/v3", note("x", b"not a tag".to_vec()), Code::InvalidArgument),
+            ("main", note("x", vec![]), Code::InvalidArgument),
+        ] {
+            let err = refs
+                .create_ref(Request::new(create(name, Some(annotation))))
+                .await
+                .expect_err("refused");
+            assert_eq!(err.code(), code, "{name}: {err:?}");
+        }
+        let bad_tz = v1::TagAnnotation {
+            tagger: Some(v1::Signature {
+                name: "x".into(),
+                tz_offset_minutes: 2000,
+                ..Default::default()
+            }),
+            ..note("x", vec![])
+        };
+        let err = refs
+            .create_ref(Request::new(create("tags/v4", Some(bad_tz))))
+            .await
+            .expect_err("tz");
+        assert_eq!(err.code(), Code::InvalidArgument);
+        // Without the objects, a git tag cannot be checked
+        let raw = scion_object::git::tag_body(&sha, "v5", &sig, "x\n");
+        let err = RefSvc::new(store.clone(), hub)
+            .create_ref(Request::new(create("tags/v5", Some(note("x", raw)))))
+            .await
+            .expect_err("no blobs");
+        assert_eq!(err.code(), Code::Unimplemented);
+    }
+
+    #[tokio::test]
     async fn create_update_and_delete_refs() {
         let (store, w) = svc().await;
         let refs = RefSvc::new(
@@ -507,6 +720,7 @@ mod tests {
             repo: REPO.into(),
             r#ref: name.into(),
             changeset_id: id(target),
+            annotation: None,
         };
         let made = refs
             .create_ref(Request::new(create("feature/x", b.id)))

@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package scion.v1;
 
+import "scion/v1/write.proto";
+
 // ref 查询与管理。ref 是唯一的可变状态，结果永远不缓存。
 service RefService {
   rpc ResolveRef(ResolveRefRequest) returns (ResolveRefResponse);
@@ -75,6 +77,18 @@ message RefInfo {
   string name = 1;
   bytes changeset_id = 2;
   uint64 version = 3;
+  // Set for an annotated tag.
+  TagAnnotation annotation = 4;
+}
+
+// What an annotated tag says about the commit it names (git's tag object).
+message TagAnnotation {
+  string message = 1;
+  // Who tagged and when. Left out in CreateRef: the caller, now.
+  Signature tagger = 2;
+  // The git tag object as it was pushed or imported (signed tags keep their signature, and their
+  // git SHA); empty when the tag was made in Scion. Its `object` must be the target's git SHA.
+  bytes git_object = 3;
 }
 
 message ListRefsResponse {
@@ -86,6 +100,8 @@ message CreateRefRequest {
   string repo = 1;
   string ref = 2;
   bytes changeset_id = 3;
+  // Makes it an annotated tag; only for tags (refs named tags/...).
+  TagAnnotation annotation = 4;
 }
 
 message UpdateRefRequest {

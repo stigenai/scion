@@ -153,6 +153,7 @@ impl scion_git::receive::PushBackend for PushBackend {
                         repo,
                         r#ref: name,
                         changeset_id: id(new),
+                        annotation: None,
                     },
                 ))
                 .await

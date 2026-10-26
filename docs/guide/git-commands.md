@@ -23,7 +23,7 @@ A quick reference: which git commands you can type in `scn` as they are, which w
 | `git revert REV`, `-m N`, `--abort` | the same | One commit at a time, as a pending commit; then `scn land` |
 | `git cherry-pick REV`, `-x`, `-m N`, `--abort` | the same | One commit at a time; keeps its message and author |
 | `git branch [-v] [-a]`, `git branch NAME [REV]`, `git branch -d NAME`, `--show-current` | the same | Branches live on the server, so `-a` lists the same ones |
-| `git tag [-l]`, `git tag NAME [REV]`, `git tag -d NAME` | the same | Lightweight tags |
+| `git tag [-l] [-n]`, `git tag NAME [REV]`, `git tag -a NAME -m MSG [REV]`, `git tag -d NAME` | the same | Lightweight and annotated tags (no `-s`) |
 | `git log [REV] [-n N \| -N] [--oneline] [-- PATH]` | the same | |
 | `git show [REV] [-- PATH]` | the same | |
 | `git diff [--cached]`, `git diff A B`, `A..B`, `A...B` | the same | `--name-only`, `--name-status`, `--stat`, `-- PATH`; with no staging area, `--cached` / `--staged` show the same local changes |
@@ -72,4 +72,4 @@ Commands that read history also work outside a working copy with `--repo URL`, f
 
 ## Not available yet
 
-Interactive rebase, `add -p`, `bisect`, `REF@{N}` revisions, annotated tags, `remote add` and `fetch`. `scn init`, `fetch` and `remote add` say what to use instead. The git CLI itself can clone, fetch and push a Scion repository through the [git gateway](git-clients.md).
+Interactive rebase, `add -p`, `bisect`, `REF@{N}` revisions, signed tags, `remote add` and `fetch`. `scn init`, `fetch` and `remote add` say what to use instead. The git CLI itself can clone, fetch and push a Scion repository through the [git gateway](git-clients.md).

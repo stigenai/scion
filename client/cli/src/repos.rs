@@ -318,6 +318,9 @@ pub const TAG_PREFIX: &str = "tags/";
 pub struct TagOut {
     pub name: String,
     pub changeset: String,
+    /// An annotated tag's message.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -325,12 +328,22 @@ pub struct TagListOut {
     pub schema: &'static str,
     pub repo: String,
     pub tags: Vec<TagOut>,
+    /// `-n`: each name with the first line of its message.
+    #[serde(skip)]
+    pub notes: bool,
 }
 
-/// Like `git tag`: one name per line.
+/// Like `git tag`: one name per line; with -n git's `NAME            SUBJECT`.
 impl Render for TagListOut {
     fn text(&self) -> String {
-        self.tags.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join("\n")
+        self.tags
+            .iter()
+            .map(|t| match (&t.message, self.notes) {
+                (Some(m), true) => format!("{:<15} {}", t.name, m.lines().next().unwrap_or_default()),
+                _ => t.name.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -355,28 +368,34 @@ impl Render for TagChangeOut {
     }
 }
 
-pub async fn tags(ctx: &Ctx) -> Result<TagListOut, CliError> {
+pub async fn tags(ctx: &Ctx, notes: bool) -> Result<TagListOut, CliError> {
     let (c, _) = query_client(ctx).await?;
     let tags = c
-        .list_refs()
+        .list_tags()
         .await?
         .into_iter()
-        .filter_map(|(name, id, _)| {
-            name.strip_prefix(TAG_PREFIX).map(|n| TagOut {
-                name: n.to_owned(),
-                changeset: id.to_string(),
-            })
+        .map(|t| TagOut {
+            name: t.name,
+            changeset: t.target.to_string(),
+            message: t.annotation.map(|a| a.message),
         })
         .collect();
     Ok(TagListOut {
         schema: "scion.cli.tags/v1",
         repo: c.repo_name().unwrap_or_default().to_owned(),
         tags,
+        notes,
     })
 }
 
-/// `scn tag NAME [REV]`: a fixed name for a commit (default HEAD in a working copy).
-pub async fn create_tag(ctx: &Ctx, name: &str, revision: Option<&str>) -> Result<TagChangeOut, CliError> {
+/// `scn tag NAME [REV]`: a fixed name for a commit (default HEAD in a working copy). With a
+/// message, an annotated tag, its tagger the configured author.
+pub async fn create_tag(
+    ctx: &Ctx,
+    name: &str,
+    revision: Option<&str>,
+    message: Option<&str>,
+) -> Result<TagChangeOut, CliError> {
     let (c, default_rev) = query_client(ctx).await?;
     let rev = match revision {
         Some(r) => ctx.expand_rev(r)?,
@@ -384,7 +403,13 @@ pub async fn create_tag(ctx: &Ctx, name: &str, revision: Option<&str>) -> Result
         None => default_rev,
     };
     let target = c.resolve_revision(&rev).await?.id;
-    let (target, _) = c.create_ref(&format!("{TAG_PREFIX}{name}"), &target).await?;
+    let (target, _) = match message {
+        Some(m) => {
+            let tagger = crate::commands::own_author().map(|(n, e)| crate::commands::signature_now(n, e));
+            c.create_annotated_tag(name, &target, m, tagger.as_ref()).await?
+        }
+        None => c.create_ref(&format!("{TAG_PREFIX}{name}"), &target).await?,
+    };
     Ok(TagChangeOut {
         schema: "scion.cli.tag/v1",
         name: name.to_owned(),
@@ -416,6 +441,7 @@ mod tests {
             schema: "s",
             repo: "r".into(),
             tags: vec![],
+            notes: false,
         };
         assert_eq!(empty.text(), "");
         let list = TagListOut {
@@ -423,6 +449,7 @@ mod tests {
                 .map(|n| TagOut {
                     name: n.into(),
                     changeset: "c1abcdefabcdef00".into(),
+                    message: None,
                 })
                 .into(),
             ..empty

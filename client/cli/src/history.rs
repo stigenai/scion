@@ -909,14 +909,36 @@ pub async fn diff(ctx: &Ctx, revs: &[String], path: Option<&str>, name_only: boo
 #[derive(Debug, Serialize)]
 pub struct ShowOut {
     pub schema: &'static str,
+    /// When the revision is an annotated tag: what it says.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tag: Option<ShowTag>,
     pub commit: LogLine,
     pub diff: DiffOut,
 }
 
-/// Like `git show`: the commit as `git log` prints it, then its diff.
+#[derive(Debug, Serialize)]
+pub struct ShowTag {
+    pub name: String,
+    pub tagger: String,
+    pub date: String,
+    pub message: String,
+}
+
+/// Like `git show`: an annotated tag's `tag`, `Tagger:`, `Date:` and message first, then the
+/// commit as `git log` prints it, then its diff.
 impl Render for ShowOut {
     fn text(&self) -> String {
-        let mut out = commit_header(&self.commit);
+        let mut out = String::new();
+        if let Some(t) = &self.tag {
+            out.push_str(&format!(
+                "tag {}\nTagger: {}\nDate:   {}\n\n{}\n\n",
+                t.name,
+                t.tagger,
+                t.date,
+                t.message.trim_end()
+            ));
+        }
+        out.push_str(&commit_header(&self.commit));
         let diff = self.diff.text();
         if !diff.is_empty() {
             out.push_str("\n\n");
@@ -944,8 +966,27 @@ pub async fn show(ctx: &Ctx, revision: Option<&str>, path: Option<&str>, name_on
     let id = entry.id.to_string();
     let from = entry.parents.first().map(ToString::to_string);
     let changes = client.diff(from.as_deref(), &id, path).await?;
+    // A name that is an annotated tag (`v1` or `tags/v1`) shows what it says first
+    let tag = match rev.strip_prefix("tags/").unwrap_or(&rev) {
+        name if !name.is_empty() && !name.contains(['~', '^']) && name.parse::<ObjectId>().is_err() => client
+            .list_tags()
+            .await?
+            .into_iter()
+            .find(|t| t.name == name)
+            .and_then(|t| {
+                let a = t.annotation?;
+                Some(ShowTag {
+                    name: t.name,
+                    tagger: format!("{} <{}>", a.tagger.name, a.tagger.email),
+                    date: git_date(a.tagger.time_ms, a.tagger.tz_offset_minutes),
+                    message: a.message,
+                })
+            }),
+        _ => None,
+    };
     Ok(ShowOut {
         schema: "scion.cli.show/v1",
+        tag,
         diff: DiffOut {
             schema: "scion.cli.diff/v1",
             files: remote_files(&client, changes, name_only).await?,
@@ -1051,6 +1092,7 @@ mod tests {
         };
         let text = ShowOut {
             schema: "s",
+            tag: None,
             commit,
             diff,
         }

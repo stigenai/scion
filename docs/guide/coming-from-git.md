@@ -38,7 +38,7 @@ English | [简体中文](coming-from-git.zh-CN.md)
 | `git branch` | `scn branch` (or `scn branch ls`) | |
 | `git branch NAME [REV]` | `scn branch NAME [REV]` (or `scn branch create`) | Branches are server refs. A branch named `ls`, `create` or `rm` needs the `create` form |
 | `git branch -d NAME` / `-D` | `scn branch -d NAME` / `-D` (or `scn branch rm`) | |
-| `git tag`, `git tag NAME [REV]`, `git tag -d NAME` | `scn tag`, `scn tag NAME [REV]`, `scn tag -d NAME` | Lightweight tags only (no messages). Stored as refs `tags/NAME` that the server never moves. A tag name works as a revision (`scn log v1.0`) unless a branch has the same name |
+| `git tag`, `git tag NAME [REV]`, `git tag -a NAME -m MSG [REV]`, `git tag -n`, `git tag -d NAME` | the same | Stored as refs `tags/NAME` that the server never moves. `-m` (with or without `-a`) makes an annotated tag: a message, and the configured author as the tagger; `scn show NAME` shows them, `scn tag -n` lists the first lines. No signed tags (`-s`). A tag name works as a revision (`scn log v1.0`) unless a branch has the same name |
 | `git switch B`, `git switch -c B` | `scn switch B`, `scn switch -c B` | Refuses with a pending commit or modified files; added files are carried over |
 | `git switch --detach REV`, `git checkout REV` | `scn switch --detach REV` | The files of any revision (`v1.0`, `main~3`, an id) to look at, build or test, on no branch: `scn status` says `HEAD detached at …`, and commit, land, sync, merge, revert and cherry-pick refuse. `scn switch BRANCH` goes back; `scn switch -c NAME` starts a branch there |
 | `git merge B` | `scn merge B` | Makes a pending merge commit; `scn land` publishes it |
@@ -103,5 +103,5 @@ Suffixes combine as in git, for example `main~2^2`. A branch whose name literall
 ## Not available yet
 
 - **Working copy**: commits on a detached working copy, interactive rebase, committing part of a file (`add -p`).
-- **Queries**: annotated tags, `bisect`, `REF@{N}` revisions (use the id `scn reflog` prints).
+- **Queries**: `bisect`, `REF@{N}` revisions (use the id `scn reflog` prints).
 - **Collaboration**: `remote add`, `fetch`. The git CLI itself can clone, fetch and push a Scion repository (see [git clients](git-clients.md)).

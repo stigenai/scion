@@ -38,7 +38,7 @@
 | `git branch` | `scn branch`（或 `scn branch ls`） | |
 | `git branch NAME [REV]` | `scn branch NAME [REV]`（或 `scn branch create`） | 分支是服务端的 ref。名为 `ls`、`create` 或 `rm` 的分支要用 `create` 的写法 |
 | `git branch -d NAME` / `-D` | `scn branch -d NAME` / `-D`（或 `scn branch rm`） | |
-| `git tag`、`git tag NAME [REV]`、`git tag -d NAME` | `scn tag`、`scn tag NAME [REV]`、`scn tag -d NAME` | 只有轻量标签（没有说明）。存成服务端永远不会移动的 ref `tags/NAME`。标签名可以当版本号用（`scn log v1.0`），除非有同名分支 |
+| `git tag`、`git tag NAME [REV]`、`git tag -a NAME -m MSG [REV]`、`git tag -n`、`git tag -d NAME` | 相同 | 存成服务端永远不会移动的 ref `tags/NAME`。`-m`（加不加 `-a` 都行）创建附注标签：带一段说明，打标签的人取配置的作者；`scn show NAME` 显示它们，`scn tag -n` 列出说明的第一行。不支持签名标签（`-s`）。标签名可以当版本号用（`scn log v1.0`），除非有同名分支 |
 | `git switch B`、`git switch -c B` | `scn switch B`、`scn switch -c B` | 有待合入的提交或改动过的文件时拒绝；新增的文件会带过去 |
 | `git switch --detach REV`、`git checkout REV` | `scn switch --detach REV` | 检出任意版本（`v1.0`、`main~3`、提交 id）的文件，用来查看、构建或测试，不在任何分支上：`scn status` 显示 `HEAD detached at …`，commit、land、sync、merge、revert 和 cherry-pick 都会拒绝。`scn switch BRANCH` 回到分支；`scn switch -c NAME` 在这里新建分支 |
 | `git merge B` | `scn merge B` | 生成一个待合入的合并提交；`scn land` 发布它 |
@@ -103,5 +103,5 @@ hint: `scn push` is a transitional git-style spelling; use `scn land` instead
 ## 尚未支持
 
 - **工作副本**：在分离状态下提交、交互式 rebase、只提交文件的一部分（`add -p`）。
-- **查询**：附注标签、`bisect`、`REF@{N}` 写法的版本（用 `scn reflog` 打印的 id）。
+- **查询**：`bisect`、`REF@{N}` 写法的版本（用 `scn reflog` 打印的 id）。
 - **协作**：`remote add`、`fetch`。git 命令行本身可以克隆、拉取和推送 Scion 仓库（见 [git 客户端](git-clients.zh-CN.md)）。

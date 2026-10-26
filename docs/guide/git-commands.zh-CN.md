@@ -23,7 +23,7 @@
 | `git revert REV`、`-m N`、`--abort` | 相同 | 一次撤销一个提交，生成待合入的提交；之后用 `scn land` 发布 |
 | `git cherry-pick REV`、`-x`、`-m N`、`--abort` | 相同 | 一次一个提交；保留原提交说明和作者 |
 | `git branch [-v] [-a]`、`git branch NAME [REV]`、`git branch -d NAME`、`--show-current` | 相同 | 分支都在服务端，所以 `-a` 列出的是同一批 |
-| `git tag [-l]`、`git tag NAME [REV]`、`git tag -d NAME` | 相同 | 轻量标签 |
+| `git tag [-l] [-n]`、`git tag NAME [REV]`、`git tag -a NAME -m MSG [REV]`、`git tag -d NAME` | 相同 | 轻量标签和附注标签（不支持 `-s`） |
 | `git log [REV] [-n N \| -N] [--oneline] [-- PATH]` | 相同 | |
 | `git show [REV] [-- PATH]` | 相同 | |
 | `git diff [--cached]`、`git diff A B`、`A..B`、`A...B` | 相同 | `--name-only`、`--name-status`、`--stat`、`-- PATH`；没有暂存区，`--cached` / `--staged` 显示同样的本地改动 |
@@ -72,4 +72,4 @@
 
 ## 尚未支持
 
-交互式 rebase、`add -p`、`bisect`、`REF@{N}` 写法的版本、附注标签、`remote add` 和 `fetch`。`scn init`、`fetch`、`remote add` 会提示该改用什么。git 命令行本身可以通过 [git 网关](git-clients.zh-CN.md) clone、fetch 和 push Scion 仓库。
+交互式 rebase、`add -p`、`bisect`、`REF@{N}` 写法的版本、签名标签、`remote add` 和 `fetch`。`scn init`、`fetch`、`remote add` 会提示该改用什么。git 命令行本身可以通过 [git 网关](git-clients.zh-CN.md) clone、fetch 和 push Scion 仓库。

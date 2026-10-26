@@ -16,7 +16,7 @@ use scion_object::ObjectId;
 use crate::{
     ChangesetRecord, IdempotencyRecord, IndexedObject, LandedChange, Lease, MetaStore, OrgMember, OrgRecord,
     PackLocation, PackedObject, PathChange, PathHistoryEntry, Redaction, RedactionFilter, RefEvent, RefExpect,
-    RefLogEntry, RefState, RepoFilter, RepoInfo, RepoPatch, Result, TokenRecord,
+    RefLogEntry, RefState, RepoFilter, RepoInfo, RepoPatch, Result, TagAnnotation, TokenRecord,
 };
 
 /// 提交记录在缓存中的最长保留时间。
@@ -375,6 +375,14 @@ impl MetaStore for CachedMeta {
 
     async fn ref_log(&self, repo: &str, name: &str, before: Option<u64>, limit: usize) -> Result<Vec<RefLogEntry>> {
         self.inner.ref_log(repo, name, before, limit).await
+    }
+
+    async fn put_tag_annotation(&self, repo: &str, name: &str, annotation: &TagAnnotation) -> Result<()> {
+        self.inner.put_tag_annotation(repo, name, annotation).await
+    }
+
+    async fn tag_annotations(&self, repo: &str) -> Result<HashMap<String, TagAnnotation>> {
+        self.inner.tag_annotations(repo).await
     }
 }
 
