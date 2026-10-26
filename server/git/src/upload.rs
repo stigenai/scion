@@ -6,7 +6,7 @@ use bytes::{Bytes, BytesMut};
 use futures::{StreamExt, TryStreamExt};
 use scion_object::{EntryMode, ObjectId, Tree, TreeEntry};
 use scion_query::{GITSHA_KIND, GITSHA_VERSION};
-use scion_store::{BlobStore, ChangesetRecord, MetaStore};
+use scion_store::{BlobStore, ChangesetRecord, MetaStore, RefState};
 use tokio::sync::mpsc;
 
 use crate::objects::{Objects, check_blob};
@@ -38,6 +38,60 @@ pub struct Advertised {
     pub refs: Vec<(String, [u8; 20])>,
     /// `HEAD`: the default branch's git name and SHA.
     pub head: Option<(String, [u8; 20])>,
+    /// Annotated tags (by git name): the commit their tag object names, git's `^{}`.
+    pub peeled: HashMap<String, [u8; 20]>,
+}
+
+/// An annotated tag as git sees it: a tag object naming a commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnnotatedTag {
+    pub sha: [u8; 20],
+    pub body: Bytes,
+    pub commit: ObjectId,
+    pub commit_sha: [u8; 20],
+}
+
+/// The repository's annotated tags by Scion ref name, those still on the commit they were
+/// annotated on: the git object they were pushed or imported as, else one made from what the
+/// tag says.
+pub async fn annotated_tags(
+    objects: &mut Objects<'_>,
+    refs: &[(String, RefState)],
+) -> Result<HashMap<String, AnnotatedTag>> {
+    let mut out = HashMap::new();
+    if !refs.iter().any(|(n, _)| n.starts_with(TAG_PREFIX)) {
+        return Ok(out);
+    }
+    let notes = objects.meta.tag_annotations(objects.repo).await?;
+    for (name, state) in refs {
+        let (Some(note), Some(tag)) = (notes.get(name), name.strip_prefix(TAG_PREFIX)) else {
+            continue;
+        };
+        if note.target != state.target {
+            continue;
+        }
+        let commit_sha = objects.commit_sha(state.target).await?;
+        let body = match &note.git_object {
+            Some(raw) => Bytes::from(raw.clone()),
+            None => Bytes::from(scion_object::git::tag_body(
+                &commit_sha,
+                tag,
+                &note.tagger,
+                &note.message,
+            )),
+        };
+        let sha = scion_query::git_hash("tag", &body);
+        out.insert(
+            name.clone(),
+            AnnotatedTag {
+                sha,
+                body,
+                commit: state.target,
+                commit_sha,
+            },
+        );
+    }
+    Ok(out)
 }
 
 pub async fn advertised(meta: &dyn MetaStore, blobs: &dyn BlobStore, repo: &str, default: &str) -> Result<Advertised> {
@@ -45,18 +99,30 @@ pub async fn advertised(meta: &dyn MetaStore, blobs: &dyn BlobStore, repo: &str,
     let mut objects = Objects::new(meta, blobs, repo);
     let targets: Vec<ObjectId> = refs.iter().map(|(_, s)| s.target).collect();
     objects.prefetch(&targets, &[]).await?;
+    let tags = annotated_tags(&mut objects, &refs).await?;
     let mut out = Vec::with_capacity(refs.len());
     let mut head = None;
+    let mut peeled = HashMap::new();
     for (name, state) in &refs {
         let sha = objects.commit_sha(state.target).await?;
         let git = git_ref_name(name);
         if name == default {
             head = Some((git.clone(), sha));
         }
-        out.push((git, sha));
+        match tags.get(name) {
+            Some(t) => {
+                peeled.insert(git.clone(), sha);
+                out.push((git, t.sha));
+            }
+            None => out.push((git, sha)),
+        }
     }
     out.sort();
-    Ok(Advertised { refs: out, head })
+    Ok(Advertised {
+        refs: out,
+        head,
+        peeled,
+    })
 }
 
 /// The v0 advertisement after the service line: refs with capabilities on the first line.
@@ -72,7 +138,12 @@ pub fn advertise_v0(adv: &Advertised, agent: &str) -> BytesMut {
     if let Some((_, sha)) = &adv.head {
         lines.push(("HEAD".into(), *sha));
     }
-    lines.extend(adv.refs.iter().cloned());
+    for (name, sha) in &adv.refs {
+        lines.push((name.clone(), *sha));
+        if let Some(commit) = adv.peeled.get(name) {
+            lines.push((format!("{name}^{{}}"), *commit));
+        }
+    }
     let mut out = BytesMut::new();
     if lines.is_empty() {
         pkt::put(
@@ -152,6 +223,7 @@ pub fn parse_v2(body: &[u8]) -> Result<V2Request<'_>> {
 /// `ls-refs`: the refs matching the prefixes, with `HEAD`'s target when asked for.
 pub fn ls_refs(adv: &Advertised, args: &[&[u8]]) -> BytesMut {
     let symrefs = args.contains(&&b"symrefs"[..]);
+    let peel = args.contains(&&b"peel"[..]);
     let prefixes: Vec<&[u8]> = args.iter().filter_map(|a| a.strip_prefix(b"ref-prefix ")).collect();
     let wanted = |name: &str| prefixes.is_empty() || prefixes.iter().any(|p| name.as_bytes().starts_with(p));
     let mut out = BytesMut::new();
@@ -164,7 +236,11 @@ pub fn ls_refs(adv: &Advertised, args: &[&[u8]]) -> BytesMut {
     }
     for (name, sha) in &adv.refs {
         if wanted(name) {
-            pkt::put_line(&mut out, &format!("{} {name}", hex::encode(sha)));
+            let mut line = format!("{} {name}", hex::encode(sha));
+            if let Some(commit) = adv.peeled.get(name).filter(|_| peel) {
+                line.push_str(&format!(" peeled:{}", hex::encode(commit)));
+            }
+            pkt::put_line(&mut out, &line);
         }
     }
     out.extend_from_slice(pkt::FLUSH);
@@ -401,6 +477,8 @@ pub struct Wants {
     pub commits: Vec<ObjectId>,
     pub trees: Vec<ObjectId>,
     pub files: Vec<ObjectId>,
+    /// Annotated tags' objects; their commits are in `commits`.
+    pub tags: Vec<Bytes>,
 }
 
 async fn reverse(meta: &dyn MetaStore, repo: &str, kind: &str, sha: &[u8; 20]) -> Result<Option<ObjectId>> {
@@ -422,9 +500,21 @@ pub async fn resolve_wants(
     let found: HashMap<[u8; 20], ObjectId> = common(meta, repo, wants).await?.into_iter().collect();
     let mut out = Wants::default();
     let mut indexed = false;
+    let mut tags: Option<HashMap<[u8; 20], AnnotatedTag>> = None;
     for w in wants {
         if let Some(id) = found.get(w) {
             out.commits.push(*id);
+            continue;
+        }
+        if tags.is_none() {
+            let refs = meta.list_refs(repo).await?;
+            let mut objects = Objects::new(meta, blobs, repo);
+            let by_name = annotated_tags(&mut objects, &refs).await?;
+            tags = Some(by_name.into_values().map(|t| (t.sha, t)).collect());
+        }
+        if let Some(t) = tags.as_ref().and_then(|t| t.get(w)) {
+            out.tags.push(t.body.clone());
+            out.commits.push(t.commit);
             continue;
         }
         loop {
@@ -457,11 +547,13 @@ pub struct Plan {
     pub commits: Vec<ChangesetRecord>,
     pub trees: Vec<(ObjectId, Option<ObjectId>)>,
     pub files: Vec<(ObjectId, Option<ObjectId>)>,
+    /// Annotated tags' objects, written after the commits.
+    pub tags: Vec<Bytes>,
 }
 
 impl Plan {
     pub fn len(&self) -> usize {
-        self.commits.len() + self.trees.len() + self.files.len()
+        self.commits.len() + self.trees.len() + self.files.len() + self.tags.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -613,7 +705,10 @@ pub async fn plan(
 ) -> Result<Plan> {
     let commits = commits(meta, repo, &wants.commits, haves, cut).await?;
     let mut roots: HashMap<ObjectId, ObjectId> = HashMap::new();
-    let mut plan = Plan::default();
+    let mut plan = Plan {
+        tags: wants.tags.clone(),
+        ..Plan::default()
+    };
     let mut seen: HashSet<ObjectId> = HashSet::new();
     // Trees a partial clone asks for go whole, as roots without parents
     let roots_wanted: Vec<(ObjectId, Vec<ObjectId>)> = wants.trees.iter().map(|t| (*t, Vec::new())).collect();
@@ -982,6 +1077,11 @@ pub async fn write_pack(started: Started<'_>, out: &Out, opts: PackOptions) -> R
             return Ok(());
         }
     }
+    for t in &plan.tags {
+        if !out.data(w.object(Kind::Tag, t)).await {
+            return Ok(());
+        }
+    }
     let mut d = Deltas {
         opts,
         planned: plan.trees.iter().chain(&plan.files).map(|(id, _)| *id).collect(),
@@ -1093,6 +1193,8 @@ mod tests {
         Advertised {
             refs: vec![("refs/heads/main".into(), sha(1)), ("refs/tags/v1".into(), sha(2))],
             head: Some(("refs/heads/main".into(), sha(1))),
+            // v1 is an annotated tag of commit 9
+            peeled: HashMap::from([("refs/tags/v1".to_string(), sha(9))]),
         }
     }
 
@@ -1124,10 +1226,12 @@ mod tests {
         assert!(got[0].ends_with("symref=HEAD:refs/heads/main agent=scion/1"));
         assert_eq!(got[1], format!("{} refs/heads/main", "01".repeat(20)));
         assert_eq!(got[2], format!("{} refs/tags/v1", "02".repeat(20)));
-        assert_eq!(got[3], "0000");
+        assert_eq!(got[3], format!("{} refs/tags/v1^{{}}", "09".repeat(20)));
+        assert_eq!(got[4], "0000");
         let empty = Advertised {
             refs: vec![],
             head: None,
+            peeled: HashMap::new(),
         };
         let got = lines(&advertise_v0(&empty, "scion/1"));
         assert!(got[0].starts_with(&format!("{} capabilities^{{}}\0", "0".repeat(40))));
@@ -1145,6 +1249,11 @@ mod tests {
         assert_eq!(all.len(), 4);
         let tags = lines(&ls_refs(&adv(), &[b"ref-prefix refs/tags/"]));
         assert_eq!(tags, [format!("{} refs/tags/v1", "02".repeat(20)), "0000".into()]);
+        let peeled = lines(&ls_refs(&adv(), &[b"ref-prefix refs/tags/", b"peel"]));
+        assert_eq!(
+            peeled[0],
+            format!("{} refs/tags/v1 peeled:{}", "02".repeat(20), "09".repeat(20))
+        );
         let head = lines(&ls_refs(&adv(), &[b"ref-prefix HEAD"]));
         assert_eq!(head, [format!("{} HEAD", "01".repeat(20)), "0000".into()]);
     }

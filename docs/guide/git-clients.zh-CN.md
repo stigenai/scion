@@ -33,10 +33,11 @@ git ls-remote origin            # HEAD、refs/heads/*、refs/tags/*
 ```sh
 git push origin main            # 把新提交合入 main
 git push origin feature         # 创建或移动分支
-git push origin v1.0            # 标签（轻量标签）
+git push origin v1.0            # 标签，轻量标签或附注标签
 git push origin :old-branch     # 删除分支
 ```
 
+- **附注标签保留标签对象。** 服务端原样保存推送上来的标签对象（包括签名），所以之后 fetch 得到的标签 SHA 相同；`scn show v1.0` 和 `scn tag -n` 显示它的说明。用 `scn tag -a` 创建的附注标签，会按它的说明和打标签的人生成标签对象。`ls-remote` 同时列出标签和它指向的提交（`v1.0^{}`）。
 - **提交保留 SHA。** 推送的每个提交都变成一个 Scion 提交，`scn log` 可以看到，作者、提交者、时间和说明都不变；git、`scn` 和 `GetGitShas` 看到的都是推送时的 SHA。签名提交保留签名。
 - **分支只能快进。** 推送和 `scn land` 一样合入，但不做 rebase：别人先合入时，git 会提示 `rejected … (fetch first)`，执行 `git pull --rebase` 后再推送即可。`git push --force` 可以强制移动分支，所需权限和 `scn` 一样，是该分支的 `land` 权限。
 - **权限：** 推送需要仓库的 `write` 权限（策略按路径限制时，需要改动路径的权限），以及每个 ref 的 `land` 权限，和 `scn` 相同。合入前检查和 ref 事件同样适用于推送。
@@ -68,7 +69,7 @@ git clone http://git:$SCION_TOKEN@scion.example.com:7080/agentlab/app
 | 功能 | 现象 |
 |---|---|
 | `git push --atomic` | git 会拒绝：Scion 一次只更新一个 ref |
-| annotated tag | `git push` 提示 `annotated tags are not supported; push a lightweight tag` |
+| 指向目录树、文件或其他标签的标签 | `git push` 提示 `only tags of commits are supported` |
 | 子模块，以及文件、可执行文件、符号链接以外的模式 | 推送被拒绝，并给出路径 |
 | `refs/heads/*` 和 `refs/tags/*` 以外的 ref（如 `refs/notes/*`） | 该 ref 的推送被拒绝 |
 | `blob:none` 和 `blob:limit` 以外的部分克隆过滤条件（`tree:0`、`sparse:…`） | 拒绝并给出提示 |

@@ -321,7 +321,16 @@ impl Gateway {
         let current_sha = match &current {
             Some(state) => {
                 let mut objects = objects::Objects::new(self.meta.as_ref(), self.blobs.as_ref(), repo);
-                objects.commit_sha(state.target).await.map_err(|e| e.to_string())?
+                // An annotated tag is known to git by its tag object
+                let refs = [(name.clone(), *state)];
+                match upload::annotated_tags(&mut objects, &refs)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .remove(&name)
+                {
+                    Some(t) => t.sha,
+                    None => objects.commit_sha(state.target).await.map_err(|e| e.to_string())?,
+                }
             }
             None => receive::ZERO,
         };
@@ -341,9 +350,16 @@ impl Gateway {
                 )
                 .await;
         }
-        let new = conv.convert(p, backend, c.new).await.map_err(|e| e.to_string())?;
+        let (tip, annotation) = match conv.pushed_tag(&c.new).map_err(|e| e.to_string())? {
+            Some(_) if !name.starts_with(upload::TAG_PREFIX) => {
+                return Err("an annotated tag can only be pushed to refs/tags/".into());
+            }
+            Some((commit, raw)) => (commit, Some(raw)),
+            None => (c.new, None),
+        };
+        let new = conv.convert(p, backend, tip).await.map_err(|e| e.to_string())?;
         let update = match current {
-            None => receive::RefUpdate::Create { name, new },
+            None => receive::RefUpdate::Create { name, new, annotation },
             Some(state) => {
                 let ff = scion_query::is_ancestor(self.meta.as_ref(), repo, state.target, new)
                     .await

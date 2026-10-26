@@ -145,19 +145,34 @@ impl scion_git::receive::PushBackend for PushBackend {
             )
             .await
             .map(drop),
-            RefUpdate::Create { name, new } => self
-                .refs
-                .create_ref(as_principal(
-                    p,
-                    CreateRefRequest {
-                        repo,
-                        r#ref: name,
-                        changeset_id: id(new),
-                        annotation: None,
-                    },
-                ))
-                .await
-                .map(drop),
+            RefUpdate::Create { name, new, annotation } => {
+                // The message and tagger come from the tag object, which is kept as it is
+                let annotation = annotation.map(|raw| {
+                    let tag = scion_object::git::parse_tag(&raw);
+                    scion_proto::v1::TagAnnotation {
+                        message: tag.as_ref().map(|t| t.message.clone()).unwrap_or_default(),
+                        tagger: tag.and_then(|t| t.tagger).map(|s| scion_proto::v1::Signature {
+                            name: s.name,
+                            email: s.email,
+                            time_ms: s.time_ms,
+                            tz_offset_minutes: s.tz_offset_minutes,
+                        }),
+                        git_object: raw.into(),
+                    }
+                });
+                self.refs
+                    .create_ref(as_principal(
+                        p,
+                        CreateRefRequest {
+                            repo,
+                            r#ref: name,
+                            changeset_id: id(new),
+                            annotation,
+                        },
+                    ))
+                    .await
+                    .map(drop)
+            }
             RefUpdate::Move { name, new, version } => self
                 .refs
                 .update_ref(as_principal(

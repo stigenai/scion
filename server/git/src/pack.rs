@@ -14,6 +14,7 @@ pub enum Kind {
     Commit = 1,
     Tree = 2,
     Blob = 3,
+    Tag = 4,
 }
 
 impl Kind {
@@ -22,6 +23,7 @@ impl Kind {
             Kind::Commit => "commit",
             Kind::Tree => "tree",
             Kind::Blob => "blob",
+            Kind::Tag => "tag",
         }
     }
 }

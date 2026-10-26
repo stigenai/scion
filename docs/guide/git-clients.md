@@ -33,10 +33,11 @@ git ls-remote origin            # HEAD, refs/heads/*, refs/tags/*
 ```sh
 git push origin main            # lands the new commits on main
 git push origin feature         # creates or moves a branch
-git push origin v1.0            # a tag (lightweight)
+git push origin v1.0            # a tag, lightweight or annotated
 git push origin :old-branch     # deletes a branch
 ```
 
+- **Annotated tags keep their tag objects.** The server keeps the pushed object byte for byte (a signature included), so a later fetch gets the same tag SHA; `scn show v1.0` and `scn tag -n` show its message. An annotated tag made with `scn tag -a` is served as a tag object built from its message and tagger. `ls-remote` lists both the tag and the commit it names (`v1.0^{}`).
 - **Commits keep their SHAs.** Each pushed commit becomes a Scion commit that `scn log` shows, with the same author, committer, times and message; git, `scn` and `GetGitShas` all see the SHA that was pushed. Signed commits keep their signatures.
 - **Branches only fast-forward.** A push lands like `scn land` with no rebase: when someone landed first, git says `rejected … (fetch first)`; run `git pull --rebase` and push again. `git push --force` moves the branch anyway, with the same `land` permission on the branch as `scn` needs.
 - **Permissions:** pushing needs `write` on the repository (on the changed paths, when the policy limits paths) and `land` on each ref, as for `scn`. Pre-land checks and ref events apply to pushes too.
@@ -68,7 +69,7 @@ Every commit has one git SHA, the one `GetGitShas` and the SDK's `git_shas` repo
 | What | What happens |
 |---|---|
 | `git push --atomic` | git refuses it: Scion updates one ref at a time |
-| Annotated tags | `git push` reports `annotated tags are not supported; push a lightweight tag` |
+| Tags of trees, blobs or other tags | `git push` reports `only tags of commits are supported` |
 | Submodules, and modes other than files, executables and symbolic links | The push is refused with the path |
 | Refs outside `refs/heads/*` and `refs/tags/*` (`refs/notes/*` and so on) | The push is refused for that ref |
 | Partial clones with filters other than `blob:none` and `blob:limit` (`tree:0`, `sparse:…`) | Refused with a message |

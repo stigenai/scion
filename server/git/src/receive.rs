@@ -29,6 +29,8 @@ pub enum RefUpdate {
     Create {
         name: String,
         new: ObjectId,
+        /// For an annotated tag: its git tag object, as pushed.
+        annotation: Option<Vec<u8>>,
     },
     /// A forced update to a commit that does not descend from the ref.
     Move {
@@ -350,15 +352,33 @@ impl<'a> Converter<'a> {
             Some((ObjType::Commit, raw)) => {
                 parse_commit(&raw).ok_or_else(|| Error::Protocol(format!("malformed commit {}", hex::encode(sha))))
             }
-            Some((ObjType::Tag, _)) => Err(Error::Unsupported(
-                "annotated tags are not supported; push a lightweight tag".into(),
-            )),
+            Some((ObjType::Tag, _)) => Err(Error::Unsupported(format!(
+                "{} is a tag, not a commit: tags of tags are not supported",
+                hex::encode(sha)
+            ))),
             Some(_) => Err(Error::Protocol(format!("{} is not a commit", hex::encode(sha)))),
             None => Err(Error::Protocol(format!(
                 "commit {} is neither in the pack nor in the repository",
                 hex::encode(sha)
             ))),
         }
+    }
+
+    /// When `sha` is a tag object in the pack: the commit it names and the object itself. Tags
+    /// of anything but a commit are refused.
+    pub fn pushed_tag(&self, sha: &[u8; 20]) -> Result<Option<([u8; 20], Vec<u8>)>> {
+        let Some((ObjType::Tag, raw)) = self.pack.get(sha)? else {
+            return Ok(None);
+        };
+        let tag = scion_object::git::parse_tag(&raw)
+            .ok_or_else(|| Error::Protocol(format!("malformed tag {}", hex::encode(sha))))?;
+        if tag.kind != "commit" {
+            return Err(Error::Unsupported(format!(
+                "tag {} names a {}: only tags of commits are supported",
+                tag.name, tag.kind
+            )));
+        }
+        Ok(Some((tag.object, raw.to_vec())))
     }
 
     /// Makes the Scion commits for `tip` and returns its Scion commit.
@@ -693,6 +713,7 @@ mod tests {
         let adv = Advertised {
             refs: vec![("refs/heads/main".into(), [1; 20])],
             head: None,
+            peeled: Default::default(),
         };
         let s = String::from_utf8_lossy(&advertise(&adv, "scion/1")).into_owned();
         assert!(
@@ -702,6 +723,7 @@ mod tests {
         let empty = Advertised {
             refs: vec![],
             head: None,
+            peeled: Default::default(),
         };
         let s = String::from_utf8_lossy(&advertise(&empty, "scion/1")).into_owned();
         assert!(s.contains("capabilities^{}"), "{s}");

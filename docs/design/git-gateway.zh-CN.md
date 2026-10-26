@@ -127,7 +127,7 @@ git clone http://scion.example.com:7080/agentlab/app
   - **生成的 Scion 提交**：
     - 作者、提交者和说明取自 git 提交，`change_id` 由 git SHA 推导，和导入时一样；
     - 带扩展字段 `git.sha1`（SHA），无法用字段重建时还带 `git.commit`（原始对象）。
-  - **annotated tag** 会被拒绝：Scion 的标签是指向提交的 ref。
+  - **附注标签**：ref `tags/NAME` 指向提交，标签对象存进标签的附注（`TagAnnotation.git_object`，原样保存；服务端会检查它指向的就是这个提交）。fetch 时通告标签对象的 SHA 和它指向的提交（`^{}`，v2 的 `peel` 时为 `peeled:`），客户端要时把对象发过去。指向目录树、文件或其他标签的标签会被拒绝。
 - **检查。**
   - 创建提交之前，网关检查 Scion 目录树的 git SHA 等于 commit 的 `tree` 行。无法原样还原的 git tree 会被拒绝，因此 git 用户看到的 SHA 始终就是内容的 SHA。
   - 对于非管理员写入者，只有服务端可以写 `git.sha1` 和 `git.commit`，而且要在通过上述检查之后。非管理员客户端仍然不能通过 `CreateChangeset` 设置这两个字段。

@@ -127,7 +127,7 @@ In each case, the gateway checks that the object's SHA is the commit's git SHA, 
   - **The Scion commit** gets:
     - author, committer and message from the git commit, and its `change_id` from the git SHA, as imports do;
     - the extensions `git.sha1` (the SHA) and, when the fields cannot rebuild it, `git.commit` (the raw object).
-  - **Annotated tags** are refused: Scion's tags are refs to commits.
+  - **Annotated tags:** the ref `tags/NAME` points at the commit, and the tag object goes into the tag's annotation (`TagAnnotation.git_object`, kept byte for byte; the server checks that it names the commit). Fetches advertise the tag object's SHA with the peeled commit (`^{}`, or `peeled:` with v2's `peel`) and send the object when it is wanted. Tags of trees, blobs or tags are refused.
 - **Checks.**
   - Before creating the commit, the gateway checks that the Scion tree's git SHA equals the commit's `tree` line. A git tree that does not round-trip is refused, so the SHA a git user sees is always the SHA of the content.
   - Only the server may set `git.sha1` and `git.commit` for a non-admin writer, and only after these checks. A non-admin client still cannot set them through `CreateChangeset`.

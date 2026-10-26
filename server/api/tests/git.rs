@@ -585,7 +585,7 @@ async fn commit_all(dir: &Path, msg: &str) {
 
 /// Pushes from git land as Scion commits that keep their SHAs: files, executables, symlinks,
 /// renames, file/directory swaps, merges, signed commits, branches and tags; non-fast-forwards
-/// are refused, forced pushes and deletes work, and annotated tags are refused.
+/// are refused, forced pushes and deletes work, and annotated tags keep their tag objects.
 #[tokio::test(flavor = "multi_thread")]
 async fn git_pushes_land_as_scion_commits() {
     if !have_git() {
@@ -758,8 +758,73 @@ async fn git_pushes_land_as_scion_commits() {
         ],
     )
     .await;
-    let e = fails(&w, &["push", "origin", "v2"]).await;
-    assert!(e.contains("annotated tags are not supported"), "{e}");
+    ok(&w, &["push", "-q", "origin", "v2"]).await;
+    let tags = c.list_tags().await.expect("tags");
+    let v2 = tags.iter().find(|t| t.name == "v2").expect("v2");
+    let note = v2.annotation.as_ref().expect("annotated");
+    assert_eq!(
+        (note.message.as_str(), note.tagger.name.as_str()),
+        ("annotated\n", "Grace")
+    );
+    // Fetched back as the same tag object, peeled to its commit
+    let listed = ok(root, &["ls-remote", &format!("{url}/mono")]).await;
+    let tag_sha = local("v2").await;
+    assert!(listed.contains(&format!("{tag_sha}\trefs/tags/v2\n")), "{listed}");
+    assert!(
+        listed.contains(&format!("{}\trefs/tags/v2^{{}}", local("v2^{}").await)),
+        "{listed}"
+    );
+    // One made in Scion comes out as a tag object too
+    c.create_annotated_tag("v3", &v2.target, "made in Scion", None)
+        .await
+        .expect("scion tag");
+    for v in ["0", "2"] {
+        let dir = format!("t{v}");
+        ok(
+            root,
+            &[
+                "-c",
+                &format!("protocol.version={v}"),
+                "clone",
+                "-q",
+                &format!("{url}/mono"),
+                &dir,
+            ],
+        )
+        .await;
+        let t = root.join(&dir);
+        assert_eq!(ok(&t, &["rev-parse", "v2"]).await.trim(), tag_sha, "protocol {v}");
+        assert_eq!(ok(&t, &["cat-file", "-t", "v3"]).await.trim(), "tag");
+        assert!(
+            ok(&t, &["cat-file", "tag", "v3"])
+                .await
+                .ends_with("\n\nmade in Scion\n")
+        );
+        ok(&t, &["fsck", "--strict", "--no-dangling"]).await;
+    }
+    // Deleting it names the tag object; a tag of a tree is refused
+    ok(&w, &["push", "-q", "origin", ":refs/tags/v2"]).await;
+    assert!(c.list_tags().await.expect("tags").iter().all(|t| t.name != "v2"));
+    ok(
+        &w,
+        &[
+            "-c",
+            "user.name=Grace",
+            "-c",
+            "user.email=grace@x",
+            "tag",
+            "-a",
+            "-m",
+            "a tree",
+            "t1",
+            "HEAD^{tree}",
+        ],
+    )
+    .await;
+    let e = fails(&w, &["push", "origin", "t1"]).await;
+    assert!(e.contains("only tags of commits are supported"), "{e}");
+    let e = fails(&w, &["push", "origin", "v2:refs/heads/from-tag"]).await;
+    assert!(e.contains("can only be pushed to refs/tags/"), "{e}");
     let e = fails(&w, &["push", "origin", "HEAD:refs/notes/x"]).await;
     assert!(e.contains("only refs/heads/* and refs/tags/* can be pushed"), "{e}");
 
