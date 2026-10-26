@@ -691,7 +691,7 @@ The SDK, working copy, daemon and CLI are designed in full in [`rust-client-arch
 > - **Forks:** one transaction copies the object index, commits, derived data, path history and refs with `INSERT … SELECT`; active redactions get new seqs through `ROW_NUMBER()`. Land records and request results are not copied. Asynchronous forks of very large repositories are deferred.
 > - **Ref writes:** `CreateRef` / `UpdateRef` (non-fast-forward allowed, that is, a forced move back) / `DeleteRef`, each a CAS of one ref, needing land on that ref. The default branch cannot be deleted.
 >   - A ref recreated after deletion starts at version 1 again; WatchRefs does not push deletions.
-> - **Deployment:** a `Dockerfile` (multi-stage build, BuildKit caches, running as non-root, base images replaceable by mirrors) and `deploy/compose` (PostgreSQL + SeaweedFS + server, with an optional cache profile).
+> - **Deployment:** a `Dockerfile` (multi-stage build, BuildKit caches, running as non-root, base images replaceable by mirrors) and `deploy/compose` (now `deploy/prd` and `deploy/dev`; PostgreSQL + SeaweedFS + server, with an optional cache profile).
 
 > **Ref event notes** (2026-10-18): the event part of starhub's S1.
 > - **The event table:** `ref_events` is written in the same transaction as `land_commit` / `delete_ref` / `fork_repo`. Its seq comes from the single-row counter `ref_event_seq`, as with `redaction_seq`: the row lock makes seq order the commit order, so reading incrementally by seq never misses a small seq committed late.

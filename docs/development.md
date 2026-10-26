@@ -34,7 +34,8 @@ client/              client side (may depend on common and client, never on serv
   cli/               scion-cli         the scn binary
 
 xtask/               maintenance tasks (cargo xtask layers: dependency direction check)
-deploy/dev/          local development dependencies (SeaweedFS, PostgreSQL)
+deploy/dev/          local development dependencies (SeaweedFS, PostgreSQL), and the server for trials
+deploy/prd/          single-machine production compose (authentication required, secrets from .env)
 docs/guide/          user guides
 docs/design/         design docs and diagrams
 ```

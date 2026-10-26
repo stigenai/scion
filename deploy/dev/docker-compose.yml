@@ -2,8 +2,12 @@
 #
 #   docker compose -f deploy/dev/docker-compose.yml up -d
 #
-# 拉不到 Docker Hub 时，可以把镜像名换成镜像站地址，例如
-#   docker.m.daocloud.io/chrislusf/seaweedfs:4.48、docker.m.daocloud.io/library/postgres:16
+# Trying Scion out: the server as well, anonymous and with fixed development secrets (production: deploy/prd).
+# The image is opencsghq/scion:latest; SCION_IMAGE=scion:dev runs one built from this checkout
+# (docker build -t scion:dev .). Add --profile cache for the regional cache on 7090.
+#   docker compose -f deploy/dev/docker-compose.yml --profile server up -d
+#
+# When Docker Hub is out of reach, use a registry mirror: REGISTRY=docker.m.daocloud.io docker compose ...
 #
 # 默认用 SeaweedFS：MinIO 开源版已归档、停止维护，官方不再提供社区版下载。
 # Scion 只用 S3 核心子集，MinIO 同样支持，CI 中两者都测试。需要 MinIO 时（例如对齐 starhub 部署）：
@@ -13,7 +17,7 @@ name: scion-dev
 
 services:
   s3:
-    image: chrislusf/seaweedfs:4.48
+    image: ${REGISTRY:-docker.io}/chrislusf/seaweedfs:4.48
     command: server -s3 -s3.config=/etc/seaweedfs/s3.json
     ports:
       - "8333:8333"   # S3 API：endpoint http://localhost:8333，access key scion / scion-dev-secret
@@ -26,7 +30,7 @@ services:
       retries: 30
 
   s3-init:
-    image: chrislusf/seaweedfs:4.48
+    image: ${REGISTRY:-docker.io}/chrislusf/seaweedfs:4.48
     depends_on:
       s3:
         condition: service_healthy
@@ -41,7 +45,7 @@ services:
   # starhub / CSGHub 部署使用的 MinIO 版本（bitnami 镜像，2023.12）
   minio:
     profiles: ["minio"]
-    image: bitnamilegacy/minio:2023
+    image: ${REGISTRY:-docker.io}/bitnamilegacy/minio:2023
     environment:
       MINIO_ROOT_USER: scion
       MINIO_ROOT_PASSWORD: scion-dev-secret
@@ -57,7 +61,7 @@ services:
       retries: 30
 
   postgres:
-    image: postgres:16
+    image: ${REGISTRY:-docker.io}/library/postgres:16
     environment:
       POSTGRES_USER: scion
       POSTGRES_PASSWORD: scion-dev-secret
@@ -70,6 +74,52 @@ services:
       test: ["CMD-SHELL", "pg_isready -U scion"]
       interval: 5s
       retries: 20
+
+  # Trials: docker compose -f deploy/dev/docker-compose.yml --profile server up -d
+  scion:
+    profiles: ["server"]
+    image: ${SCION_IMAGE:-opencsghq/scion:latest}
+    command: ["--log-format", "json", "server"]
+    environment:
+      SCION_LISTEN: 0.0.0.0:7080
+      # Development only, like the secrets here: no authentication. Production runs deploy/prd, which
+      # requires it (docs/guide/auth.md); the server refuses to serve the network without one or the other
+      SCION_ALLOW_ANONYMOUS: "true"
+      SCION_META: postgres://scion:scion-dev-secret@postgres:5432/scion
+      SCION_BLOBS: s3://scion-objects
+      SCION_S3_ENDPOINT: http://s3:8333
+      SCION_S3_ACCESS_KEY_ID: scion
+      SCION_S3_SECRET_ACCESS_KEY: scion-dev-secret
+      SCION_METRICS_LISTEN: 0.0.0.0:9464
+    depends_on:
+      postgres:
+        condition: service_healthy
+      s3-init:
+        condition: service_completed_successfully
+    ports:
+      - "7080:7080"   # gRPC
+      - "9464:9464"   # /metrics
+    healthcheck:
+      test: ["CMD", "scn", "doctor", "--endpoint", "http://127.0.0.1:7080"]
+      interval: 5s
+      retries: 30
+
+  # The regional cache: add --profile cache
+  cache:
+    profiles: ["cache"]
+    image: ${SCION_IMAGE:-opencsghq/scion:latest}
+    command: ["--log-format", "json", "cache"]
+    environment:
+      SCION_CACHE_LISTEN: 0.0.0.0:7090
+      SCION_CACHE_UPSTREAMS: http://scion:7080
+      SCION_CACHE_MEMORY: 512MiB
+      SCION_METRICS_LISTEN: 0.0.0.0:9464
+    depends_on:
+      scion:
+        condition: service_healthy
+    ports:
+      - "7090:7090"
+      - "9465:9464"
 
 volumes:
   s3-data:

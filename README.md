@@ -108,7 +108,7 @@ docker run -d --name scion -p 7080:7080 \
 docker exec scion scion admin token create --subject admin --group admins
 ```
 
-Several nodes behind a load balancer share one database and bucket ([clusters](docs/guide/cluster.md)). To try it all on one machine, [`deploy/compose`](deploy/compose/docker-compose.yml) starts PostgreSQL, SeaweedFS and the server.
+Several nodes behind a load balancer share one database and bucket ([clusters](docs/guide/cluster.md)). On one machine, [`deploy/prd`](deploy/prd/docker-compose.yml) starts PostgreSQL, SeaweedFS and the server with authentication required; [`deploy/dev`](deploy/dev/docker-compose.yml) runs the same anonymously, for trials ([deploy.md](docs/guide/deploy.md#docker-compose)).
 
 ### Tokens
 

@@ -108,7 +108,7 @@ docker run -d --name scion -p 7080:7080 \
 docker exec scion scion admin token create --subject admin --group admins
 ```
 
-多个节点放在负载均衡后面，共用一个数据库和 bucket（见[多节点](docs/guide/cluster.zh-CN.md)）。想在一台机器上试用全部组件，用 [`deploy/compose`](deploy/compose/docker-compose.yml)，它会启动 PostgreSQL、SeaweedFS 和服务端。
+多个节点放在负载均衡后面，共用一个数据库和 bucket（见[多节点](docs/guide/cluster.zh-CN.md)）。单机部署用 [`deploy/prd`](deploy/prd/docker-compose.yml)，它会启动 PostgreSQL、SeaweedFS 和必须认证的服务端；[`deploy/dev`](deploy/dev/docker-compose.yml) 以匿名方式运行同样的组件，用于试用（见 [deploy.md](docs/guide/deploy.zh-CN.md#docker-compose)）。
 
 ### 令牌
 

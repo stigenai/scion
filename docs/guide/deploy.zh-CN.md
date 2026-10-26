@@ -104,34 +104,57 @@ docker run -d -p 7080:7080 -v scion-data:/data scion --log-format json server --
 
 ## docker compose
 
-[`deploy/compose/docker-compose.yml`](../../deploy/compose/docker-compose.yml) 用于开发和试用：密钥是固定的开发密钥，并且以 `SCION_ALLOW_ANONYMOUS=true` 匿名运行。它包含以下服务：
-- PostgreSQL：Standard 档的元数据库；
-- SeaweedFS：S3 兼容对象存储，启动时创建 bucket `scion-objects`；
-- `scion server`；
-- 可选的区域缓存 `scion cache`。
+单机部署有两份 compose 文件。两者都包含 PostgreSQL（Standard 档的元数据库）、SeaweedFS（S3 兼容对象存储，启动时创建 bucket `scion-objects`）和 `scion server`；加 `--profile cache` 还会在 7090 启动区域缓存 `scion cache`。
+
+| | [`deploy/prd`](../../deploy/prd/docker-compose.yml) | [`deploy/dev`](../../deploy/dev/docker-compose.yml) |
+|---|---|---|
+| 用途 | 单机生产部署 | 开发和试用 |
+| 认证 | 必须认证：`SCION_AUTH_REQUIRED=true` | 不认证：`SCION_ALLOW_ANONYMOUS=true` |
+| 密钥 | 来自 `.env`，缺少时 compose 拒绝启动 | 固定的开发密钥 |
+| 重启 | `restart: unless-stopped` | 不自动重启 |
+| 端口 | 7080、9464（启用缓存时还有 7090、9465） | 另外开放 PostgreSQL 5432 和 S3 8333，供 `cargo run` 和测试使用 |
+| 默认启动的服务 | 全部 | 只有 PostgreSQL 和 S3，服务端要加 `--profile server` |
+
+### 生产：`deploy/prd`
 
 ```sh
+cd deploy/prd
+printf 'SCION_DB_PASSWORD=%s\nSCION_S3_SECRET=%s\n' "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" > .env
+chmod 600 .env
 # 国内用阿里云上的 scion 镜像，其余镜像走镜像站
-SCION_IMAGE=opencsg-registry.cn-beijing.cr.aliyuncs.com/opencsghq/scion:latest REGISTRY=docker.m.daocloud.io docker compose -f deploy/compose/docker-compose.yml up -d
+printf 'SCION_IMAGE=opencsg-registry.cn-beijing.cr.aliyuncs.com/opencsghq/scion:latest\nREGISTRY=docker.m.daocloud.io\n' >> .env
+docker compose up -d                       # 加 --profile cache 同时启动区域缓存
+docker compose exec scion scion admin token create --subject admin --group admins   # 第一个管理员
+
+scn login http://服务器:7080 scn_pat_…
+scn repo create http://服务器:7080/demo
+```
+
+- **镜像**：默认 `opencsghq/scion:latest`；在 `.env` 里设置 `SCION_IMAGE=…:0.1.11` 可以固定版本。
+- **登录与策略**：令牌可以直接使用。需要浏览器登录（不带令牌的 `scn login`）、外部签发方、组织或访问策略时，把签名密钥和 `auth.toml` 挂载到 `scion` 服务，并设置 `SCION_JWT_KEY_FILE` 和 `SCION_AUTH_CONFIG`，见 [auth.md](auth.zh-CN.md)。这些文件要能被镜像里的用户（uid 10001）读取。
+- **指标**：9464 不需要认证，不要暴露到公网。
+- **数据**：在 `pg-data` 和 `s3-data` 两个卷里；PostgreSQL 用 `docker compose exec postgres pg_dump -U scion scion` 备份。
+- **超出单机时**：改用正式的 S3 或 MinIO 服务（见 [object-storage.md](object-storage.zh-CN.md)），多节点设置 `--advertise-url` 和 `--cluster-secret`（见 [cluster.md](cluster.zh-CN.md)）。
+
+### 开发和试用：`deploy/dev`
+
+```sh
+docker compose -f deploy/dev/docker-compose.yml up -d                    # 只启动 PostgreSQL + S3，供 cargo run 和测试使用
+# 同时启动服务端；国内用阿里云上的 scion 镜像，其余镜像走镜像站
+SCION_IMAGE=opencsg-registry.cn-beijing.cr.aliyuncs.com/opencsghq/scion:latest REGISTRY=docker.m.daocloud.io \
+  docker compose -f deploy/dev/docker-compose.yml --profile server up -d
 # 能访问 Docker Hub 时，直接用 opencsghq/scion:latest
-docker compose -f deploy/compose/docker-compose.yml up -d
+docker compose -f deploy/dev/docker-compose.yml --profile server up -d
 # 用本地源码构建的服务端
-docker build -t scion:dev . && SCION_IMAGE=scion:dev docker compose -f deploy/compose/docker-compose.yml up -d
+docker build -t scion:dev . && SCION_IMAGE=scion:dev docker compose -f deploy/dev/docker-compose.yml --profile server up -d
 # 同时启动区域缓存（7090）
-docker compose -f deploy/compose/docker-compose.yml --profile cache up -d
+docker compose -f deploy/dev/docker-compose.yml --profile server --profile cache up -d
 
 scn doctor http://localhost:7080
 scn repo create http://localhost:7080/demo
 scn clone http://localhost:7080/demo
 curl -s localhost:9464/metrics | head
 ```
-
-### 生产环境需要修改的地方
-
-- **密钥**：数据库密码（`SCION_DB_PASSWORD`）和 S3 密钥（`deploy/dev/s3.json`）只能用于开发。
-- **认证**：开启 `--auth-required`，并配置签名密钥或外部签发方，见 [auth.md](auth.zh-CN.md)。
-- **对象存储**：改用正式的 S3 或 MinIO 服务，见 [object-storage.md](object-storage.zh-CN.md)。
-- **多节点**：设置 `--advertise-url` 和 `--cluster-secret`，见 [cluster.md](cluster.zh-CN.md)。
 
 ## 健康检查
 

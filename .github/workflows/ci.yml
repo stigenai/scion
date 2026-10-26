@@ -134,16 +134,29 @@ jobs:
           build-args: CARGO_PROFILE=dev
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - name: Compose smoke test
+      - name: Compose smoke test (production, authentication required)
+        working-directory: deploy/prd
         run: |
-          compose="docker compose -f deploy/compose/docker-compose.yml"
-          $compose up -d --wait
-          $compose exec -T scion scn --endpoint http://127.0.0.1:7080 repo create demo
-          $compose exec -T scion sh -c 'cd /data && scn --endpoint http://127.0.0.1:7080 clone demo \
+          printf 'SCION_DB_PASSWORD=%s\nSCION_S3_SECRET=%s\n' "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" > .env
+          docker compose up -d --wait
+          # Anonymous requests are refused (a bare `!` would not fail the step under bash -e)
+          if docker compose exec -T scion scn --endpoint http://127.0.0.1:7080 repo create anonymous; then exit 1; fi
+          token=$(docker compose exec -T scion scion admin token create --subject admin --group admins | sed -n 's/^token: //p')
+          docker compose exec -T -e SCION_TOKEN="$token" scion sh -c 'scn --endpoint http://127.0.0.1:7080 repo create demo \
+            && cd /data && scn --endpoint http://127.0.0.1:7080 clone demo \
             && cd demo && echo hello > a.txt && scn commit -m first && scn land && scn cat main:a.txt' | grep -x hello
           curl -fs localhost:9464/metrics | grep 'scion_land_batches_total{outcome="landed"} 1'
       - if: failure()
-        run: docker compose -f deploy/compose/docker-compose.yml logs
+        working-directory: deploy/prd
+        run: docker compose logs
+      - name: Compose smoke test (development, anonymous)
+        run: |
+          (cd deploy/prd && docker compose down)
+          compose="docker compose -f deploy/dev/docker-compose.yml --profile server"
+          $compose up -d --wait
+          $compose exec -T scion scn --endpoint http://127.0.0.1:7080 repo create demo
+      - if: failure()
+        run: docker compose -f deploy/dev/docker-compose.yml --profile server logs
 
   # 函数级测试要求（服务端设计文档 §12.1）
   coverage:

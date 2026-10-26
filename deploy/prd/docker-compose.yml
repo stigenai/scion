@@ -1,0 +1,111 @@
+# Scion for production on one machine: PostgreSQL (the Standard tier's metadata database), SeaweedFS
+# (S3-compatible objects) and scion server with authentication required; optionally the regional cache.
+# See docs/guide/deploy.md. For development and trials (fixed secrets, anonymous), use deploy/dev.
+#
+#   cd deploy/prd
+#   printf 'SCION_DB_PASSWORD=%s\nSCION_S3_SECRET=%s\n' "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" > .env
+#   chmod 600 .env
+#   docker compose up -d
+#   docker compose exec scion scion admin token create --subject admin --group admins   # the first administrator
+#
+# The image is opencsghq/scion:latest; pin a version with SCION_IMAGE=opencsghq/scion:0.1.11. Through a
+# registry mirror: REGISTRY=docker.m.daocloud.io.
+name: scion
+
+services:
+  postgres:
+    image: ${REGISTRY:-docker.io}/library/postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: scion
+      POSTGRES_PASSWORD: ${SCION_DB_PASSWORD:?set SCION_DB_PASSWORD in .env}
+      POSTGRES_DB: scion
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scion"]
+      interval: 5s
+      retries: 30
+
+  s3:
+    image: ${REGISTRY:-docker.io}/chrislusf/seaweedfs:4.48
+    restart: unless-stopped
+    environment:
+      S3_SECRET: ${SCION_S3_SECRET:?set SCION_S3_SECRET in .env}
+    # The S3 credentials come from .env rather than a file, so no secret sits next to this one
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        printf '{"identities":[{"name":"scion","credentials":[{"accessKey":"scion","secretKey":"%s"}],"actions":["Admin","Read","Write","List","Tagging"]}]}'
+        "$$S3_SECRET" > /tmp/s3.json && exec /entrypoint.sh server -s3 -s3.config=/tmp/s3.json
+    volumes:
+      - s3-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "echo 's3.bucket.list' | weed shell >/dev/null 2>&1"]
+      interval: 5s
+      retries: 30
+
+  s3-init:
+    image: ${REGISTRY:-docker.io}/chrislusf/seaweedfs:4.48
+    depends_on:
+      s3:
+        condition: service_healthy
+    # Idempotent: creating an existing bucket fails, so success is the bucket being listed afterwards
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        echo 's3.bucket.create -name scion-objects' | weed shell -master=s3:9333;
+        echo 's3.bucket.list' | weed shell -master=s3:9333 | grep -q scion-objects
+
+  scion:
+    image: ${SCION_IMAGE:-opencsghq/scion:latest}
+    restart: unless-stopped
+    command: ["--log-format", "json", "server"]
+    environment:
+      SCION_LISTEN: 0.0.0.0:7080
+      # Tokens are created with `scion admin token create`; for browser login, external issuers and
+      # policies, add SCION_JWT_KEY_FILE and SCION_AUTH_CONFIG with mounted files (docs/guide/auth.md)
+      SCION_AUTH_REQUIRED: "true"
+      SCION_META: postgres://scion:${SCION_DB_PASSWORD}@postgres:5432/scion
+      SCION_BLOBS: s3://scion-objects
+      SCION_S3_ENDPOINT: http://s3:8333
+      SCION_S3_ACCESS_KEY_ID: scion
+      SCION_S3_SECRET_ACCESS_KEY: ${SCION_S3_SECRET}
+      # Unauthenticated: keep 9464 off public networks
+      SCION_METRICS_LISTEN: 0.0.0.0:9464
+    depends_on:
+      postgres:
+        condition: service_healthy
+      s3-init:
+        condition: service_completed_successfully
+    ports:
+      - "7080:7080"   # gRPC
+      - "9464:9464"   # /metrics
+    healthcheck:
+      test: ["CMD", "scn", "doctor", "--endpoint", "http://127.0.0.1:7080"]
+      interval: 5s
+      retries: 30
+
+  # The regional cache (optional): docker compose --profile cache up -d
+  cache:
+    profiles: ["cache"]
+    image: ${SCION_IMAGE:-opencsghq/scion:latest}
+    restart: unless-stopped
+    command: ["--log-format", "json", "cache"]
+    environment:
+      SCION_CACHE_LISTEN: 0.0.0.0:7090
+      SCION_CACHE_UPSTREAMS: http://scion:7080
+      SCION_CACHE_MEMORY: 2GiB
+      SCION_METRICS_LISTEN: 0.0.0.0:9464
+    depends_on:
+      scion:
+        condition: service_healthy
+    ports:
+      - "7090:7090"
+      - "9465:9464"
+
+volumes:
+  pg-data:
+  s3-data:

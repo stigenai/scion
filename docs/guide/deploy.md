@@ -104,33 +104,51 @@ Every option has an environment variable (`SCION_META`, `SCION_BLOBS`, `SCION_S3
 
 ## docker compose
 
-[`deploy/compose/docker-compose.yml`](../../deploy/compose/docker-compose.yml) is for development and trials: its secrets are fixed development secrets, and it runs anonymously with `SCION_ALLOW_ANONYMOUS=true`. Its services:
-- PostgreSQL, the metadata database of the Standard tier;
-- SeaweedFS, S3-compatible object storage, which creates the bucket `scion-objects` at start;
-- `scion server`;
-- optionally, the regional cache `scion cache`.
+Two compose files cover one machine. Both run PostgreSQL (the metadata database of the Standard tier), SeaweedFS (S3-compatible object storage that creates the bucket `scion-objects` at start), `scion server` and, with `--profile cache`, the regional cache `scion cache` on 7090.
+
+| | [`deploy/prd`](../../deploy/prd/docker-compose.yml) | [`deploy/dev`](../../deploy/dev/docker-compose.yml) |
+|---|---|---|
+| For | Production on one machine | Development and trials |
+| Authentication | Required: `SCION_AUTH_REQUIRED=true` | None: `SCION_ALLOW_ANONYMOUS=true` |
+| Secrets | From `.env`; compose refuses to start without them | Fixed development secrets |
+| Restarts | `restart: unless-stopped` | None |
+| Ports | 7080, 9464 (and 7090, 9465 with the cache) | Also PostgreSQL 5432 and S3 8333, for `cargo run` and the tests |
+| Default services | All | Only PostgreSQL and S3; the server needs `--profile server` |
+
+### Production: `deploy/prd`
 
 ```sh
-docker compose -f deploy/compose/docker-compose.yml up -d                  # the image opencsghq/scion:latest
+cd deploy/prd
+printf 'SCION_DB_PASSWORD=%s\nSCION_S3_SECRET=%s\n' "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" > .env
+chmod 600 .env
+docker compose up -d                       # add --profile cache for the regional cache
+docker compose exec scion scion admin token create --subject admin --group admins   # the first administrator
+
+scn login http://SERVER:7080 scn_pat_…
+scn repo create http://SERVER:7080/demo
+```
+
+- **Image:** `opencsghq/scion:latest`; pin a release with `SCION_IMAGE=opencsghq/scion:0.1.11` in `.env`, and add `REGISTRY=docker.m.daocloud.io` when Docker Hub is out of reach.
+- **Sign-in and policies:** tokens work as they are. For browser login (`scn login` without a token), external issuers, organizations or a policy, mount a signing key and an `auth.toml` into the `scion` service and set `SCION_JWT_KEY_FILE` and `SCION_AUTH_CONFIG`; see [auth.md](auth.md). The files must be readable by the image's user (uid 10001).
+- **Metrics:** 9464 needs no authentication; keep it off public networks.
+- **Data:** in the volumes `pg-data` and `s3-data`; back up PostgreSQL with `docker compose exec postgres pg_dump -U scion scion`.
+- **Beyond one machine:** use a real S3 or MinIO service ([object-storage.md](object-storage.md)) and several nodes with `--advertise-url` and `--cluster-secret` ([cluster.md](cluster.md)).
+
+### Development and trials: `deploy/dev`
+
+```sh
+docker compose -f deploy/dev/docker-compose.yml up -d                    # PostgreSQL + S3 for cargo run and the tests
+docker compose -f deploy/dev/docker-compose.yml --profile server up -d   # the server too (opencsghq/scion:latest)
 # The server built from this checkout instead
-docker build -t scion:dev . && SCION_IMAGE=scion:dev docker compose -f deploy/compose/docker-compose.yml up -d
-# Through a registry mirror
-REGISTRY=docker.m.daocloud.io docker compose -f deploy/compose/docker-compose.yml up -d
-# With the regional cache as well (7090)
-docker compose -f deploy/compose/docker-compose.yml --profile cache up -d
+docker build -t scion:dev . && SCION_IMAGE=scion:dev docker compose -f deploy/dev/docker-compose.yml --profile server up -d
+# Through a registry mirror; with the regional cache as well (7090)
+REGISTRY=docker.m.daocloud.io docker compose -f deploy/dev/docker-compose.yml --profile server --profile cache up -d
 
 scn doctor http://localhost:7080
 scn repo create http://localhost:7080/demo
 scn clone http://localhost:7080/demo
 curl -s localhost:9464/metrics | head
 ```
-
-### What to change for production
-
-- **Secrets:** the database password (`SCION_DB_PASSWORD`) and the S3 keys (`deploy/dev/s3.json`) are for development only.
-- **Authentication:** turn on `--auth-required` and configure a signing key or an external issuer; see [auth.md](auth.md).
-- **Object storage:** use a real S3 or MinIO service; see [object-storage.md](object-storage.md).
-- **Several nodes:** set `--advertise-url` and `--cluster-secret`; see [cluster.md](cluster.md).
 
 ## Health checks
 

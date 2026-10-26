@@ -682,7 +682,7 @@ SDK、工作副本、daemon 和 CLI 的完整设计见 [`rust-client-architectur
 > - **fork**：一个事务内用 `INSERT … SELECT` 复制对象索引、提交、派生数据、路径历史和 ref；有效的 redaction 用 `ROW_NUMBER()` 分配新的 seq。不复制合入记录和请求结果。超大仓库的异步 fork 推迟。
 > - **ref 写操作**：`CreateRef` / `UpdateRef`（可以非快进，即强制回退）/ `DeleteRef`，都是单个 ref 的 CAS，需要该 ref 的 land 权限。默认分支不能删除。
 >   - 删除后重新创建的 ref 版本从 1 开始；WatchRefs 不推送删除。
-> - **部署**：`Dockerfile`（多阶段构建，BuildKit 缓存，非 root 运行，基础镜像可换成镜像站）；`deploy/compose`（PostgreSQL + SeaweedFS + server，可选 cache profile）。
+> - **部署**：`Dockerfile`（多阶段构建，BuildKit 缓存，非 root 运行，基础镜像可换成镜像站）；`deploy/compose`（现为 `deploy/prd` 和 `deploy/dev`；PostgreSQL + SeaweedFS + server，可选 cache profile）。
 
 > **ref 变化事件实现说明**（2026-10-18）：starhub 接入 S1 的事件部分。
 > - **事件表**：`ref_events` 在 `land_commit` / `delete_ref` / `fork_repo` 的同一事务里写入。seq 取自单行计数器 `ref_event_seq`，与 `redaction_seq` 相同：行锁让 seq 顺序等于提交顺序，按 seq 增量读取不会漏掉晚提交的小序号。

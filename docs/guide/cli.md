@@ -6,7 +6,7 @@ Starting a server, then the commands of an everyday workflow. [Coming from git](
 
 ```sh
 # Option 1: docker compose with PostgreSQL + S3-compatible storage (see deploy.md)
-docker compose -f deploy/compose/docker-compose.yml up -d
+docker compose -f deploy/dev/docker-compose.yml --profile server up -d   # anonymous; production: deploy/prd
 
 # Option 2: a server in Lite mode (SQLite + a local directory, persisted), from source
 cargo run -p scion -- server --lite --data-dir ./.scion-data
