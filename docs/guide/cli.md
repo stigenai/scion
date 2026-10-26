@@ -55,7 +55,7 @@ scn log -n 10 -- src                # history from HEAD, newest first, optionall
 scn log main                        # the branch on the server, with what others landed since your last sync
 scn log --follow -- docs/guide.md   # one file's history across renames, as in git
 scn reflog main                     # how the branch moved: created, fast-forward (lands) or forced, when and by whom
-scn grep -n TODO -- src             # search a commit's files on the server (HEAD; not local changes)
+scn grep -n TODO -- src             # search the working tree, as git grep; with REV, that commit on the server
 scn watch                           # follow the branches on the server: one line per commit as it lands (--json for agents)
 scn diff                            # uncommitted local changes (unified diff)
 scn diff main                       # what the tip of main changed; `scn diff A B` compares two revisions

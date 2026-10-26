@@ -547,8 +547,8 @@ enum Command {
         #[arg(last = true, value_name = "PATH")]
         paths: Vec<String>,
     },
-    /// Search the files of a commit (default HEAD) on the server, like `git grep`; local changes
-    /// are not searched. Exits 1 when nothing matches.
+    /// Search files like `git grep`: without a revision the working tree (HEAD on the server, local
+    /// changes searched here), else that commit on the server. Exits 1 when nothing matches.
     #[command(
         after_help = "Inside a working copy, paths are relative to the current directory, which is also \
         what it searches without paths.\n\nExamples:\n  scn grep TODO\n  scn grep -n -i 'fn main' -- src\n  \
@@ -557,7 +557,7 @@ enum Command {
     Grep {
         /// A regular expression (Rust regex syntax, close to git grep -E).
         pattern: String,
-        /// The commit to search (default: HEAD in a working copy, else the default branch).
+        /// The commit to search (default: the working tree in a working copy, else the default branch).
         #[arg(value_name = "REV")]
         revision: Option<String>,
         /// Show line numbers.

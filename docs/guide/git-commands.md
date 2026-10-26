@@ -28,7 +28,7 @@ A quick reference: which git commands you can type in `scn` as they are, which w
 | `git show [REV] [-- PATH]` | the same | |
 | `git diff [--cached]`, `git diff A B`, `A..B`, `A...B` | the same | `--name-only`, `--name-status`, `--stat`, `-- PATH`; with no staging area, `--cached` / `--staged` show the same local changes |
 | `git blame [-L N,M] PATH` | `scn blame [-L N,M] PATH` | `scn blame REV:PATH` for a revision |
-| `git grep [-n] [-l] [-i] [-F] PATTERN [REV] [-- PATH...]` | the same | Searches the commit (HEAD by default) on the server, not local changes |
+| `git grep [-n] [-l] [-i] [-F] PATTERN [REV] [-- PATH...]` | the same | The working tree: HEAD on the server, local changes on your machine; with REV, that commit on the server |
 | `git reflog [BRANCH]` | `scn reflog [BRANCH] [-n N]` | How the branch moved on the server: created, fast-forward or forced, when and by whom |
 | `git remote -v`, `git remote get-url origin`, `git remote set-url origin URL` | the same | One remote, `origin`; `set-url` checks the new URL has the working copy's commits |
 | `git archive REV` | `scn archive REV` | `--format tar.gz\|zip\|tar`, `--prefix`, `-o FILE` |

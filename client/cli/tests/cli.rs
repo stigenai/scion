@@ -1073,13 +1073,7 @@ async fn grep_searches_the_commit_on_the_server() {
             &[&["commit", "-m", "base", "--json"][..], &author].concat(),
         ));
         json_of(&scn_in(&wc, &["land", "--json"]));
-        // A local change is not searched: the commit is
-        std::fs::write(wc.join("src/main.rs"), "fn changed() {}\n").expect("write");
-
-        assert_eq!(
-            out(&wc, &["grep", "-n", "fn"]),
-            (Some(0), "src/main.rs:2:fn main() {}\n".into())
-        );
+        // The commit, named
         assert_eq!(
             out(&wc, &["grep", "-i", "todo"]),
             (Some(0), "docs/notes.md:TODO: write docs\nsrc/main.rs:// todo\n".into())
@@ -1088,6 +1082,35 @@ async fn grep_searches_the_commit_on_the_server() {
             out(&wc.join("src"), &["grep", "-il", "todo"]),
             (Some(0), "main.rs\n".into())
         );
+        // Without a revision, the working tree: local changes in place of the commit's files
+        std::fs::write(wc.join("src/main.rs"), "fn changed() {}\n").expect("write");
+        std::fs::write(wc.join("src/new.rs"), "fn added() {}\n").expect("write");
+        std::fs::write(wc.join("src/data.bin"), b"fn\0").expect("write");
+        assert_eq!(
+            out(&wc, &["grep", "-n", "fn"]),
+            (
+                Some(0),
+                "src/main.rs:1:fn changed() {}\nsrc/new.rs:1:fn added() {}\n".into()
+            )
+        );
+        assert_eq!(
+            out(&wc, &["grep", "-n", "fn", "HEAD"]),
+            (Some(0), "src/main.rs:2:fn main() {}\n".into())
+        );
+        assert_eq!(out(&wc, &["grep", "-i", "todo", "--", "src"]), (Some(1), String::new()));
+        std::fs::remove_file(wc.join("docs/notes.md")).expect("rm");
+        assert_eq!(out(&wc, &["grep", "-i", "todo"]), (Some(1), String::new()));
+        let v = json_of(&scn_in(&wc, &["grep", "fn", "--json"]));
+        assert_eq!(
+            (v["files_skipped"].as_u64(), v["matches"].as_array().map(Vec::len)),
+            (Some(1), Some(2))
+        );
+        let o = scn_in(&wc, &["grep", "-m", "1", "fn"]);
+        assert_eq!(String::from_utf8_lossy(&o.stdout), "src/main.rs:fn changed() {}\n");
+        assert!(String::from_utf8_lossy(&o.stderr).contains("stopped at 1 matching lines"));
+        std::fs::remove_file(wc.join("src/new.rs")).expect("rm");
+        std::fs::remove_file(wc.join("src/data.bin")).expect("rm");
+        json_of(&scn_in(&wc, &["restore", ".", "--json"]));
         assert_eq!(
             out(&wc.join("src"), &["grep", "-l", "TODO", "--", "../docs"]),
             (Some(0), "../docs/notes.md\n".into())

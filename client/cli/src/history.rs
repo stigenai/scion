@@ -133,8 +133,9 @@ impl Render for GrepOut {
     }
 }
 
-/// `scn grep`: searches the commit (by default the working copy's, HEAD), not local changes,
-/// on the server. In a working copy, paths are relative to the current directory, and with none
+/// `scn grep`: searches a commit on the server. In a working copy without a revision it searches
+/// the working tree, as git does: HEAD on the server, with the files changed locally searched here
+/// in their place. In a working copy, paths are relative to the current directory, and with none
 /// given it searches the current directory.
 pub async fn grep(
     ctx: &Ctx,
@@ -144,6 +145,7 @@ pub async fn grep(
     names_only: bool,
 ) -> Result<GrepOut, CliError> {
     let (client, default_rev) = query_client(ctx).await?;
+    let worktree = revision.is_none();
     let revision = ctx.expand_rev(&revision.map_or(default_rev, str::to_owned))?;
     let wc = ctx.working_copy();
     let (paths, cwd) = match &wc {
@@ -159,9 +161,23 @@ pub async fn grep(
         }
         None => (query.paths.clone(), String::new()),
     };
-    let found = client
-        .grep(&revision, &scion_client::GrepQuery { paths, ..query })
+    let local = match (&wc, worktree) {
+        (Some(w), true) => Some(w.local_changes()?),
+        _ => None,
+    };
+    let mut found = client
+        .grep(
+            &revision,
+            &scion_client::GrepQuery {
+                paths: paths.clone(),
+                ..query.clone()
+            },
+        )
         .await?;
+    // After the server, which refuses a bad pattern first
+    if let Some(changes) = local {
+        overlay(&mut found, &changes, &paths, &local_pattern(&query)?, query.max_matches);
+    }
     if found.truncated && ctx.chatty {
         eprintln!(
             "note: stopped at {} matching lines; narrow it with a path, or raise --max-count",
@@ -187,6 +203,67 @@ pub async fn grep(
         names_only,
         cwd,
     })
+}
+
+/// The pattern as the server builds it, for searching local files.
+fn local_pattern(query: &scion_client::GrepQuery) -> Result<regex::bytes::Regex, CliError> {
+    let source = if query.fixed {
+        regex::escape(&query.pattern)
+    } else {
+        query.pattern.clone()
+    };
+    regex::bytes::RegexBuilder::new(&source)
+        .case_insensitive(query.ignore_case)
+        .build()
+        .map_err(|e| CliError::Usage(format!("bad pattern: {e}")))
+}
+
+/// Puts local changes over the server's matches at HEAD: files changed locally lose their matches
+/// there and are searched here instead (deleted ones not at all), with the server's limits: text
+/// files up to 1 MiB, lines cut to 1000 bytes.
+fn overlay(
+    found: &mut scion_client::GrepFound,
+    changes: &[scion_wc::LocalChange],
+    paths: &[String],
+    pattern: &regex::bytes::Regex,
+    max_matches: u32,
+) {
+    let limit = match max_matches {
+        0 => 1000,
+        n => n.min(10_000),
+    } as usize;
+    let wanted = |p: &str| paths.is_empty() || paths.iter().any(|d| in_path(p, Some(d)));
+    let changed: std::collections::HashSet<&str> =
+        changes.iter().map(|c| c.path.as_str()).filter(|p| wanted(p)).collect();
+    found.matches.retain(|m| !changed.contains(m.path.as_str()));
+    for c in changes.iter().filter(|c| changed.contains(c.path.as_str())) {
+        let Some((mode, data)) = &c.new else { continue };
+        let text =
+            *mode != scion_wc::Mode::Symlink && data.len() <= 1 << 20 && !data[..data.len().min(8000)].contains(&0);
+        if !text {
+            found.skipped += 1;
+            continue;
+        }
+        found.searched += 1;
+        for (i, line) in data.split(|b| *b == b'\n').enumerate() {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            if pattern.is_match(line) {
+                found.matches.push(scion_client::GrepLine {
+                    path: c.path.clone(),
+                    line: i as u64 + 1,
+                    text: bytes::Bytes::copy_from_slice(&line[..line.len().min(1000)]),
+                });
+            }
+        }
+    }
+    // The server's order: depth first, by name
+    found
+        .matches
+        .sort_by(|a, b| a.path.split('/').cmp(b.path.split('/')).then(a.line.cmp(&b.line)));
+    if found.matches.len() > limit {
+        found.matches.truncate(limit);
+        found.truncated = true;
+    }
 }
 
 #[derive(Debug, Serialize)]

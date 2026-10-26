@@ -51,7 +51,7 @@
 | `git show [REV] [-- PATH]` | `scn show [REV] [--name-only | --name-status | --stat] [-- PATH]` | |
 | `git diff`、`git diff A B`、`A..B`、`A...B` | `scn diff`、`scn diff A B`、`A..B`、`A...B` | `--name-only`、`--name-status`、`--stat`、`-- PATH` |
 | `git blame [REV] -- PATH` | `scn blame [REV:]PATH` | 单独的 `PATH` 相对当前目录，`log`、`show`、`diff` 的路径也是这样；`REV:PATH` 从根目录算起，与 git 相同。合并带进来的行沿用它所在分支的归属，与 git 相同；和 git 不同的是，遇到重命名就停止 |
-| `git grep [-n] [-l] [-i] [-F] PATTERN [REV] [-- PATH...]` | 相同，另有 `-m N` | 在服务端对某个提交（默认 HEAD）搜索，所以不需要检出，稀疏检出没检出的部分也能搜到；不搜索本地改动。使用 Rust 正则语法（接近 `-E`）。跳过二进制文件、超过 1 MiB 的文件、符号链接和被 redact 的文件；默认找到 1000 行就停止，`-m` 可以调整（最多 10000）。什么也没找到时退出码为 1 |
+| `git grep [-n] [-l] [-i] [-F] PATTERN [REV] [-- PATH...]` | 相同，另有 `-m N` | 在工作副本里不给 REV 时，与 git 一样搜索工作区：在服务端搜索 HEAD（所以稀疏检出没检出的部分也能搜到），本地改动过的文件（包括新文件）改为在本机搜索，删除的文件不搜索。给出 REV 或不在工作副本里时，在服务端搜索那个提交，不需要检出。使用 Rust 正则语法（接近 `-E`）。跳过二进制文件、超过 1 MiB 的文件、符号链接和被 redact 的文件；默认找到 1000 行就停止，`-m` 可以调整（最多 10000）。什么也没找到时退出码为 1 |
 | `git reflog [BRANCH]` | `scn reflog [BRANCH] [-n N]` | 由服务端保存，每个分支和标签都有，所以包括所有人的合入，而不只是某一个 clone 的：`ID main@{N}: 时间 created / fast-forward / forced by 谁: 标题`，从新到旧。“谁”是发出这次移动请求的账号；服务端把几个请求合在一次移动里合入时，会列出所有人（`by alice, bob`）。服务端开始记录这项信息之前的移动不显示是谁。删除分支会同时删除它的记录 |
 | `git show REV:PATH` | `scn cat REV:PATH` | 不需要工作副本 |
 | `git ls-tree REV DIR` | `scn ls REV:DIR`，根目录用 `scn ls REV` | 不是版本号的单个参数按目录处理；`:DIR` 强制当作目录 |

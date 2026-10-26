@@ -3371,6 +3371,7 @@ dependencies = [
  "clap",
  "hyper-util",
  "keyring",
+ "regex",
  "scion-api",
  "scion-auth",
  "scion-client",
