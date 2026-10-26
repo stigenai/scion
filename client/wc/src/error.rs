@@ -56,6 +56,12 @@ pub enum Error {
     NoMergeInProgress,
     #[error("no sync is in progress")]
     NoSyncInProgress,
+    /// `commit PATH...` with a path that has no local change.
+    #[error("no local changes in {}", .0.join(", "))]
+    NoChangesIn(Vec<String>),
+    /// `commit PATH...` while finishing a sync, merge, revert or cherry-pick.
+    #[error("the commit that finishes a sync, merge, revert or cherry-pick takes every change; leave out the paths")]
+    PartialFinish,
     /// `revert` / `cherry-pick` of a commit that changed files the sparse checkout leaves out:
     /// the commit that finishes it is made from local files.
     #[error("the commit changes files outside the sparse checkout: {}", .0.join(", "))]

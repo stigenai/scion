@@ -12,6 +12,7 @@ A quick reference: which git commands you can type in `scn` as they are, which w
 | `git status [-s] [-b] [--porcelain]` | `scn status` | git's long format; `-s` gives `A ` / `M ` / `D ` (every change is staged) and `UU` for conflicts |
 | `git config user.name NAME`, `git config --list`, `--unset` | the same | Only `user.name` and `user.email`; settings are per user (`--global` is accepted) |
 | `git commit -m MSG`, `-am MSG` | `scn commit -m MSG`, `-am MSG` | Takes every local change (`-a` is accepted and changes nothing); several `-m` become paragraphs |
+| `git commit -m MSG PATH...` | `scn commit -m MSG PATH...` | Only the changes at or under the paths; the rest stay local changes |
 | `git commit --amend` | `scn commit --amend` | |
 | `git restore [-s REV] PATH`, `git checkout REV -- PATH` | `scn restore [-s REV] PATH` | `--source` takes the files from REV as local changes |
 | `git switch B`, `git switch -c B` | `scn switch B`, `scn switch -c B` | |

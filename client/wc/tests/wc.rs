@@ -1511,6 +1511,70 @@ async fn sync_abort_goes_back_to_before_the_sync() {
     a.abort_merge(&c).await.expect("merge --abort");
 }
 
+#[tokio::test]
+async fn commit_paths_takes_only_their_changes() {
+    let srv = server().await;
+    let c = client(&srv.url).await;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let dir = tmp.path().join("wc");
+    let mut wc = WorkingCopy::clone(&c, &srv.url, "mono", "main", &dir, Sparse::full())
+        .await
+        .expect("clone");
+    for f in ["a.txt", "d/b.txt", "d/c.txt", "e.txt", "x.txt"] {
+        write(&dir, f, "1\n");
+    }
+    wc.commit(&c, "base", None).await.expect("commit");
+    wc.land(&c).await.expect("land");
+
+    write(&dir, "a.txt", "2\n");
+    write(&dir, "d/b.txt", "2\n");
+    write(&dir, "d/new.txt", "new\n");
+    std::fs::remove_file(dir.join("e.txt")).expect("rm");
+    let paths = |p: &[&str]| p.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+    // A path without changes refuses the whole commit
+    for (only, missing) in [(&["nope"][..], &["nope"][..]), (&["a.txt", "d/c.txt"], &["d/c.txt"])] {
+        let e = wc.commit_paths_with_stat(&c, "m", None, &paths(only)).await;
+        assert!(
+            matches!(&e, Err(Error::NoChangesIn(p)) if *p == paths(missing)),
+            "{e:?}"
+        );
+    }
+    assert!(wc.state().head.is_none());
+
+    // A directory takes the changes under it, a file its own; the rest stay local
+    let (_, stat) = wc
+        .commit_paths_with_stat(&c, "d", None, &paths(&["d/"]))
+        .await
+        .expect("commit")
+        .expect("changes");
+    let committed: Vec<&str> = stat.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(committed, ["d/b.txt", "d/new.txt"]);
+    assert_eq!(wc.status().expect("status"), status(&[], &["a.txt"], &["e.txt"]));
+    wc.commit_paths_with_stat(&c, "e", None, &paths(&["e.txt"]))
+        .await
+        .expect("commit")
+        .expect("changes");
+    assert_eq!(wc.status().expect("status"), status(&[], &["a.txt"], &[]));
+    wc.land(&c).await.expect("land");
+    assert_eq!(c.read_file("main", "d/new.txt").await.expect("cat").as_ref(), b"new\n");
+    assert_eq!(c.read_file("main", "a.txt").await.expect("cat").as_ref(), b"1\n");
+    assert_eq!(read(&dir, "a.txt"), "2\n");
+
+    // The commit that finishes a revert takes every change
+    wc.restore(&c, &[".".into()]).await.expect("restore");
+    write(&dir, "x.txt", "2\n");
+    let first = wc.commit(&c, "x2", None).await.expect("commit").expect("changes").id;
+    write(&dir, "x.txt", "3\n");
+    wc.commit(&c, "x3", None).await.expect("commit");
+    wc.land(&c).await.expect("land");
+    let o = wc.pick(&c, PickKind::Revert, first, None, "r".into(), None, None).await;
+    assert!(matches!(o, Err(Error::Conflict(_))), "{o:?}");
+    let e = wc.commit_paths_with_stat(&c, "", None, &paths(&["x.txt"])).await;
+    assert!(matches!(e, Err(Error::PartialFinish)), "{e:?}");
+    wc.abort_merge(&c).await.expect("abort");
+}
+
 #[cfg(unix)]
 fn chmod_x(root: &Path, rel: &str) {
     use std::os::unix::fs::PermissionsExt;

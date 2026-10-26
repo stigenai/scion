@@ -12,6 +12,7 @@
 | `git status [-s] [-b] [--porcelain]` | `scn status` | git 的长格式；`-s` 显示 `A ` / `M ` / `D `（所有改动都算已暂存），冲突是 `UU` |
 | `git config user.name NAME`、`git config --list`、`--unset` | 相同 | 只有 `user.name` 和 `user.email`；设置按用户保存（接受 `--global`） |
 | `git commit -m MSG`、`-am MSG` | `scn commit -m MSG`、`-am MSG` | 提交所有本地改动（接受 `-a`，但没有作用）；多个 `-m` 成为多段说明 |
+| `git commit -m MSG PATH...` | `scn commit -m MSG PATH...` | 只提交这些路径（及其下）的改动，其余仍是本地改动 |
 | `git commit --amend` | `scn commit --amend` | |
 | `git restore [-s REV] PATH`、`git checkout REV -- PATH` | `scn restore [-s REV] PATH` | `--source` 从 REV 取文件，成为本地改动 |
 | `git switch B`、`git switch -c B` | `scn switch B`、`scn switch -c B` | |

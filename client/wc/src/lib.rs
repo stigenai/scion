@@ -82,6 +82,14 @@ enum Change {
     },
 }
 
+impl Change {
+    fn path(&self) -> &str {
+        match self {
+            Change::Put { path, .. } | Change::Delete { path } => path,
+        }
+    }
+}
+
 /// 目录树中的一个文件。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TreeFile {
@@ -647,7 +655,24 @@ impl WorkingCopy {
         author: Option<(&str, &str)>,
     ) -> Result<Option<(CreatedChangeset, Vec<FileStat>)>> {
         let _lock = self.paths.lock()?;
-        self.commit_locked(client, message, author, None).await
+        self.commit_locked(client, message, author, None, &[]).await
+    }
+
+    /// Like [`WorkingCopy::commit_with_stat`], but commits only the changes at or under `paths`
+    /// (`git commit PATH...`); the others stay local changes. Every path must have a change,
+    /// and finishing a sync, merge, revert or cherry-pick takes every change, so it refuses then.
+    pub async fn commit_paths_with_stat(
+        &mut self,
+        client: &Client,
+        message: &str,
+        author: Option<(&str, &str)>,
+        paths: &[String],
+    ) -> Result<Option<(CreatedChangeset, Vec<FileStat>)>> {
+        let _lock = self.paths.lock()?;
+        if self.state.conflict.is_some() {
+            return Err(Error::PartialFinish);
+        }
+        self.commit_locked(client, message, author, None, paths).await
     }
 
     async fn commit_locked(
@@ -656,6 +681,7 @@ impl WorkingCopy {
         message: &str,
         author: Option<(&str, &str)>,
         merge: Option<ObjectId>,
+        only: &[String],
     ) -> Result<Option<(CreatedChangeset, Vec<FileStat>)>> {
         // Finishing a sync or merge that stopped on conflicts: its message, author and merge
         // parent are the defaults
@@ -668,7 +694,18 @@ impl WorkingCopy {
         if merge.is_none() && self.state.head_merge.is_some() {
             return Err(Error::OnPendingMerge);
         }
-        let (_, changes) = self.changes()?;
+        let (_, mut changes) = self.changes()?;
+        if !only.is_empty() {
+            let unchanged: Vec<String> = only
+                .iter()
+                .filter(|p| !changes.iter().any(|c| selects(std::slice::from_ref(p), c.path())))
+                .cloned()
+                .collect();
+            if !unchanged.is_empty() {
+                return Err(Error::NoChangesIn(unchanged));
+            }
+            changes.retain(|c| selects(only, c.path()));
+        }
         if changes.is_empty() {
             if conflict.is_some() {
                 self.state.conflict = None;
@@ -820,7 +857,7 @@ impl WorkingCopy {
         let old_merge = self.head_merge()?;
         self.uncommit_locked(client).await?;
         let author = author.or(old_author.as_ref().map(|(n, e)| (n.as_str(), e.as_str())));
-        self.commit_locked(client, message.unwrap_or(&old_message), author, old_merge)
+        self.commit_locked(client, message.unwrap_or(&old_message), author, old_merge, &[])
             .await
     }
 
@@ -894,12 +931,7 @@ impl WorkingCopy {
     /// [`WorkingCopy::restore`].
     pub async fn restore_from(&mut self, client: &Client, root: ObjectId, paths: &[String]) -> Result<Restored> {
         let _lock = self.paths.lock()?;
-        let wanted: Vec<&str> = paths.iter().map(|p| p.trim_end_matches('/')).collect();
-        let matches = |p: &str| {
-            wanted.iter().any(|w| {
-                w.is_empty() || *w == "." || p == *w || (p.starts_with(*w) && p.as_bytes().get(w.len()) == Some(&b'/'))
-            })
-        };
+        let matches = |p: &str| selects(paths, p);
         let (status, _) = self.changes()?;
         let changed = |p: &String| status.modified.contains(p) || status.deleted.contains(p);
         let dirstate = self.paths.load_dirstate()?;
@@ -936,12 +968,7 @@ impl WorkingCopy {
     }
 
     async fn restore_locked(&mut self, client: &Client, paths: &[String]) -> Result<Restored> {
-        let wanted: Vec<&str> = paths.iter().map(|p| p.trim_end_matches('/')).collect();
-        let matches = |p: &str| {
-            wanted.iter().any(|w| {
-                w.is_empty() || *w == "." || p == *w || (p.starts_with(*w) && p.as_bytes().get(w.len()) == Some(&b'/'))
-            })
-        };
+        let matches = |p: &str| selects(paths, p);
         let (status, _) = self.changes()?;
         let mut dirstate = self.paths.load_dirstate()?;
         let mut delta = BTreeMap::new();
@@ -1787,6 +1814,13 @@ impl WorkingCopy {
             self.push_head(*id);
         }
     }
+}
+
+/// Whether `path` is one of `paths` or under one of them (`.` or an empty path is everything).
+fn selects(paths: &[String], path: &str) -> bool {
+    paths.iter().map(|w| w.trim_end_matches('/')).any(|w| {
+        w.is_empty() || w == "." || path == w || (path.starts_with(w) && path.as_bytes().get(w.len()) == Some(&b'/'))
+    })
 }
 
 /// dirstate 中的快照（路径 → 文件）。

@@ -32,6 +32,7 @@ scn status                          # git's long format, and how far main on the
 scn commit -m "add readme"          # or --author "Ada <ada@example.com>"
 scn restore src/main.rs             # discard local changes to tracked files (`.` for all); added files are kept
 scn commit -m "add tests"           # another commit on top: pending commits stack, and `scn land` lands them all
+scn commit -m "docs only" docs/     # only the changes under docs/; the others stay local
 scn commit --amend                  # fold more local changes into the newest pending commit (keeps message and author)
 scn uncommit                        # drop the newest pending commit, keep its changes as local changes
 scn land                            # land on main; if main moved, the server rebases (three-way merge)

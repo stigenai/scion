@@ -6,7 +6,7 @@ English | [简体中文](coming-from-git.zh-CN.md)
 
 ## What is different in the model
 
-- **No staging area.** `scn commit` takes every local change. New, deleted and renamed files are found by scanning the working tree; there is no `add`, `rm` or `mv`.
+- **No staging area.** `scn commit` takes every local change, or with paths (`scn commit -m MSG src/`) the changes in them. New, deleted and renamed files are found by scanning the working tree; there is no `add`, `rm` or `mv`.
 - **No local history.** A working copy holds one snapshot. History lives on the server, so `log`, `blame`, `show` and `diff REV` are server queries, and `cat`, `ls` and `archive` work without a working copy.
 - **Committing is not publishing.**
   - `scn commit` creates a commit on the server that is not on any branch yet.
@@ -24,6 +24,7 @@ English | [简体中文](coming-from-git.zh-CN.md)
 | `git status` | `scn status` | git's long format; `-s` gives `A ` / `M ` / `D ` (every change is staged) and `UU` for conflicts. Like git against `origin/main`, it says how many commits the branch on the server has that the working copy lacks (`-sb`: `## main [ahead 1, behind 2]`); that asks the server, which `--no-ahead-behind` skips |
 | `git add`, `git rm`, `git mv` | not needed | Just change the files |
 | `git commit -m MSG`, `-am MSG` | `scn commit -m MSG`, `-am MSG` | `-a` is accepted and changes nothing. The author comes from `--author`, then `scn config`, then git's `user.name` / `user.email` |
+| `git commit -m MSG PATH...` | `scn commit -m MSG PATH...` | Only the changes at or under the paths (relative to the current directory); the rest stay local changes. Every path needs a change. Not with `-a` or `--amend`, nor when finishing a conflict |
 | `git commit --amend` | `scn commit --amend` | Only the newest pending commit |
 | `git reset --soft HEAD~1` | `scn uncommit` | Drops the newest pending commit and keeps its changes |
 | `git restore [-s REV] PATH`, `git checkout [REV] -- PATH` | `scn restore [-s REV] PATH` | `.` for everything; added files are kept (no `git clean`); `--source REV` takes the files from REV as local changes |
@@ -95,6 +96,6 @@ Suffixes combine as in git, for example `main~2^2`. A branch whose name literall
 
 ## Not available yet
 
-- **Working copy**: checking out an old revision, `stash`, `clean`, interactive rebase, partial commits (`add -p`).
+- **Working copy**: checking out an old revision, `stash`, `clean`, interactive rebase, committing part of a file (`add -p`).
 - **Queries**: annotated tags, `grep`, `bisect`, `reflog`.
 - **Collaboration**: `remote add`, `fetch`. The git CLI itself can clone, fetch and push a Scion repository (see [git clients](git-clients.md)).

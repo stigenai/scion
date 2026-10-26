@@ -175,6 +175,7 @@ enum Command {
     },
     /// Commit the local changes (not landed yet; see `scn land`).
     #[command(after_help = "Examples:\n  scn commit -m \"Fix the parser\"\n  \
+        scn commit -m \"Docs\" docs README.md # only the changes in these paths; the rest stay local\n  \
         scn commit --amend                 # fold new changes into the newest pending commit\n  \
         scn commit                         # finish a sync or merge that stopped on conflicts")]
     Commit {
@@ -186,16 +187,17 @@ enum Command {
         /// Replace the newest pending (not yet landed) commit, adding the current local changes.
         #[arg(long)]
         amend: bool,
-        /// Accepted for git compatibility (`-am`); scn always commits every local change.
+        /// Accepted for git compatibility (`-am`); without paths scn commits every local change.
         #[arg(short = 'a', long = "all")]
         all: bool,
         /// Author as "Name <email>". Defaults to `scn config` `user.name` / `user.email`, then git's
         /// `user.name` / `user.email`.
         #[arg(long, env = "SCION_AUTHOR")]
         author: Option<String>,
-        /// Paths are not taken: scn commits every local change.
-        #[arg(hide = true)]
-        stray: Vec<String>,
+        /// Commit only the changes at or under these paths (files or directories); the others stay
+        /// local changes. Without paths, every local change.
+        #[arg(value_name = "PATH")]
+        paths: Vec<String>,
     },
     /// Move the working copy to another branch (-c creates it at the current snapshot).
     Switch {
@@ -1220,11 +1222,17 @@ async fn run(cli: Cli) -> ExitCode {
             }),
             json,
         ),
-        Command::Commit { ref stray, .. } if !stray.is_empty() => fail(
+        Command::Commit {
+            ref paths, all, amend, ..
+        } if !paths.is_empty() && (all || amend) => fail(
             &CliError::Usage(format!(
-                "unexpected argument {:?}: the message goes after -m (`scn commit -m \"...\"`), \
-                 and scn always commits every local change",
-                stray[0]
+                "paths with {} do not make sense: {}",
+                if all { "-a" } else { "--amend" },
+                if all {
+                    "-a commits every change, paths only the changes in them"
+                } else {
+                    "--amend takes every local change; commit the paths on their own first"
+                }
             )),
             json,
         ),
@@ -1237,8 +1245,10 @@ async fn run(cli: Cli) -> ExitCode {
             commands::amend(&ctx, paragraphs(&message).as_deref(), author.as_deref()).await,
             json,
         ),
-        Command::Commit { message, author, .. } => emit(
-            commands::commit(&ctx, paragraphs(&message).as_deref(), author.as_deref()).await,
+        Command::Commit {
+            message, author, paths, ..
+        } => emit(
+            commands::commit_paths(&ctx, paragraphs(&message).as_deref(), author.as_deref(), &paths).await,
             json,
         ),
         Command::Uncommit => emit(commands::uncommit(&ctx).await, json),
@@ -1390,7 +1400,10 @@ async fn run(cli: Cli) -> ExitCode {
         }
         Command::Add { .. } => {
             transitional("add", "commit");
-            eprintln!("note: there is no staging area; `scn commit` takes every local change");
+            eprintln!(
+                "note: there is no staging area; `scn commit` takes every local change, `scn commit PATH...` \
+                 only the changes in those paths"
+            );
             ExitCode::SUCCESS
         }
         Command::Init { .. } => fail(

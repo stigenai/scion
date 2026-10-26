@@ -628,6 +628,66 @@ async fn sync_rebases_a_stack_of_commits_one_by_one() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn commit_takes_paths_relative_to_the_current_directory() {
+    use scion_store::MetaStore;
+    let store = Arc::new(MemStore::new());
+    store.create_repo("app").await.expect("repo");
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let url = format!("http://{}", listener.local_addr().expect("addr"));
+    let app = App {
+        config: Arc::new(ServerConfig::default()),
+        meta: store.clone(),
+        blobs: store,
+    };
+    tokio::spawn(serve(listener, app, std::future::pending()));
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let wc = root.join("app");
+        let author = ["--author", "Ada <ada@example.com>"];
+        json_of(&scn_in(&root, &["clone", &format!("{url}/app"), "--json"]));
+        std::fs::create_dir_all(wc.join("src")).expect("mkdir");
+        std::fs::write(wc.join("src/lib.rs"), "lib").expect("write");
+        std::fs::write(wc.join("src/main.rs"), "main").expect("write");
+        std::fs::write(wc.join("README.md"), "readme").expect("write");
+
+        // From src/, `lib.rs` is src/lib.rs and `../README.md` the root's
+        let v = json_of(&scn_in(
+            &wc.join("src"),
+            &[
+                &["commit", "-m", "lib and readme", "lib.rs", "../README.md", "--json"][..],
+                &author,
+            ]
+            .concat(),
+        ));
+        assert_eq!(v["insertions"], 2, "{v}");
+        let v = json_of(&scn_in(&wc, &["status", "--json"]));
+        assert_eq!(v["added"], serde_json::json!(["src/main.rs"]));
+
+        let out = scn_in(&wc, &[&["commit", "-m", "m", "nope.txt"][..], &author].concat());
+        assert_eq!(out.status.code(), Some(1), "{out:?}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("no local changes in nope.txt") && err.contains("after -m"),
+            "{err}"
+        );
+        for flag in ["-a", "--amend"] {
+            let out = scn_in(&wc, &["commit", flag, "-m", "m", "src"]);
+            assert_eq!(out.status.code(), Some(2), "{flag}: {out:?}");
+        }
+        json_of(&scn_in(
+            &wc,
+            &[&["commit", "-m", "the rest", "--json"][..], &author].concat(),
+        ));
+        let v = json_of(&scn_in(&wc, &["status", "--json"]));
+        assert_eq!(v["added"], serde_json::json!([]));
+    })
+    .await
+    .expect("test");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn clone_commit_land_sync_workflow() {
     use scion_store::MetaStore;
     let store = Arc::new(MemStore::new());

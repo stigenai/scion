@@ -170,6 +170,13 @@ impl CliError {
                  (or --ours / --theirs), then `scn commit`; `scn merge --abort`, `scn revert --abort` or \
                  `scn cherry-pick --abort` give up instead",
             ),
+            CliError::Wc(scion_wc::Error::NoChangesIn(_)) => Some(
+                "paths after `scn commit` limit it to the changes in them (`scn status` lists the changes); \
+                 the message goes after -m",
+            ),
+            CliError::Wc(scion_wc::Error::PartialFinish) => {
+                Some("run `scn commit` without paths to finish, then commit further changes on their own")
+            }
             CliError::Wc(scion_wc::Error::NoSyncInProgress) => {
                 Some("only a sync that stopped on conflicts can be aborted; `scn status` shows what is in progress")
             }
@@ -466,6 +473,8 @@ mod tests {
             scion_wc::Error::Unresolved(vec![]),
             scion_wc::Error::MarkersRemain(vec![]),
             scion_wc::Error::NoSyncInProgress,
+            scion_wc::Error::NoChangesIn(vec![]),
+            scion_wc::Error::PartialFinish,
         ] {
             assert!(CliError::Wc(e).hint().is_some());
         }

@@ -1266,6 +1266,17 @@ fn resolve_author(author: Option<&str>) -> Result<Option<(String, String)>, CliE
 /// `message` may be omitted only when finishing a sync or merge that stopped on conflicts (it
 /// then defaults to that commit's message).
 pub async fn commit(ctx: &Ctx, message: Option<&str>, author: Option<&str>) -> Result<CommitOut, CliError> {
+    commit_paths(ctx, message, author, &[]).await
+}
+
+/// [`commit`] of only the changes at or under `paths` (relative to the current directory);
+/// every change when there are none.
+pub async fn commit_paths(
+    ctx: &Ctx,
+    message: Option<&str>,
+    author: Option<&str>,
+    paths: &[String],
+) -> Result<CommitOut, CliError> {
     if let Some(a) = author {
         parse_author(a)?;
     }
@@ -1273,7 +1284,12 @@ pub async fn commit(ctx: &Ctx, message: Option<&str>, author: Option<&str>) -> R
     let message = match (message, &wc.state().conflict) {
         (Some(m), _) => m.to_owned(),
         (None, Some(_)) => String::new(),
-        (None, None) => return Err(CliError::Usage("a commit message is required (-m)".into())),
+        (None, None) if paths.is_empty() => return Err(CliError::Usage("a commit message is required (-m)".into())),
+        (None, None) => {
+            return Err(CliError::Usage(
+                "a commit message is required: it goes after -m (`scn commit -m \"...\" PATH...`)".into(),
+            ));
+        }
     };
     let message = message.as_str();
     // The finished sync or merge keeps its own author unless one is given
@@ -1283,10 +1299,14 @@ pub async fn commit(ctx: &Ctx, message: Option<&str>, author: Option<&str>) -> R
     };
     let root = wc.state().base.is_none() && wc.state().head.is_none();
     // Finishing a sync goes on rebasing the commits after it, which may stop on conflicts again
-    let created = wc
-        .commit_with_stat(&client, message, author.as_ref().map(|(n, e)| (n.as_str(), e.as_str())))
-        .await
-        .map_err(|e| conflicted(&wc, ConflictOp::Sync, e))?;
+    let author = author.as_ref().map(|(n, e)| (n.as_str(), e.as_str()));
+    let created = if paths.is_empty() {
+        wc.commit_with_stat(&client, message, author).await
+    } else {
+        let rel = wc_relative(wc.root(), &ctx.cwd, paths)?;
+        wc.commit_paths_with_stat(&client, message, author, &rel).await
+    }
+    .map_err(|e| conflicted(&wc, ConflictOp::Sync, e))?;
     Ok(commit_out(&client, &wc, root, created).await)
 }
 
