@@ -903,6 +903,51 @@ impl ObjectBlobStore {
         Ok(stats)
     }
 
+    /// Whether objects are written into packs (which repacking needs).
+    pub fn packs_enabled(&self) -> bool {
+        self.packs.is_some()
+    }
+
+    /// When the last repack finished ([`ObjectBlobStore::mark_repacked`]); None before the first.
+    pub async fn last_repack(&self) -> Result<Option<std::time::SystemTime>> {
+        match self.store.head(&self.repack_marker()).await {
+            Ok(m) => Ok(Some(m.last_modified.into())),
+            Err(object_store::Error::NotFound { .. }) => Ok(None),
+            Err(e) => Err(backend("read repack marker", e)),
+        }
+    }
+
+    /// Records that a repack finished now.
+    pub async fn mark_repacked(&self) -> Result<()> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs())
+            .to_string();
+        self.store
+            .put(&self.repack_marker(), PutPayload::from(now.into_bytes()))
+            .await
+            .map(drop)
+            .map_err(|e| backend("write repack marker", e))
+    }
+
+    /// Bytes of packs and loose objects written after `since` (all of them for None): what a
+    /// repack would have to fold in.
+    pub async fn written_since(&self, since: Option<std::time::SystemTime>) -> Result<u64> {
+        let mut total = 0;
+        for dir in ["packs/", "objects/"] {
+            for m in self.list(&format!("{}{dir}", self.prefix)).await? {
+                if since.is_none_or(|t| std::time::SystemTime::from(m.last_modified) > t) {
+                    total += m.size;
+                }
+            }
+        }
+        Ok(total)
+    }
+
+    fn repack_marker(&self) -> Path {
+        Path::from(format!("{}repack/last", self.prefix))
+    }
+
     async fn list(&self, prefix: &str) -> Result<Vec<object_store::ObjectMeta>> {
         let prefix = Path::from(prefix);
         let mut out = Vec::new();

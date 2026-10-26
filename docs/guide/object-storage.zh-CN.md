@@ -34,12 +34,17 @@ Scion 服务端把文件内容、目录树和提交对象存放在对象存储�
 
 ## Repack
 
-`scion admin repack` 把所有可达对象重写进少数几个大 pack，每个文件和目录的旧版本存成相对下一个更新版本的 delta，然后删除被取代的 pack 和散落对象。它相当于 Scion 的 `git gc`：隔一段时间运行一次（大批导入之后，或者每晚）。服务端运行期间也可以安全执行。
+`scion admin repack` 把所有可达对象重写进少数几个大 pack，每个文件和目录的旧版本存成相对下一个更新版本的 delta，然后删除被取代的 pack 和散落对象。它相当于 Scion 的 `git gc`，`scion server` 会自动运行它（见下文）；服务端运行期间也可以安全执行。
 
 ```sh
 scion admin repack --meta postgres://… --blobs s3://scion-objects   # --dry-run 只统计
 ```
 
+- **自动运行**：服务端每隔 `--repack-check-interval`（15 分钟）统计一次上次 repack 之后写进对象存储的数据量（比每次 repack 留下的标记 `repack/last` 更新的 pack 和散落对象），满足以下任一条件就 repack：
+  - 达到 `--repack-after`（256 MiB），例如大批导入之后；
+  - 距上次 repack 已过 `--repack-every`（24 小时），且至少写入了 1 MiB。
+
+  多个节点时同一时间只有一个节点 repack（靠元数据库中的租约）。`--repack-after 0 --repack-every 0s` 关闭自动运行。每次 repack 都会重写全部可达对象，所以在大型部署上，检查间隔和阈值决定了这项开销多久付一次。日志里会写明为什么运行、做了什么。
 - **Delta**：旧版本用 zstd 压缩，以较新的版本作参照（即 `zstd --patch-from` 的做法）。读得最多的最新版本保持完整。delta 链最长 50，与 git 相同；读取时沿链展开，并缓存用到的基版本。同一个 pack 中的基版本用偏移和长度指明（几个字节，类似 git 的 `OFS_DELTA`），其它基版本用 id 指明；含有前一种 delta 的 pack，需要不低于写入它的 repack 版本的服务端才能读取。
 - **效果**：starhub-server（6,338 个提交，PostgreSQL + MinIO）的 67,847 个对象写进 1 个 27 MB 的 pack，其中 51,262 个是 delta，耗时 24 秒。MinIO 从 283 MB 降到 86 MB（其余是三个超过 8 MB 的已提交二进制文件，不打包）；Gitaly 中同一段历史的仓库是 82 MB。
 - **删除被取代的数据**：其中已经没有任何对象的 pack，且早于 `--prune-after`（默认 1 小时，避免碰到正在写入的 pack）；以及已经打包的散落对象。

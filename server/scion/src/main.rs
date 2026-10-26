@@ -3,6 +3,7 @@
 //! 目前有 `server`、`cache`、`admin` 和 `version`；`deriver`、`janitor` 按里程碑逐个加入。
 
 mod authcmd;
+mod autorepack;
 mod fsck;
 mod opscmd;
 mod repack;
@@ -243,6 +244,36 @@ struct ServerArgs {
     events: EventArgs,
     #[command(flatten)]
     storage: StorageArgs,
+    #[command(flatten)]
+    repack: RepackArgs,
+}
+
+/// Repacking on its own (docs/guide/object-storage.md#repacking).
+#[derive(Debug, Clone, clap::Args)]
+struct RepackArgs {
+    /// Repack when this much was written to the object store since the last repack (such as after a
+    /// large import); 0 turns it off.
+    #[arg(long, value_name = "SIZE", default_value = "256MiB", value_parser = parse_size,
+        env = "SCION_REPACK_AFTER")]
+    repack_after: u64,
+    /// Repack when this long has passed since the last repack and anything was written; 0s turns it off.
+    #[arg(long, value_name = "DURATION", default_value = "24h", value_parser = parse_duration,
+        env = "SCION_REPACK_EVERY")]
+    repack_every: std::time::Duration,
+    /// How often to check whether a repack is due.
+    #[arg(long, value_name = "DURATION", default_value = "15m", value_parser = parse_duration,
+        env = "SCION_REPACK_CHECK_INTERVAL")]
+    repack_check_interval: std::time::Duration,
+}
+
+impl RepackArgs {
+    fn schedule(&self) -> autorepack::Schedule {
+        autorepack::Schedule {
+            check: self.repack_check_interval.max(std::time::Duration::from_secs(1)),
+            after_bytes: self.repack_after,
+            every: self.repack_every,
+        }
+    }
 }
 
 /// Delivery of ref changes (docs/guide/events.md).
@@ -559,7 +590,17 @@ fn scion_proto_version() -> &'static str {
 }
 
 /// Opens storage and creates the `--repo` repositories if missing.
+#[cfg(test)]
 async fn build_app(args: &ServerArgs, env: impl Fn(&str) -> Option<String>) -> anyhow::Result<(App, String)> {
+    let (app, backends, _) = build_app_with_objects(args, env).await?;
+    Ok((app, backends))
+}
+
+/// [`build_app`], also returning the object store itself (none for `mem`), for repacking.
+async fn build_app_with_objects(
+    args: &ServerArgs,
+    env: impl Fn(&str) -> Option<String>,
+) -> anyhow::Result<(App, String, Option<Arc<scion_store_blob::ObjectBlobStore>>)> {
     let cluster = match &args.advertise_url {
         Some(url) if url.starts_with("http://") || url.starts_with("https://") => {
             Some(scion_land::ClusterConfig::new(url.trim_end_matches('/')))
@@ -580,7 +621,7 @@ async fn build_app(args: &ServerArgs, env: impl Fn(&str) -> Option<String>) -> a
     let auth = args.auth.guard_config()?;
     check_exposure(args.listen, auth.required, args.allow_anonymous)?;
     let (meta_spec, blob_spec) = args.storage.specs()?;
-    let (meta, blobs) = storage::open(&meta_spec, &blob_spec, env).await?;
+    let (meta, blobs, objects) = storage::open_objects(&meta_spec, &blob_spec, env).await?;
     // 提前校验认证配置（密钥、外部签发方的密钥来源）和库里的访问控制策略，有误时拒绝启动
     let guard =
         scion_api::scion_auth::Guard::build(auth.clone(), meta.clone(), scion_api::scion_auth::remote::env_lookup())
@@ -628,7 +669,7 @@ async fn build_app(args: &ServerArgs, env: impl Fn(&str) -> Option<String>) -> a
         meta,
         blobs,
     };
-    Ok((app, storage::describe(&meta_spec, &blob_spec)))
+    Ok((app, storage::describe(&meta_spec, &blob_spec), objects))
 }
 
 /// Opens only the metadata store (for admin commands).
@@ -704,7 +745,14 @@ fn check_exposure(listen: SocketAddr, auth_required: bool, allow_anonymous: bool
 }
 
 async fn run_server(args: ServerArgs) -> anyhow::Result<()> {
-    let (app, backends) = build_app(&args, |k| std::env::var(k).ok()).await?;
+    let (app, backends, objects) = build_app_with_objects(&args, |k| std::env::var(k).ok()).await?;
+    let schedule = args.repack.schedule();
+    match objects {
+        Some(objects) if schedule.enabled() && objects.packs_enabled() => {
+            autorepack::spawn(app.meta.clone(), objects, schedule);
+        }
+        _ => {}
+    }
     let listener = tokio::net::TcpListener::bind(args.listen)
         .await
         .with_context(|| format!("bind {}", args.listen))?;
@@ -1029,6 +1077,30 @@ mod tests {
     fn version_text_mentions_protocol() {
         assert!(version_text().contains(scion_api::PROTOCOL_VERSION));
         assert!(version_text().starts_with("scion "));
+    }
+
+    #[test]
+    fn repack_schedule_flags() {
+        let s = args(&[]).repack.schedule();
+        assert_eq!(
+            (s.after_bytes, s.every, s.check),
+            (
+                256 << 20,
+                std::time::Duration::from_secs(86_400),
+                std::time::Duration::from_secs(900)
+            )
+        );
+        let off = args(&[
+            "--repack-after",
+            "0",
+            "--repack-every",
+            "0s",
+            "--repack-check-interval",
+            "0s",
+        ]);
+        let s = off.repack.schedule();
+        assert!(!s.enabled());
+        assert_eq!(s.check, std::time::Duration::from_secs(1), "at least a second");
     }
 
     fn args(extra: &[&str]) -> ServerArgs {

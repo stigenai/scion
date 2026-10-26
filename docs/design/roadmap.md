@@ -109,7 +109,6 @@ Legend: 🔵 has an initial design, ⚪ idea only.
 
 ### 2.9 Storage follow-ups ⚪
 Packs, deltas and `scion admin repack` are done ([object storage](../guide/object-storage.md#packs)): starhub-server takes 86 MB of MinIO against Gitaly's 82 MB, plus 54 MB of metadata in PostgreSQL. What is left:
-- **Repack on its own**: a server-side schedule (after large imports, or nightly) instead of an admin command.
 - **Better delta bases**: also try other candidates (renamed files, files of the same name and similar size), as git does. Trees take 6.1 MB against git's 3.6 MB.
 - **Smaller pack format**: deltas name their base by its full id (38 bytes each, 2 MB on starhub-server), and the trailer stores offsets that follow from the lengths (0.8 MB).
 - **Smaller metadata**: `path_changes` repeats each path in every row and in its index; ids for paths would save about 3 MB on starhub-server, at the cost of one more insert per write.

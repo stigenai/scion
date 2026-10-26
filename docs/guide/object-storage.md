@@ -34,12 +34,17 @@ Objects written together are stored together: a commit's new trees and its chang
 
 ## Repacking
 
-`scion admin repack` rewrites all reachable objects into a few large packs, storing older versions of each file and directory as deltas against the next newer version, then removes the packs and loose objects this superseded. It is Scion's `git gc`: run it now and then (after a large import, or nightly). It is safe while the server runs.
+`scion admin repack` rewrites all reachable objects into a few large packs, storing older versions of each file and directory as deltas against the next newer version, then removes the packs and loose objects this superseded. It is Scion's `git gc`, and `scion server` runs it on its own (below); it is safe while the server runs.
 
 ```sh
 scion admin repack --meta postgres://… --blobs s3://scion-objects   # --dry-run to only count
 ```
 
+- **On its own:** every `--repack-check-interval` (15 minutes) the server adds up what was written to the object store since the last repack (packs and loose objects newer than the marker each repack leaves at `repack/last`), and repacks:
+  - when that is at least `--repack-after` (256 MiB), as after a large import;
+  - when `--repack-every` (24 hours) has passed since the last repack and at least 1 MiB was written.
+
+  With several nodes, one repacks at a time (a lease in the metadata store). `--repack-after 0 --repack-every 0s` turns it off. Each repack rewrites everything reachable, so on a large installation the check interval and thresholds bound how often that cost is paid. The log shows why it ran and what it did.
 - **Deltas:** an older version is stored as zstd with the newer version as a reference (what `zstd --patch-from` does). The newest versions, which are read most, stay whole. Chains are at most 50 long, as in git; reads follow them and cache the bases they use. A delta names a base in the same pack by its offset and length (a few bytes, like git's `OFS_DELTA`) and any other base by its id; packs with deltas named this way need a server at least as new as the repack that wrote them.
 - **Effect** on starhub-server (6,338 commits, PostgreSQL + MinIO): 67,847 objects in 1 pack of 27 MB, 51,262 of them deltas, in 24 s. MinIO goes from 283 MB to 86 MB (the rest is three committed binaries over 8 MB, which stay loose); Gitaly's repository for the same history is 82 MB.
 - **Removing what it superseded:** packs none of whose objects live there any more, once older than `--prune-after` (default 1 hour, so that packs being written are not touched), and loose objects that are also packed.

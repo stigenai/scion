@@ -194,6 +194,8 @@ pub async fn repack(
     report.repack = objects.repack(&items).await?;
     report.prune = objects.prune(opts.prune_after).await?;
     meta.compact_after_repack().await?;
+    // What the automatic repack measures new writes from
+    objects.mark_repacked().await?;
     Ok(report)
 }
 
@@ -340,7 +342,9 @@ mod tests {
             prune_after: Duration::ZERO,
             dry_run: false,
         };
+        assert_eq!(objects.last_repack().await.expect("marker"), None);
         let report = repack(&meta, &objects, &opts).await.expect("repack");
+        assert!(objects.last_repack().await.expect("marker").is_some());
         assert_eq!(report.changesets, 30);
         assert!(report.repack.deltas >= 25, "the file versions: {report:?}");
         assert!(
