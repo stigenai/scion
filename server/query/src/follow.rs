@@ -2,10 +2,12 @@
 //! was renamed from, as git does.
 //!
 //! The source is a file the same commit deleted (relative to its first parent): one with the same
-//! content, else the most similar one at or above [`MIN_SIMILARITY`].
+//! content, else the most similar one at or above [`MIN_SIMILARITY`]. Failing that, as git's
+//! `--follow` also does, a file of the parent it was copied from, by the same measure.
 
-use scion_object::{Changeset, FileOp, ObjectId};
+use scion_object::{Changeset, EntryMode, FileOp, ObjectId};
 use scion_store::BlobStore;
+use scion_tree::TreeSource;
 use scion_tree::lookup;
 
 use crate::blame::Trees;
@@ -19,9 +21,11 @@ const MAX_COMPARED: u64 = 1 << 20;
 /// At most this many deleted files are looked up, and this many of them compared by content.
 const MAX_LOOKUPS: usize = 1000;
 const MAX_CANDIDATES: usize = 100;
+/// Files of the parent looked at for a copy.
+const MAX_FILES: usize = 100_000;
 
-/// The path `path` had before commit `cs` when `cs` renamed it there; `None` when `cs` did not
-/// add `path` or no deleted file matches.
+/// The path `path` had before commit `cs` when `cs` renamed or copied it there; `None` when `cs`
+/// did not add `path` or no file matches.
 pub(crate) async fn renamed_from(
     g: &mut Graph<'_>,
     blobs: &dyn BlobStore,
@@ -35,19 +39,6 @@ pub(crate) async fn renamed_from(
     }) else {
         return Ok(None);
     };
-    // Deletes of the same file name first, as moves keep it, then the rest up to a bound
-    let name = |p: &str| p.rsplit('/').next().map(str::to_owned);
-    let mut deletes: Vec<&str> = changeset
-        .delta
-        .iter()
-        .filter(|c| c.op == FileOp::Delete)
-        .map(|c| c.path.as_str())
-        .collect();
-    if deletes.is_empty() {
-        return Ok(None);
-    }
-    deletes.sort_by_key(|d| name(d) != name(path));
-    deletes.truncate(MAX_LOOKUPS);
     let Some(parent) = g.get(cs).await?.first_parent() else {
         return Ok(None);
     };
@@ -57,34 +48,89 @@ pub(crate) async fn renamed_from(
     if lookup(&trees, root, path).await?.is_some() {
         return Ok(None);
     }
+    let name = |p: &str| p.rsplit('/').next().map(str::to_owned);
+    // Renames: files the same commit deleted, those of the same name first (moves keep it)
+    let mut deletes: Vec<&str> = changeset
+        .delta
+        .iter()
+        .filter(|c| c.op == FileOp::Delete)
+        .map(|c| c.path.as_str())
+        .collect();
+    deletes.sort_by_key(|d| name(d) != name(path));
+    deletes.truncate(MAX_LOOKUPS);
     let mut sources = Vec::new();
     for d in deletes {
         if let Some(e) = lookup(&trees, root, d).await? {
             sources.push((d.to_owned(), e.id, e.size));
         }
     }
+    if let Some(p) = best_match(blobs, &sources, new_id, new_size).await? {
+        return Ok(Some(p));
+    }
+    // Copies, as git's --follow also finds: any file of the parent, those of the same name and
+    // the closest size first
+    let mut files = Vec::new();
+    list_files(&trees, root, String::new(), &mut files).await?;
+    files.sort_by_key(|(p, _, size)| (name(p) != name(path), size.abs_diff(new_size)));
+    best_match(blobs, &files, new_id, new_size).await
+}
+
+/// Of `sources` (path, blob, size), one with the same content as `new_id`, else the most similar
+/// at or above [`MIN_SIMILARITY`], comparing at most [`MAX_CANDIDATES`] in the order given.
+async fn best_match(
+    blobs: &dyn BlobStore,
+    sources: &[(String, ObjectId, u64)],
+    new_id: ObjectId,
+    new_size: u64,
+) -> Result<Option<String>> {
     if let Some((p, _, _)) = sources.iter().find(|(_, id, _)| *id == new_id) {
         return Ok(Some(p.clone()));
     }
-    if new_size > MAX_COMPARED {
+    let comparable: Vec<(&str, ObjectId)> = sources
+        .iter()
+        .filter(|(_, _, size)| *size <= MAX_COMPARED && could_match(*size, new_size))
+        .take(MAX_CANDIDATES)
+        .map(|(p, id, _)| (p.as_str(), *id))
+        .collect();
+    if new_size > MAX_COMPARED || comparable.is_empty() {
         return Ok(None);
     }
     let Some(new) = blobs.get(&new_id).await? else {
         return Ok(None);
     };
-    let mut best: Option<(f64, String)> = None;
-    let comparable = sources
-        .into_iter()
-        .filter(|(_, _, size)| *size <= MAX_COMPARED && could_match(*size, new_size))
-        .take(MAX_CANDIDATES);
-    for (p, id, _) in comparable {
+    let mut best: Option<(f64, &str)> = None;
+    for (p, id) in comparable {
         let Some(old) = blobs.get(&id).await? else { continue };
         let score = similarity(&old, &new);
-        if score >= MIN_SIMILARITY && best.as_ref().is_none_or(|(s, _)| score > *s) {
+        if score >= MIN_SIMILARITY && best.is_none_or(|(s, _)| score > s) {
             best = Some((score, p));
         }
     }
-    Ok(best.map(|(_, p)| p))
+    Ok(best.map(|(_, p)| p.to_owned()))
+}
+
+/// The files under `tree` (at `base`, empty or ending in `/`), up to [`MAX_FILES`].
+fn list_files<'a>(
+    trees: &'a Trees<'_>,
+    tree: ObjectId,
+    base: String,
+    out: &'a mut Vec<(String, ObjectId, u64)>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+    Box::pin(async move {
+        let t = trees.load_tree(&tree).await?;
+        for e in t.entries() {
+            if out.len() >= MAX_FILES {
+                break;
+            }
+            let path = format!("{base}{}", e.name);
+            if e.mode == EntryMode::Tree {
+                list_files(trees, e.id, format!("{path}/"), out).await?;
+            } else {
+                out.push((path, e.id, e.size));
+            }
+        }
+        Ok(())
+    })
 }
 
 /// Whether two sizes leave room for [`MIN_SIMILARITY`]: the smaller must be at least that share
@@ -93,24 +139,24 @@ fn could_match(a: u64, b: u64) -> bool {
     a.min(b) as f64 >= a.max(b) as f64 * MIN_SIMILARITY
 }
 
-/// Bytes of the lines the two versions share, over the size of the larger one.
+/// Bytes of the lines the two versions share (each line counted as often as both have it), over
+/// the size of the larger one: git's estimate, which also ignores where the lines are.
 pub(crate) fn similarity(old: &[u8], new: &[u8]) -> f64 {
     let larger = old.len().max(new.len());
     if larger == 0 {
         return 1.0;
     }
-    let diff = similar::TextDiff::configure()
-        .algorithm(similar::Algorithm::Myers)
-        .timeout(std::time::Duration::from_millis(100))
-        .diff_lines(old, new);
-    let same: usize = diff
-        .ops()
-        .iter()
-        .filter(|op| op.tag() == similar::DiffTag::Equal)
-        .flat_map(|op| op.old_range())
-        .filter_map(|i| diff.old_slice(i))
-        .map(<[u8]>::len)
-        .sum();
+    let mut lines: std::collections::HashMap<&[u8], usize> = std::collections::HashMap::new();
+    for line in old.split_inclusive(|b| *b == b'\n') {
+        *lines.entry(line).or_default() += 1;
+    }
+    let mut same = 0;
+    for line in new.split_inclusive(|b| *b == b'\n') {
+        if let Some(n) = lines.get_mut(line).filter(|n| **n > 0) {
+            *n -= 1;
+            same += line.len();
+        }
+    }
     same as f64 / larger as f64
 }
 
@@ -234,6 +280,46 @@ mod tests {
         assert_eq!(follow(&r, c5, "e.txt").await.renamed_from, None);
         // The root commit adds everything
         assert_eq!(follow(&r, c1, "a.txt").await.renamed_from, None);
+    }
+
+    #[tokio::test]
+    async fn follows_a_copy_when_nothing_was_deleted_but_shows_no_merges() {
+        let mut r = Repo::new().await;
+        let c1 = r
+            .commit(&[], &[("tmpl/base.go", Some(TEXT)), ("other", Some("o\n"))])
+            .await;
+        let c2 = r
+            .commit(&[c1], &[("tmpl/base.go", Some("one\ntwo\nthree\nfour\nfive\n"))])
+            .await;
+        // Copied with an edit; the original stays
+        let c3 = r
+            .commit(&[c2], &[("cmd/new.go", Some("one\ntwo\nthree\nfour\nsix\n"))])
+            .await;
+        let page = follow(&r, c3, "cmd/new.go").await;
+        assert_eq!(
+            (ids(&page), page.renamed_from.as_deref()),
+            (vec![c3], Some("tmpl/base.go"))
+        );
+        // A merge that changed the file is in the path log, but not when following
+        let side = r
+            .commit(&[c3], &[("cmd/new.go", Some("zero\none\ntwo\nthree\nfour\nsix\n"))])
+            .await;
+        let main = r
+            .commit(&[c3], &[("cmd/new.go", Some("one\ntwo\nthree\nfour\nsix\nseven\n"))])
+            .await;
+        let m = r
+            .commit(
+                &[main, side],
+                &[("cmd/new.go", Some("zero\none\ntwo\nthree\nfour\nsix\nseven\n"))],
+            )
+            .await;
+        let page = follow(&r, m, "cmd/new.go").await;
+        assert_eq!(page.entries.len(), 3);
+        assert!(!ids(&page).contains(&m));
+        let plain = log(&r.store, &r.store, REPO, &[m], Some("cmd/new.go"), 100, 1000)
+            .await
+            .expect("log");
+        assert_eq!(ids(&plain)[0], m);
     }
 
     #[tokio::test]

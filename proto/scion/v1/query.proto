@@ -80,8 +80,9 @@ message LogRequest {
   uint32 page_size = 4;
   // 上一页返回的 next_page_token；非空时忽略 revision。
   string page_token = 5;
-  // Follow the file in `path` across renames, like `git log --follow`. A page ends at the commit
-  // that renamed it, with `renamed_from` set; ask for the next page with that path.
+  // Follow the file in `path` across renames and copies, like `git log --follow` (which lists no
+  // merges). A page ends at the commit that renamed or copied it there, with `renamed_from` set;
+  // ask for the next page with that path.
   bool follow = 6;
 }
 

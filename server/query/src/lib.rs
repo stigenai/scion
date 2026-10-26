@@ -447,6 +447,12 @@ async fn log_with(
                 entries.pop();
             }
         }
+        // git log --follow shows no merges: it diffs only commits with one parent
+        if let (true, Some(e)) = (follow, entries.last()) {
+            if e.record.id == id && e.record.parents.len() > 1 {
+                entries.pop();
+            }
+        }
         if let (true, Some(p), Some(e)) = (follow, path, entries.last()) {
             if e.record.id == id {
                 renamed_from = follow::renamed_from(&mut g, blobs, id, &e.changeset, p).await?;
