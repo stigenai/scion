@@ -364,11 +364,6 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    #[command(hide = true)]
-    Stash {
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
     /// Mark conflicted files resolved (after editing out the markers), or take one side's
     /// version. Without PATHS, lists the conflicts. `.` means all.
     #[command(
@@ -401,6 +396,20 @@ enum Command {
         /// deleted), as git's `restore --source`.
         #[arg(short, long, value_name = "REV")]
         source: Option<String>,
+    },
+    /// Put local changes aside and bring them back later (saved as a commit on the server, on no branch).
+    #[command(
+        args_conflicts_with_subcommands = true,
+        after_help = "Examples:\n  scn stash                 # save every local change; the tree is the commit's again\n  \
+            scn stash -m \"half done\"\n  scn stash list\n  scn stash pop             # apply the newest and drop it\n  \
+            scn stash apply stash@{1}\n  scn stash show -p\n  scn stash drop"
+    )]
+    Stash {
+        #[command(subcommand)]
+        cmd: Option<StashCmd>,
+        /// The entry's message (default: WIP on BRANCH: ID SUBJECT).
+        #[arg(short, long)]
+        message: Option<String>,
     },
     /// Remove untracked files (with -x ignored ones too); needs -f, or -n to only list them.
     #[command(after_help = "Examples:\n  scn clean -n          # list what would go\n  \
@@ -825,6 +834,41 @@ enum ConfigCmd {
     Unset {
         /// user.name or user.email.
         key: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum StashCmd {
+    /// Save every local change and put the tree back to the commit (what `scn stash` does).
+    Push {
+        /// The entry's message (default: WIP on BRANCH: ID SUBJECT).
+        #[arg(short, long)]
+        message: Option<String>,
+    },
+    /// List the entries, newest first.
+    List,
+    /// Show an entry's files and changed lines (-p: the diff).
+    Show {
+        /// stash@{N} or N (default: the newest).
+        stash: Option<String>,
+        /// The diff instead of the per-file counts.
+        #[arg(short = 'p', long)]
+        patch: bool,
+    },
+    /// Apply an entry as local changes and drop it (kept when it conflicts).
+    Pop {
+        /// stash@{N} or N (default: the newest).
+        stash: Option<String>,
+    },
+    /// Apply an entry as local changes and keep it.
+    Apply {
+        /// stash@{N} or N (default: the newest).
+        stash: Option<String>,
+    },
+    /// Forget an entry.
+    Drop {
+        /// stash@{N} or N (default: the newest).
+        stash: Option<String>,
     },
 }
 
@@ -1440,14 +1484,6 @@ async fn run(cli: Cli) -> ExitCode {
             ),
             json,
         ),
-        Command::Stash { .. } => fail(
-            &CliError::Usage(
-                "there is no stash; keep the changes in a pending commit (`scn commit`, later `scn uncommit`), \
-                 or on a branch (`scn switch -c NAME`)"
-                    .into(),
-            ),
-            json,
-        ),
         Command::Rm { paths, recursive } => {
             transitional("rm", "commit (after deleting the files yourself)");
             let mut first_error = None;
@@ -1512,6 +1548,24 @@ async fn run(cli: Cli) -> ExitCode {
             emit(commands::resolve(&ctx, &paths, side, force).await, json)
         }
         Command::Restore { paths, source } => emit(commands::restore(&ctx, &paths, source.as_deref()).await, json),
+        Command::Stash { cmd, message } => match cmd {
+            None => emit(commands::stash_push(&ctx, message.as_deref()).await, json),
+            Some(StashCmd::Push { message }) => emit(commands::stash_push(&ctx, message.as_deref()).await, json),
+            Some(StashCmd::List) => emit(commands::stash_list(&ctx), json),
+            Some(StashCmd::Pop { stash }) => emit(commands::stash_apply(&ctx, stash.as_deref(), true).await, json),
+            Some(StashCmd::Apply { stash }) => emit(commands::stash_apply(&ctx, stash.as_deref(), false).await, json),
+            Some(StashCmd::Drop { stash }) => emit(commands::stash_drop(&ctx, stash.as_deref()), json),
+            Some(StashCmd::Show { stash, patch }) => match commands::stash_commit(&ctx, stash.as_deref()) {
+                Ok(commit) => emit(
+                    history::show(&ctx, Some(&commit), None, false).await.map(|mut s| {
+                        s.diff.stat = !patch;
+                        s
+                    }),
+                    json,
+                ),
+                Err(e) => fail(&e, json),
+            },
+        },
         Command::Clean {
             dry_run: false,
             force: false,
@@ -1764,6 +1818,7 @@ Work on a change:
   uncommit   Drop the newest pending commit, keeping its changes
   restore    Discard local changes to files
   clean      Remove untracked files
+  stash      Put local changes aside and bring them back
   resolve    Mark conflicts resolved, or take one side
 
 Share and update:

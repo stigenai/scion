@@ -17,6 +17,8 @@ pub enum ConflictOp {
     Merge,
     /// A revert or cherry-pick of this commit.
     Pick(scion_wc::PickKind, String),
+    /// `stash apply` / `pop` of this entry.
+    Stash(usize),
 }
 
 /// 命令失败的原因。
@@ -79,6 +81,13 @@ impl std::fmt::Display for CliError {
                     scion_wc::PickKind::CherryPick => "apply",
                 },
                 &commit[..commit.len().min(12)]
+            ),
+            CliError::Conflicted {
+                op: ConflictOp::Stash(n),
+                ..
+            } => write!(
+                f,
+                "could not apply stash@{{{n}}} cleanly; fix the conflicts in the files"
             ),
             CliError::Conflicted { reference, .. } => write!(
                 f,
@@ -146,7 +155,9 @@ impl CliError {
             CliError::Client(e) if e.reason() == Some(ErrorReason::RepoDeleted) => {
                 Some("the repository was deleted; restore it with `scn repo restore NAME`, or wait until it is purged")
             }
-            CliError::Wc(scion_wc::Error::Dirty) => Some("run `scn commit -m <message>` first"),
+            CliError::Wc(scion_wc::Error::Dirty) => {
+                Some("run `scn commit -m <message>` first, or `scn stash` to put the changes aside")
+            }
             CliError::Wc(scion_wc::Error::NothingToLand) => Some("run `scn commit -m <message>` first"),
             CliError::Wc(scion_wc::Error::NotAWorkingCopy(_)) => Some("run `scn clone <repo>` first, or pass --repo"),
             CliError::Wc(scion_wc::Error::PendingCommit) => Some("run `scn land` or `scn uncommit` first"),
@@ -159,6 +170,13 @@ impl CliError {
             CliError::Import(scion_gitimport::Error::Diverged { .. }) => {
                 Some("the git history was rewritten; import into a new ref with --ref")
             }
+            CliError::Conflicted {
+                op: ConflictOp::Stash(_),
+                ..
+            } => Some(
+                "the files hold conflict markers (other conflicts keep the current file): fix them as local \
+                 changes; the stash entry is kept, so `scn stash drop` it when done",
+            ),
             CliError::Conflicted {
                 op: ConflictOp::Sync, ..
             } => Some(
@@ -177,6 +195,7 @@ impl CliError {
             CliError::Wc(scion_wc::Error::PartialFinish) => {
                 Some("run `scn commit` without paths to finish, then commit further changes on their own")
             }
+            CliError::Wc(scion_wc::Error::NoStash(_)) => Some("`scn stash list` lists the entries"),
             CliError::Wc(scion_wc::Error::NoSyncInProgress) => {
                 Some("only a sync that stopped on conflicts can be aborted; `scn status` shows what is in progress")
             }
@@ -473,6 +492,7 @@ mod tests {
             scion_wc::Error::Unresolved(vec![]),
             scion_wc::Error::MarkersRemain(vec![]),
             scion_wc::Error::NoSyncInProgress,
+            scion_wc::Error::NoStash(1),
             scion_wc::Error::NoChangesIn(vec![]),
             scion_wc::Error::PartialFinish,
         ] {
@@ -556,6 +576,16 @@ mod tests {
             c(ConflictOp::Sync)
                 .to_string()
                 .starts_with("could not rebase your commit onto main;")
+        );
+        assert_eq!(
+            c(ConflictOp::Stash(1)).to_string(),
+            "could not apply stash@{1} cleanly; fix the conflicts in the files"
+        );
+        assert!(
+            error_out(&c(ConflictOp::Stash(1)))
+                .hint
+                .expect("hint")
+                .contains("scn stash drop")
         );
         let pick = |kind| c(ConflictOp::Pick(kind, "c1aaaaaaaaaaaaaaaa".into())).to_string();
         assert!(pick(scion_wc::PickKind::Revert).starts_with("could not revert c1aaaaaaaaaa;"));

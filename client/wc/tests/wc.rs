@@ -1647,6 +1647,85 @@ async fn clean_removes_untracked_files_like_git() {
     }
 }
 
+#[tokio::test]
+async fn stash_puts_changes_aside_and_back() {
+    let srv = server().await;
+    let c = client(&srv.url).await;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (a_dir, b_dir) = (tmp.path().join("a"), tmp.path().join("b"));
+    let mut a = WorkingCopy::clone(&c, &srv.url, "mono", "main", &a_dir, Sparse::full())
+        .await
+        .expect("clone");
+    write(&a_dir, "a.txt", "1\n2\n3\n");
+    write(&a_dir, "b.txt", "b\n");
+    let base = a.commit(&c, "base", None).await.expect("commit").expect("changes").id;
+    a.land(&c).await.expect("land");
+    let mut b = WorkingCopy::clone(&c, &srv.url, "mono", "main", &b_dir, Sparse::full())
+        .await
+        .expect("clone");
+    assert_eq!(a.stash_push(&c, None, None).await.expect("nothing"), None);
+
+    // Every kind of change goes aside, and the tree is the commit's again
+    write(&a_dir, "a.txt", "one\n2\n3\n");
+    std::fs::remove_file(a_dir.join("b.txt")).expect("rm");
+    write(&a_dir, "new.txt", "new\n");
+    let first = a.stash_push(&c, None, None).await.expect("stash").expect("saved");
+    assert_eq!(first.message, format!("WIP on main: {} base", &base.to_string()[..12]));
+    assert!(a.status().expect("status").is_clean());
+    assert_eq!(read(&a_dir, "b.txt"), "b\n");
+    assert!(!a_dir.join("new.txt").exists());
+    write(&a_dir, "b.txt", "two\n");
+    a.stash_push(&c, Some("two"), None)
+        .await
+        .expect("stash")
+        .expect("saved");
+    let messages: Vec<&str> = a.state().stash.iter().map(|e| e.message.as_str()).collect();
+    assert_eq!(messages, ["two", first.message.as_str()]);
+
+    // Applying needs a clean tree; pop drops the entry
+    write(&a_dir, "a.txt", "dirty\n");
+    assert!(matches!(a.stash_apply(&c, 0, true).await, Err(Error::Dirty)));
+    a.restore(&c, &[".".into()]).await.expect("restore");
+    assert!(matches!(a.stash_apply(&c, 2, true).await, Err(Error::NoStash(2))));
+    let popped = a.stash_apply(&c, 1, true).await.expect("pop");
+    assert!(popped.dropped && popped.conflicts.is_empty());
+    assert_eq!(popped.entry, first);
+    assert_eq!(
+        a.status().expect("status"),
+        status(&["new.txt"], &["a.txt"], &["b.txt"])
+    );
+    a.restore(&c, &[".".into()]).await.expect("restore");
+    a.clean(&[".".into()], false, false).expect("clean");
+
+    // After others landed: merged against the commit it was made on
+    write(&b_dir, "a.txt", "1\n2\nthree\n");
+    b.commit(&c, "three", None).await.expect("commit");
+    b.land(&c).await.expect("land");
+    a.sync(&c).await.expect("sync");
+    let applied = a.stash_apply(&c, 0, false).await.expect("apply");
+    assert!(!applied.dropped && applied.conflicts.is_empty());
+    assert_eq!(read(&a_dir, "b.txt"), "two\n");
+    assert_eq!(a.state().stash.len(), 1, "apply keeps it");
+    a.restore(&c, &[".".into()]).await.expect("restore");
+
+    // A conflict keeps the entry and marks the file
+    write(&a_dir, "a.txt", "1\nmine\nthree\n");
+    a.stash_push(&c, None, None).await.expect("stash").expect("saved");
+    b.sync(&c).await.expect("sync");
+    write(&b_dir, "a.txt", "1\ntheirs\nthree\n");
+    b.commit(&c, "theirs", None).await.expect("commit");
+    b.land(&c).await.expect("land");
+    a.sync(&c).await.expect("sync");
+    let applied = a.stash_apply(&c, 0, true).await.expect("pop");
+    assert_eq!(applied.conflicts, ["a.txt"]);
+    assert!(!applied.dropped && read(&a_dir, "a.txt").contains("<<<<<<<"));
+    assert_eq!(a.state().stash.len(), 2);
+
+    assert!(matches!(a.stash_drop(2), Err(Error::NoStash(2))));
+    assert_eq!(a.stash_drop(1).expect("drop").message, "two");
+    assert_eq!(a.state().stash.len(), 1);
+}
+
 #[cfg(unix)]
 fn chmod_x(root: &Path, rel: &str) {
     use std::os::unix::fs::PermissionsExt;

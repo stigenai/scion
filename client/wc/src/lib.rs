@@ -21,7 +21,9 @@ use scion_object::{EntryMode, ObjectId, Tree};
 pub use error::{Error, Result};
 pub use merge::{ConflictKind, MergeConflict};
 pub use sparse::Sparse;
-pub use state::{ConflictState, DirState, FileRecord, Mode, Pending, Pick, PickKind, Sides, State, Version};
+pub use state::{
+    ConflictState, DirState, FileRecord, Mode, Pending, Pick, PickKind, Sides, StashEntry, State, Version,
+};
 
 use crate::fsutil::Found;
 use crate::state::Paths;
@@ -270,6 +272,16 @@ pub enum PickOutcome {
         written: usize,
         removed: usize,
     },
+}
+
+/// Result of [`WorkingCopy::stash_apply`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StashApplied {
+    pub entry: StashEntry,
+    /// Whether the entry was dropped: when asked to, and only without conflicts.
+    pub dropped: bool,
+    /// Paths that conflicted: text ones hold conflict markers, the others the current version.
+    pub conflicts: Vec<String>,
 }
 
 /// Result of [`WorkingCopy::switch`].
@@ -654,6 +666,129 @@ impl WorkingCopy {
             }
         }
         Ok(gone)
+    }
+
+    /// `scn stash`: saves every local change as a commit on the server, on no branch, with
+    /// `message` (default: `WIP on BRANCH: ID SUBJECT`, as git does), and puts the working tree
+    /// back to the current commit, added files removed. Returns None when there is nothing to save.
+    pub async fn stash_push(
+        &mut self,
+        client: &Client,
+        message: Option<&str>,
+        author: Option<(&str, &str)>,
+    ) -> Result<Option<StashEntry>> {
+        let _lock = self.paths.lock()?;
+        self.check_no_conflict()?;
+        let (status, changes) = self.changes()?;
+        if changes.is_empty() {
+            return Ok(None);
+        }
+        let current = self
+            .state
+            .current()?
+            .ok_or_else(|| Error::EmptyBranch(self.state.reference.clone()))?;
+        let message = match message {
+            Some(m) => m.to_owned(),
+            None => {
+                let subject = client
+                    .log(&current.to_string(), None, 1, None)
+                    .await?
+                    .entries
+                    .into_iter()
+                    .next()
+                    .map(|e| e.message.lines().next().unwrap_or_default().to_owned())
+                    .unwrap_or_default();
+                let id = current.to_string();
+                format!("WIP on {}: {} {subject}", self.state.reference, &id[..id.len().min(12)])
+            }
+        };
+        let mut b = client.changeset(Some(current)).message(&message);
+        if let Some((name, email)) = author {
+            b = b.author(name, email);
+        }
+        for c in &changes {
+            b = match c {
+                Change::Put {
+                    path, mode, content, ..
+                } => b.put_with_mode(path, mode.to_entry(), content.clone()),
+                Change::Delete { path } => b.delete(path),
+            };
+        }
+        let created = b.create().await?;
+        let entry = StashEntry {
+            commit: created.id.to_string(),
+            message,
+        };
+        // Saved before the files go, so a crash loses nothing
+        self.state.stash.insert(0, entry.clone());
+        self.paths.save_state(&self.state)?;
+        for p in &status.added {
+            fsutil::remove_file(self.root(), p)?;
+        }
+        self.restore_locked(client, &[".".to_owned()]).await?;
+        Ok(Some(entry))
+    }
+
+    /// `scn stash apply` / `pop` (`drop`): merges stash entry `index` (0 is the newest) into the
+    /// working tree as local changes, three-way against the commit it was made on, so it also
+    /// applies after a sync or on another branch. Needs a clean tree. On conflicts the files get
+    /// markers and the entry is kept.
+    pub async fn stash_apply(&mut self, client: &Client, index: usize, drop: bool) -> Result<StashApplied> {
+        let _lock = self.paths.lock()?;
+        self.check_no_conflict()?;
+        let entry = self.state.stash.get(index).cloned().ok_or(Error::NoStash(index))?;
+        if !self.changes()?.0.is_clean() {
+            return Err(Error::Dirty);
+        }
+        let current = self
+            .state
+            .current()?
+            .ok_or_else(|| Error::EmptyBranch(self.state.reference.clone()))?;
+        let stashed: ObjectId = entry
+            .commit
+            .parse()
+            .map_err(|e| Error::Corrupt(format!("stash commit: {e}")))?;
+        let parent = client
+            .log(&entry.commit, None, 1, None)
+            .await?
+            .entries
+            .into_iter()
+            .next()
+            .and_then(|e| e.parents.first().copied());
+        let (b, o, t, paths) = three_sides(client, parent, current, stashed).await?;
+        let changes: BTreeMap<String, Final> = three_way(client, paths, &b, &o, &t)
+            .await?
+            .into_iter()
+            .filter(|(p, f)| *f != Final::Version(o.get(p).copied()))
+            .collect();
+        let sparse = self.sparse()?;
+        let outside: Vec<String> = changes.keys().filter(|p| !sparse.includes_file(p)).cloned().collect();
+        if !outside.is_empty() {
+            return Err(Error::PickOutsideSparse(outside));
+        }
+        let conflicts: Vec<String> = sides_of(&changes).into_keys().collect();
+        self.write_results(client, &changes, &o).await?;
+        let dropped = drop && conflicts.is_empty();
+        if dropped {
+            self.state.stash.remove(index);
+            self.paths.save_state(&self.state)?;
+        }
+        Ok(StashApplied {
+            entry,
+            dropped,
+            conflicts,
+        })
+    }
+
+    /// `scn stash drop`: forgets stash entry `index` (0 is the newest).
+    pub fn stash_drop(&mut self, index: usize) -> Result<StashEntry> {
+        let _lock = self.paths.lock()?;
+        if index >= self.state.stash.len() {
+            return Err(Error::NoStash(index));
+        }
+        let entry = self.state.stash.remove(index);
+        self.paths.save_state(&self.state)?;
+        Ok(entry)
     }
 
     /// 把本地改动创建为提交（尚未合入）。没有改动时返回 `None`。

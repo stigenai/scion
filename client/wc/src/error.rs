@@ -56,6 +56,8 @@ pub enum Error {
     NoMergeInProgress,
     #[error("no sync is in progress")]
     NoSyncInProgress,
+    #[error("no stash entry stash@{{{0}}}")]
+    NoStash(usize),
     /// `commit PATH...` with a path that has no local change.
     #[error("no local changes in {}", .0.join(", "))]
     NoChangesIn(Vec<String>),

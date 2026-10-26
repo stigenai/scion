@@ -32,6 +32,7 @@ scn status                          # git 的长格式，并说明服务端的 m
 scn commit -m "add readme"          # 或者 --author "Ada <ada@example.com>"
 scn restore src/main.rs             # 丢弃已跟踪文件的本地改动（`.` 表示全部）；新增的文件会保留
 scn clean -n                        # 列出未跟踪的文件；-f 删除，-fx 连被忽略的一起删
+scn stash                           # 把本地改动暂存起来（scn stash pop 放回来，sync 之后也行）
 scn commit -m "add tests"           # 再提交一个：待合入的提交会叠起来，`scn land` 一次全部合入
 scn commit -m "docs only" docs/     # 只提交 docs/ 下的改动，其余留在本地
 scn commit --amend                  # 把更多本地改动并入最新的待合入提交（保留提交说明和作者）

@@ -16,6 +16,7 @@
 | `git commit --amend` | `scn commit --amend` | |
 | `git restore [-s REV] PATH`、`git checkout REV -- PATH` | `scn restore [-s REV] PATH` | `--source` 从 REV 取文件，成为本地改动 |
 | `git clean -n`、`-f`、`-fd`、`-fdx` [PATH...] | 相同 | 删除未跟踪的文件；`-x` 连被忽略的文件一起删；嵌套的仓库不动 |
+| `git stash [push] [-m MSG]`、`list`、`show [-p]`、`pop`、`apply`、`drop` [`stash@{N}`] | 相同 | 包括新增文件在内的所有本地改动；`pop` 和 `apply` 要求工作区干净 |
 | `git switch B`、`git switch -c B` | `scn switch B`、`scn switch -c B` | |
 | `git merge B`、`git merge --abort` | `scn merge B`、`scn merge --abort` | 之后用 `scn land` 发布 |
 | `git revert REV`、`-m N`、`--abort` | 相同 | 一次撤销一个提交，生成待合入的提交；之后用 `scn land` 发布 |
@@ -67,4 +68,4 @@
 
 ## 尚未支持
 
-`stash`、`clean`、交互式 rebase、`add -p`、`grep`、`bisect`、`reflog`、附注标签、`remote add` 和 `fetch`。`scn init`、`fetch`、`stash`、`remote add` 会提示该改用什么。原生 `git` 客户端目前还不能直接访问 Scion 服务端，这是[路线图](../design/roadmap.md)里的 git 网关。
+交互式 rebase、`add -p`、`grep`、`bisect`、`reflog`、附注标签、`remote add` 和 `fetch`。`scn init`、`fetch`、`remote add` 会提示该改用什么。git 命令行本身可以通过 [git 网关](git-clients.zh-CN.md) clone、fetch 和 push Scion 仓库。

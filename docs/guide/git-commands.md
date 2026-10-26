@@ -16,6 +16,7 @@ A quick reference: which git commands you can type in `scn` as they are, which w
 | `git commit --amend` | `scn commit --amend` | |
 | `git restore [-s REV] PATH`, `git checkout REV -- PATH` | `scn restore [-s REV] PATH` | `--source` takes the files from REV as local changes |
 | `git clean -n`, `-f`, `-fd`, `-fdx` [PATH...] | the same | Untracked files; `-x` ignored ones too; nested repositories stay |
+| `git stash [push] [-m MSG]`, `list`, `show [-p]`, `pop`, `apply`, `drop` [`stash@{N}`] | the same | Every local change, new files included; `pop` and `apply` need a clean tree |
 | `git switch B`, `git switch -c B` | `scn switch B`, `scn switch -c B` | |
 | `git merge B`, `git merge --abort` | `scn merge B`, `scn merge --abort` | Then `scn land` to publish |
 | `git revert REV`, `-m N`, `--abort` | the same | One commit at a time, as a pending commit; then `scn land` |
@@ -67,4 +68,4 @@ Commands that read history also work outside a working copy with `--repo URL`, f
 
 ## Not available yet
 
-`stash`, `clean`, interactive rebase, `add -p`, `grep`, `bisect`, `reflog`, annotated tags, `remote add` and `fetch`. `scn init`, `fetch`, `stash` and `remote add` say what to use instead. Plain `git` clients cannot talk to a Scion server yet; that is the git gateway in the [roadmap](../design/roadmap.md).
+Interactive rebase, `add -p`, `grep`, `bisect`, `reflog`, annotated tags, `remote add` and `fetch`. `scn init`, `fetch` and `remote add` say what to use instead. The git CLI itself can clone, fetch and push a Scion repository through the [git gateway](git-clients.md).

@@ -731,6 +731,99 @@ async fn clean_needs_force_and_takes_relative_paths() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn stash_saves_lists_shows_and_pops() {
+    use scion_store::MetaStore;
+    let store = Arc::new(MemStore::new());
+    store.create_repo("app").await.expect("repo");
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let url = format!("http://{}", listener.local_addr().expect("addr"));
+    let app = App {
+        config: Arc::new(ServerConfig::default()),
+        meta: store.clone(),
+        blobs: store,
+    };
+    tokio::spawn(serve(listener, app, std::future::pending()));
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let wc = root.join("app");
+        let author = ["--author", "Ada <ada@example.com>"];
+        let text = |args: &[&str]| {
+            let out = scn_in(&wc, args);
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            )
+        };
+        json_of(&scn_in(&root, &["clone", &format!("{url}/app"), "--json"]));
+        std::fs::write(wc.join("a.txt"), "a\n").expect("write");
+        json_of(&scn_in(
+            &wc,
+            &[&["commit", "-m", "base", "--json"][..], &author].concat(),
+        ));
+        json_of(&scn_in(&wc, &["land", "--json"]));
+        assert_eq!(text(&["stash"]), "No local changes to save\n");
+
+        std::fs::write(wc.join("a.txt"), "stashed\n").expect("write");
+        let saved = text(&["stash"]);
+        assert!(
+            saved.starts_with("Saved working directory and index state WIP on main: c1"),
+            "{saved}"
+        );
+        assert!(saved.ends_with(" base\n"), "{saved}");
+        assert_eq!(std::fs::read_to_string(wc.join("a.txt")).expect("a"), "a\n");
+        assert!(text(&["stash", "list"]).starts_with("stash@{0}: WIP on main: c1"));
+        assert!(
+            text(&["stash", "show"]).contains("a.txt | 2"),
+            "{}",
+            text(&["stash", "show"])
+        );
+        assert!(text(&["stash", "show", "-p", "stash@{0}"]).contains("+stashed"));
+        let v = json_of(&scn_in(&wc, &["stash", "pop", "--json"]));
+        assert_eq!(
+            (v["schema"].as_str(), v["dropped"].as_bool()),
+            (Some("scion.cli.stash/v1"), Some(true))
+        );
+        assert_eq!(std::fs::read_to_string(wc.join("a.txt")).expect("a"), "stashed\n");
+        let out = scn_in(&wc, &["stash", "pop"]);
+        assert_eq!(out.status.code(), Some(1), "{out:?}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("scn stash list"));
+        assert_eq!(scn_in(&wc, &["stash", "apply", "first"]).status.code(), Some(2));
+
+        // The branch changed the same line since: the entry stays, the file gets markers
+        assert!(text(&["stash", "push", "-m", "mine"]).ends_with("state mine\n"));
+        let v = json_of(&scn_in(&wc, &["stash", "apply", "--json"]));
+        assert_eq!(v["dropped"], false);
+        json_of(&scn_in(&wc, &["restore", ".", "--json"]));
+        std::fs::write(wc.join("a.txt"), "landed\n").expect("write");
+        json_of(&scn_in(
+            &wc,
+            &[&["commit", "-m", "landed", "--json"][..], &author].concat(),
+        ));
+        json_of(&scn_in(&wc, &["land", "--json"]));
+        let out = scn_in(&wc, &["stash", "pop", "0"]);
+        assert_eq!(out.status.code(), Some(3), "{out:?}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("could not apply stash@{0} cleanly"));
+        assert!(
+            std::fs::read_to_string(wc.join("a.txt"))
+                .expect("a")
+                .contains("<<<<<<<")
+        );
+        assert!(
+            text(&["stash", "apply"]).contains("or `scn stash`"),
+            "needs a clean tree"
+        );
+        json_of(&scn_in(&wc, &["restore", ".", "--json"]));
+        assert!(text(&["stash", "drop"]).starts_with("Dropped stash@{0} (c1"));
+        assert_eq!(text(&["stash", "list"]), "");
+    })
+    .await
+    .expect("test");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn clone_commit_land_sync_workflow() {
     use scion_store::MetaStore;
     let store = Arc::new(MemStore::new());
@@ -1961,7 +2054,6 @@ async fn repository_urls_name_the_server() {
             &["remote", "add", "up", "http://x:1/y"][..],
             &["init"],
             &["fetch", "origin"],
-            &["stash", "pop"],
         ] {
             let out = scn_in(&wc, args);
             assert_eq!(out.status.code(), Some(2), "{args:?}");

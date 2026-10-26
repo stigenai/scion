@@ -29,6 +29,7 @@
 | `git reset --soft HEAD~1` | `scn uncommit` | 撤掉最新的一个待合入提交，保留它的改动 |
 | `git restore [-s REV] PATH`、`git checkout [REV] -- PATH` | `scn restore [-s REV] PATH` | `.` 表示全部；新增的文件会保留（用 `scn clean` 删除）；`--source REV` 从 REV 取文件，成为本地改动 |
 | `git clean -n` / `-f` / `-fd` / `-fdx` [PATH...] | `scn clean -n` / `-f` / `-fd` / `-fdx` [PATH...] | 删除未跟踪的文件，加 `-x` 连被忽略的文件（构建产物）一起删；必须加 `-f`，或者用 `-n` 只列出来。未跟踪的目录整个删除（接受 `-d`，但没有作用）；`.scion/`、`.git/` 以及嵌套的仓库或工作副本不会动 |
+| `git stash [push] [-m MSG]`、`list`、`show [-p]`、`pop`、`apply`、`drop` [`stash@{N}`] | 相同 | 保存所有本地改动，包括新增文件（git 不加 `-u` 时不包括），作为服务端上一个不在任何分支上的提交，然后把工作区恢复到当前提交。`pop` / `apply` 用三方合并把改动放回来，所以 `scn sync` 之后或者在别的分支上也能用；它们要求工作区干净，有冲突时文件里会有冲突标记，条目保留。stash 列表属于这个工作副本 |
 | `git remote -v`、`git remote set-url origin URL` | `scn remote -v`、`scn remote set-url URL` | 服务端的新地址，或有相同提交的另一个仓库（如 fork）；保存前会先检查 |
 | `git push` | `scn land` | 分支已经前进时由服务端 rebase |
 | `git pull --rebase` | `scn sync` | 移到分支最新提交，并把待合入的提交逐个 rebase；没有单独的 `fetch` |
@@ -97,6 +98,6 @@ hint: `scn push` is a transitional git-style spelling; use `scn land` instead
 
 ## 尚未支持
 
-- **工作副本**：检出旧版本、`stash`、交互式 rebase、只提交文件的一部分（`add -p`）。
+- **工作副本**：检出旧版本、交互式 rebase、只提交文件的一部分（`add -p`）。
 - **查询**：附注标签、`grep`、`bisect`、`reflog`。
 - **协作**：`remote add`、`fetch`。git 命令行本身可以克隆、拉取和推送 Scion 仓库（见 [git 客户端](git-clients.zh-CN.md)）。

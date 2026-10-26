@@ -29,6 +29,7 @@ English | [简体中文](coming-from-git.zh-CN.md)
 | `git reset --soft HEAD~1` | `scn uncommit` | Drops the newest pending commit and keeps its changes |
 | `git restore [-s REV] PATH`, `git checkout [REV] -- PATH` | `scn restore [-s REV] PATH` | `.` for everything; added files are kept (`scn clean` removes them); `--source REV` takes the files from REV as local changes |
 | `git clean -n` / `-f` / `-fd` / `-fdx` [PATH...] | `scn clean -n` / `-f` / `-fd` / `-fdx` [PATH...] | Removes untracked files, and with `-x` ignored ones too (build output); needs `-f`, or `-n` to only list them. Untracked directories go whole (`-d` is accepted and changes nothing); `.scion/`, `.git/` and nested repositories or working copies stay |
+| `git stash [push] [-m MSG]`, `list`, `show [-p]`, `pop`, `apply`, `drop` [`stash@{N}`] | the same | Saves every local change, new files included (git leaves those without `-u`), as a commit on the server on no branch, and puts the tree back to its commit. `pop` / `apply` merge an entry back three-way, so it also applies after `scn sync` or on another branch; they need a clean tree, and on conflicts the files get markers and the entry is kept. The list belongs to the working copy |
 | `git remote -v`, `git remote set-url origin URL` | `scn remote -v`, `scn remote set-url URL` | The server's new address, or another repository with the same commits (a fork); checked before it is saved |
 | `git push` | `scn land` | The server rebases when the branch moved |
 | `git pull --rebase` | `scn sync` | Moves to the branch tip and rebases the pending commits one by one; no separate `fetch` |
@@ -97,6 +98,6 @@ Suffixes combine as in git, for example `main~2^2`. A branch whose name literall
 
 ## Not available yet
 
-- **Working copy**: checking out an old revision, `stash`, interactive rebase, committing part of a file (`add -p`).
+- **Working copy**: checking out an old revision, interactive rebase, committing part of a file (`add -p`).
 - **Queries**: annotated tags, `grep`, `bisect`, `reflog`.
 - **Collaboration**: `remote add`, `fetch`. The git CLI itself can clone, fetch and push a Scion repository (see [git clients](git-clients.md)).

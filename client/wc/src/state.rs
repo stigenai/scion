@@ -46,6 +46,17 @@ pub struct State {
     /// 稀疏检出的目录；None 为全部检出。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sparse: Option<Vec<String>>,
+    /// Stashed local changes (`scn stash`), newest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stash: Vec<StashEntry>,
+}
+
+/// Local changes `scn stash` put aside: a commit on the server, on no branch, whose parent is
+/// the commit they were made on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StashEntry {
+    pub commit: String,
+    pub message: String,
 }
 
 impl State {
@@ -63,6 +74,7 @@ impl State {
             head_merge: None,
             conflict: None,
             sparse: None,
+            stash: Vec::new(),
         }
     }
 

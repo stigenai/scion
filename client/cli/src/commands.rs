@@ -895,6 +895,152 @@ impl Render for RestoreOut {
 }
 
 #[derive(Debug, Serialize)]
+pub struct StashOut {
+    pub schema: &'static str,
+    /// What was saved, applied or dropped; for a list, every entry, newest first.
+    pub entries: Vec<StashItem>,
+    /// `pop`: whether the entry was dropped after applying.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dropped: Option<bool>,
+    #[serde(skip)]
+    pub action: StashAction,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StashItem {
+    pub index: usize,
+    pub commit: String,
+    pub message: String,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum StashAction {
+    #[default]
+    Push,
+    List,
+    Apply,
+    Drop,
+}
+
+/// git's lines: `Saved working directory and index state MESSAGE`, `stash@{N}: MESSAGE`,
+/// `Dropped stash@{N} (ID)`.
+impl Render for StashOut {
+    fn text(&self) -> String {
+        let line = |e: &StashItem| match self.action {
+            StashAction::Push => format!("Saved working directory and index state {}", e.message),
+            StashAction::List => format!("stash@{{{}}}: {}", e.index, e.message),
+            StashAction::Apply if self.dropped != Some(true) => format!("Applied stash@{{{}}}", e.index),
+            StashAction::Apply | StashAction::Drop => format!("Dropped stash@{{{}}} ({})", e.index, short(&e.commit)),
+        };
+        match (self.action, self.entries.is_empty()) {
+            (StashAction::Push, true) => "No local changes to save".to_owned(),
+            _ => self.entries.iter().map(line).collect::<Vec<_>>().join("\n"),
+        }
+    }
+}
+
+/// `stash@{N}`, or just `N`; the newest (0) when absent.
+pub fn stash_index(spec: Option<&str>) -> Result<usize, CliError> {
+    let Some(spec) = spec else { return Ok(0) };
+    let n = spec
+        .strip_prefix("stash@{")
+        .and_then(|s| s.strip_suffix('}'))
+        .unwrap_or(spec);
+    n.parse()
+        .map_err(|_| CliError::Usage(format!("{spec:?} is not a stash entry: use stash@{{N}} or N")))
+}
+
+fn stash_item(index: usize, e: &scion_wc::StashEntry) -> StashItem {
+    StashItem {
+        index,
+        commit: e.commit.clone(),
+        message: e.message.clone(),
+    }
+}
+
+/// `scn stash [push] [-m MESSAGE]`.
+pub async fn stash_push(ctx: &Ctx, message: Option<&str>) -> Result<StashOut, CliError> {
+    let (mut wc, client) = open_wc(ctx).await?;
+    let saved = wc.stash_push(&client, message, None).await?;
+    Ok(StashOut {
+        schema: "scion.cli.stash/v1",
+        entries: saved.iter().map(|e| stash_item(0, e)).collect(),
+        dropped: None,
+        action: StashAction::Push,
+    })
+}
+
+/// `scn stash list`: needs no server.
+pub fn stash_list(ctx: &Ctx) -> Result<StashOut, CliError> {
+    let wc = WorkingCopy::open(&ctx.cwd)?;
+    Ok(StashOut {
+        schema: "scion.cli.stash/v1",
+        entries: wc
+            .state()
+            .stash
+            .iter()
+            .enumerate()
+            .map(|(i, e)| stash_item(i, e))
+            .collect(),
+        dropped: None,
+        action: StashAction::List,
+    })
+}
+
+/// `scn stash apply` / `pop`: conflicts fail with the conflict exit code, the entry kept.
+pub async fn stash_apply(ctx: &Ctx, spec: Option<&str>, pop: bool) -> Result<StashOut, CliError> {
+    let index = stash_index(spec)?;
+    let (mut wc, client) = open_wc(ctx).await?;
+    let applied = wc.stash_apply(&client, index, pop).await?;
+    if !applied.conflicts.is_empty() {
+        return Err(CliError::Conflicted {
+            op: ConflictOp::Stash(index),
+            reference: wc.state().reference.clone(),
+            conflicts: applied
+                .conflicts
+                .into_iter()
+                .map(|path| ConflictOut {
+                    kind: "content".to_owned(),
+                    path,
+                })
+                .collect(),
+        });
+    }
+    Ok(StashOut {
+        schema: "scion.cli.stash/v1",
+        entries: vec![stash_item(index, &applied.entry)],
+        dropped: Some(applied.dropped),
+        action: StashAction::Apply,
+    })
+}
+
+/// `scn stash drop`: needs no server.
+pub fn stash_drop(ctx: &Ctx, spec: Option<&str>) -> Result<StashOut, CliError> {
+    let index = stash_index(spec)?;
+    let mut wc = WorkingCopy::open(&ctx.cwd)?;
+    let e = wc.stash_drop(index)?;
+    Ok(StashOut {
+        schema: "scion.cli.stash/v1",
+        entries: vec![stash_item(index, &e)],
+        dropped: Some(true),
+        action: StashAction::Drop,
+    })
+}
+
+/// The commit of stash entry `spec`, for `scn stash show`.
+pub fn stash_commit(ctx: &Ctx, spec: Option<&str>) -> Result<String, CliError> {
+    let index = stash_index(spec)?;
+    let wc = WorkingCopy::open(&ctx.cwd)?;
+    Ok(wc
+        .state()
+        .stash
+        .get(index)
+        .ok_or(scion_wc::Error::NoStash(index))?
+        .commit
+        .clone())
+}
+
+#[derive(Debug, Serialize)]
 pub struct CleanOut {
     pub schema: &'static str,
     pub dry_run: bool,
