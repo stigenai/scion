@@ -27,7 +27,8 @@
 | `git commit -m MSG PATH...` | `scn commit -m MSG PATH...` | 只提交这些路径（相对当前目录）及其下的改动，其余仍是本地改动。每个路径都要有改动；不能和 `-a`、`--amend` 一起用，完成冲突时也不能用 |
 | `git commit --amend` | `scn commit --amend` | 只修改最新的一个待合入提交 |
 | `git reset --soft HEAD~1` | `scn uncommit` | 撤掉最新的一个待合入提交，保留它的改动 |
-| `git restore [-s REV] PATH`、`git checkout [REV] -- PATH` | `scn restore [-s REV] PATH` | `.` 表示全部；新增的文件会保留（没有 `git clean`）；`--source REV` 从 REV 取文件，成为本地改动 |
+| `git restore [-s REV] PATH`、`git checkout [REV] -- PATH` | `scn restore [-s REV] PATH` | `.` 表示全部；新增的文件会保留（用 `scn clean` 删除）；`--source REV` 从 REV 取文件，成为本地改动 |
+| `git clean -n` / `-f` / `-fd` / `-fdx` [PATH...] | `scn clean -n` / `-f` / `-fd` / `-fdx` [PATH...] | 删除未跟踪的文件，加 `-x` 连被忽略的文件（构建产物）一起删；必须加 `-f`，或者用 `-n` 只列出来。未跟踪的目录整个删除（接受 `-d`，但没有作用）；`.scion/`、`.git/` 以及嵌套的仓库或工作副本不会动 |
 | `git remote -v`、`git remote set-url origin URL` | `scn remote -v`、`scn remote set-url URL` | 服务端的新地址，或有相同提交的另一个仓库（如 fork）；保存前会先检查 |
 | `git push` | `scn land` | 分支已经前进时由服务端 rebase |
 | `git pull --rebase` | `scn sync` | 移到分支最新提交，并把待合入的提交逐个 rebase；没有单独的 `fetch` |
@@ -96,6 +97,6 @@ hint: `scn push` is a transitional git-style spelling; use `scn land` instead
 
 ## 尚未支持
 
-- **工作副本**：检出旧版本、`stash`、`clean`、交互式 rebase、只提交文件的一部分（`add -p`）。
+- **工作副本**：检出旧版本、`stash`、交互式 rebase、只提交文件的一部分（`add -p`）。
 - **查询**：附注标签、`grep`、`bisect`、`reflog`。
 - **协作**：`remote add`、`fetch`。git 命令行本身可以克隆、拉取和推送 Scion 仓库（见 [git 客户端](git-clients.zh-CN.md)）。

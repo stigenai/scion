@@ -15,6 +15,7 @@ A quick reference: which git commands you can type in `scn` as they are, which w
 | `git commit -m MSG PATH...` | `scn commit -m MSG PATH...` | Only the changes at or under the paths; the rest stay local changes |
 | `git commit --amend` | `scn commit --amend` | |
 | `git restore [-s REV] PATH`, `git checkout REV -- PATH` | `scn restore [-s REV] PATH` | `--source` takes the files from REV as local changes |
+| `git clean -n`, `-f`, `-fd`, `-fdx` [PATH...] | the same | Untracked files; `-x` ignored ones too; nested repositories stay |
 | `git switch B`, `git switch -c B` | `scn switch B`, `scn switch -c B` | |
 | `git merge B`, `git merge --abort` | `scn merge B`, `scn merge --abort` | Then `scn land` to publish |
 | `git revert REV`, `-m N`, `--abort` | the same | One commit at a time, as a pending commit; then `scn land` |

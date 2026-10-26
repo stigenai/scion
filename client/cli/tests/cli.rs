@@ -688,6 +688,49 @@ async fn commit_takes_paths_relative_to_the_current_directory() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn clean_needs_force_and_takes_relative_paths() {
+    use scion_store::MetaStore;
+    let store = Arc::new(MemStore::new());
+    store.create_repo("app").await.expect("repo");
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let url = format!("http://{}", listener.local_addr().expect("addr"));
+    let app = App {
+        config: Arc::new(ServerConfig::default()),
+        meta: store.clone(),
+        blobs: store,
+    };
+    tokio::spawn(serve(listener, app, std::future::pending()));
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let wc = root.join("app");
+        json_of(&scn_in(&root, &["clone", &format!("{url}/app"), "--json"]));
+        std::fs::create_dir_all(wc.join("src/gen")).expect("mkdir");
+        std::fs::write(wc.join("src/gen/x.rs"), "x").expect("write");
+        std::fs::write(wc.join("top.txt"), "t").expect("write");
+
+        let out = scn_in(&wc, &["clean"]);
+        assert_eq!(out.status.code(), Some(2), "{out:?}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("pass -f"));
+        let out = scn_in(&wc, &["clean", "-n"]);
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "Would remove src/\nWould remove top.txt\n"
+        );
+        assert!(wc.join("top.txt").exists());
+        // From src/, `gen` is src/gen
+        let v = json_of(&scn_in(&wc.join("src"), &["clean", "-fd", "gen", "--json"]));
+        assert_eq!(v["removed"], serde_json::json!(["src/gen/"]));
+        let out = scn_in(&wc, &["clean", "-f"]);
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "Removing top.txt\n");
+        assert!(!wc.join("top.txt").exists() && !wc.join("src").exists());
+    })
+    .await
+    .expect("test");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn clone_commit_land_sync_workflow() {
     use scion_store::MetaStore;
     let store = Arc::new(MemStore::new());

@@ -1575,6 +1575,78 @@ async fn commit_paths_takes_only_their_changes() {
     wc.abort_merge(&c).await.expect("abort");
 }
 
+#[tokio::test]
+async fn clean_removes_untracked_files_like_git() {
+    let srv = server().await;
+    let c = client(&srv.url).await;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let dir = tmp.path().join("wc");
+    let mut wc = WorkingCopy::clone(&c, &srv.url, "mono", "main", &dir, Sparse::full())
+        .await
+        .expect("clone");
+    write(&dir, ".gitignore", "target/\n*.log\n");
+    write(&dir, "src/lib.rs", "lib");
+    wc.commit(&c, "base", None).await.expect("commit");
+    for f in [
+        "notes.txt",
+        "src/new.rs",
+        "fresh/a/b.txt",
+        "fresh/c.txt",
+        "mixed/x.txt",
+        "mixed/run.log",
+        "app.log",
+        "target/debug/out",
+        "vendor/dep/.git/HEAD",
+        "vendor/dep/x.rs",
+    ] {
+        write(&dir, f, "x");
+    }
+    std::fs::create_dir_all(dir.join("empty/inner")).expect("mkdir");
+    let paths = |p: &[&str]| p.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+    // A dry run lists and keeps everything; untracked directories that go whole end in /
+    let listed = wc.clean(&paths(&["."]), false, true).expect("dry run");
+    assert_eq!(
+        listed,
+        ["empty/", "fresh/", "mixed/x.txt", "notes.txt", "src/new.rs"],
+        "ignored files, and a nested repository, stay"
+    );
+    assert!(dir.join("notes.txt").exists());
+
+    // Paths limit it
+    assert_eq!(
+        wc.clean(&paths(&["fresh/a"]), false, false).expect("clean"),
+        ["fresh/a/"]
+    );
+    assert!(!dir.join("fresh/a").exists() && dir.join("fresh/c.txt").exists());
+
+    assert_eq!(
+        wc.clean(&paths(&["."]), false, false).expect("clean"),
+        ["empty/", "fresh/", "mixed/x.txt", "notes.txt", "src/new.rs"]
+    );
+    assert!(dir.join("mixed/run.log").exists() && dir.join("src/lib.rs").exists());
+    assert_eq!(wc.status().expect("status"), status(&["vendor/dep/x.rs"], &[], &[]));
+
+    // -x takes ignored files too, never the nested repository
+    assert_eq!(
+        wc.clean(&paths(&["."]), true, false).expect("clean -x"),
+        ["app.log", "mixed/", "target/"]
+    );
+    assert!(dir.join("vendor/dep/.git/HEAD").exists() && dir.join(".scion").exists());
+    assert!(dir.join(".gitignore").exists());
+    assert!(wc.clean(&paths(&["."]), true, false).expect("again").is_empty());
+
+    // A link to a directory goes, not what it points to
+    #[cfg(unix)]
+    {
+        let outside = tmp.path().join("outside");
+        write(&outside, "keep.txt", "keep");
+        std::os::unix::fs::symlink(&outside, dir.join("link")).expect("symlink");
+        assert_eq!(wc.clean(&paths(&["."]), false, false).expect("clean"), ["link"]);
+        assert!(outside.join("keep.txt").exists() && !dir.join("link").exists());
+    }
+}
+
 #[cfg(unix)]
 fn chmod_x(root: &Path, rel: &str) {
     use std::os::unix::fs::PermissionsExt;

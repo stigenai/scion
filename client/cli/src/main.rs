@@ -402,6 +402,27 @@ enum Command {
         #[arg(short, long, value_name = "REV")]
         source: Option<String>,
     },
+    /// Remove untracked files (with -x ignored ones too); needs -f, or -n to only list them.
+    #[command(after_help = "Examples:\n  scn clean -n          # list what would go\n  \
+        scn clean -f          # remove untracked files\n  \
+        scn clean -fx build   # also ignored ones, under build/ only")]
+    Clean {
+        /// Only list what would be removed.
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+        /// Remove them (required unless -n, as in git).
+        #[arg(short, long)]
+        force: bool,
+        /// Also remove ignored files (.gitignore / .scionignore), such as build output.
+        #[arg(short = 'x')]
+        ignored: bool,
+        /// Accepted for git compatibility: untracked directories are always removed.
+        #[arg(short = 'd')]
+        dirs: bool,
+        /// Only under these files or directories, relative to the current directory.
+        #[arg(value_name = "PATH")]
+        paths: Vec<String>,
+    },
     /// User settings: the default commit author (`user.name`, `user.email`).
     /// git-style forms also work: `scn config KEY [VALUE]`, `--list`, `--unset KEY`.
     #[command(
@@ -1491,6 +1512,20 @@ async fn run(cli: Cli) -> ExitCode {
             emit(commands::resolve(&ctx, &paths, side, force).await, json)
         }
         Command::Restore { paths, source } => emit(commands::restore(&ctx, &paths, source.as_deref()).await, json),
+        Command::Clean {
+            dry_run: false,
+            force: false,
+            ..
+        } => fail(
+            &CliError::Usage("scn clean deletes files: pass -f to remove them, or -n to list them first".into()),
+            json,
+        ),
+        Command::Clean {
+            dry_run,
+            ignored,
+            paths,
+            ..
+        } => emit(commands::clean(&ctx, &paths, ignored, dry_run).await, json),
         Command::Config {
             cmd, key, value, unset, ..
         } => {
@@ -1728,6 +1763,7 @@ Work on a change:
   commit     Commit the local changes (published by land)
   uncommit   Drop the newest pending commit, keeping its changes
   restore    Discard local changes to files
+  clean      Remove untracked files
   resolve    Mark conflicts resolved, or take one side
 
 Share and update:

@@ -894,6 +894,42 @@ impl Render for RestoreOut {
     }
 }
 
+#[derive(Debug, Serialize)]
+pub struct CleanOut {
+    pub schema: &'static str,
+    pub dry_run: bool,
+    /// Removed (or, with dry_run, to be removed); directories removed whole end in `/`.
+    pub removed: Vec<String>,
+}
+
+/// git's lines: `Would remove PATH` (-n), `Removing PATH`.
+impl Render for CleanOut {
+    fn text(&self) -> String {
+        let verb = if self.dry_run { "Would remove" } else { "Removing" };
+        self.removed
+            .iter()
+            .map(|p| format!("{verb} {p}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+/// `scn clean`: untracked files (with `ignored`, ignored ones too) under `paths`, relative to the
+/// current directory; everything when there are none.
+pub async fn clean(ctx: &Ctx, paths: &[String], ignored: bool, dry_run: bool) -> Result<CleanOut, CliError> {
+    let wc = WorkingCopy::open(&ctx.cwd)?;
+    let rel = if paths.is_empty() {
+        vec![".".to_owned()]
+    } else {
+        wc_relative(wc.root(), &ctx.cwd, paths)?
+    };
+    Ok(CleanOut {
+        schema: "scion.cli.clean/v1",
+        dry_run,
+        removed: wc.clean(&rel, ignored, dry_run)?,
+    })
+}
+
 /// Paths are relative to the current directory, like other commands that take local paths.
 /// With `source`, from that revision instead of the working copy's commit (`--source`).
 pub async fn restore(ctx: &Ctx, paths: &[String], source: Option<&str>) -> Result<RestoreOut, CliError> {

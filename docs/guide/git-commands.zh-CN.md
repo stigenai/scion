@@ -15,6 +15,7 @@
 | `git commit -m MSG PATH...` | `scn commit -m MSG PATH...` | 只提交这些路径（及其下）的改动，其余仍是本地改动 |
 | `git commit --amend` | `scn commit --amend` | |
 | `git restore [-s REV] PATH`、`git checkout REV -- PATH` | `scn restore [-s REV] PATH` | `--source` 从 REV 取文件，成为本地改动 |
+| `git clean -n`、`-f`、`-fd`、`-fdx` [PATH...] | 相同 | 删除未跟踪的文件；`-x` 连被忽略的文件一起删；嵌套的仓库不动 |
 | `git switch B`、`git switch -c B` | `scn switch B`、`scn switch -c B` | |
 | `git merge B`、`git merge --abort` | `scn merge B`、`scn merge --abort` | 之后用 `scn land` 发布 |
 | `git revert REV`、`-m N`、`--abort` | 相同 | 一次撤销一个提交，生成待合入的提交；之后用 `scn land` 发布 |

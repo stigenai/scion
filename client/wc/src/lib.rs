@@ -637,6 +637,25 @@ impl WorkingCopy {
             .collect()
     }
 
+    /// Removes untracked files at or under `paths` (`.` for everything), and with `ignored_too`
+    /// ignored ones as well, like `git clean -fd` (`-x`); returns what it removed, or with
+    /// `dry_run` what it would remove, directories that go as a whole ending in `/`. Tracked files,
+    /// `.scion/`, `.git/` and nested repositories or working copies are never touched.
+    pub fn clean(&self, paths: &[String], ignored_too: bool, dry_run: bool) -> Result<Vec<String>> {
+        let _lock = self.paths.lock()?;
+        let dirstate = self.paths.load_dirstate()?;
+        let gone = fsutil::untracked(self.root(), &dirstate.files, paths, ignored_too)?;
+        if !dry_run {
+            for p in &gone {
+                match p.strip_suffix('/') {
+                    Some(dir) => fsutil::remove_dir(self.root(), dir)?,
+                    None => fsutil::remove_file(self.root(), p)?,
+                }
+            }
+        }
+        Ok(gone)
+    }
+
     /// 把本地改动创建为提交（尚未合入）。没有改动时返回 `None`。
     pub async fn commit(
         &mut self,
@@ -698,13 +717,17 @@ impl WorkingCopy {
         if !only.is_empty() {
             let unchanged: Vec<String> = only
                 .iter()
-                .filter(|p| !changes.iter().any(|c| selects(std::slice::from_ref(p), c.path())))
+                .filter(|p| {
+                    !changes
+                        .iter()
+                        .any(|c| fsutil::selects(std::slice::from_ref(p), c.path()))
+                })
                 .cloned()
                 .collect();
             if !unchanged.is_empty() {
                 return Err(Error::NoChangesIn(unchanged));
             }
-            changes.retain(|c| selects(only, c.path()));
+            changes.retain(|c| fsutil::selects(only, c.path()));
         }
         if changes.is_empty() {
             if conflict.is_some() {
@@ -931,7 +954,7 @@ impl WorkingCopy {
     /// [`WorkingCopy::restore`].
     pub async fn restore_from(&mut self, client: &Client, root: ObjectId, paths: &[String]) -> Result<Restored> {
         let _lock = self.paths.lock()?;
-        let matches = |p: &str| selects(paths, p);
+        let matches = |p: &str| fsutil::selects(paths, p);
         let (status, _) = self.changes()?;
         let changed = |p: &String| status.modified.contains(p) || status.deleted.contains(p);
         let dirstate = self.paths.load_dirstate()?;
@@ -968,7 +991,7 @@ impl WorkingCopy {
     }
 
     async fn restore_locked(&mut self, client: &Client, paths: &[String]) -> Result<Restored> {
-        let matches = |p: &str| selects(paths, p);
+        let matches = |p: &str| fsutil::selects(paths, p);
         let (status, _) = self.changes()?;
         let mut dirstate = self.paths.load_dirstate()?;
         let mut delta = BTreeMap::new();
@@ -1814,13 +1837,6 @@ impl WorkingCopy {
             self.push_head(*id);
         }
     }
-}
-
-/// Whether `path` is one of `paths` or under one of them (`.` or an empty path is everything).
-fn selects(paths: &[String], path: &str) -> bool {
-    paths.iter().map(|w| w.trim_end_matches('/')).any(|w| {
-        w.is_empty() || w == "." || path == w || (path.starts_with(w) && path.as_bytes().get(w.len()) == Some(&b'/'))
-    })
 }
 
 /// dirstate 中的快照（路径 → 文件）。

@@ -456,6 +456,123 @@ pub(crate) fn remove_file(root: &Path, rel: &str) -> Result<()> {
     Ok(())
 }
 
+/// Removes the directory `rel` and everything in it (symbolic links are removed, not followed),
+/// then its parents that are left empty, as [`remove_file`] does.
+pub(crate) fn remove_dir(root: &Path, rel: &str) -> Result<()> {
+    check_rel(rel)?;
+    check_parents(root, rel)?;
+    let path = path_of(root, rel);
+    match std::fs::remove_dir_all(&path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(io(&path)(e)),
+    }
+    let mut dir = path.parent();
+    while let Some(d) = dir {
+        if d == root || std::fs::remove_dir(d).is_err() {
+            break;
+        }
+        dir = d.parent();
+    }
+    Ok(())
+}
+
+/// The untracked files at or under `wanted` (as [`selects`] reads paths), for `scn clean`:
+/// files, and directories with nothing tracked in them as one entry ending in `/` when all of
+/// them goes (empty ones too). Ignored ones only with `ignored_too`: otherwise an untracked
+/// directory holding ignored files keeps them, and is listed file by file. Nested repositories
+/// and working copies (directories holding `.git` or `.scion`) are never listed.
+pub(crate) fn untracked<R>(
+    root: &Path,
+    tracked: &BTreeMap<String, R>,
+    wanted: &[String],
+    ignored_too: bool,
+) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    // Untracked directories walked into, and those with something inside that stays
+    let (mut whole, mut keeps) = (Vec::new(), std::collections::HashSet::new());
+    let mut keep = |rel: &str| {
+        let mut at = rel;
+        while let Some(i) = at.rfind('/') {
+            at = &at[..i];
+            keeps.insert(at.to_owned());
+        }
+    };
+    let mut dirs = vec![(root.to_path_buf(), String::new(), Vec::<Arc<Gitignore>>::new(), false)];
+    while let Some((dir, prefix, mut rules, ignored)) = dirs.pop() {
+        let mut entries = Vec::new();
+        for entry in std::fs::read_dir(&dir).map_err(io(&dir))? {
+            let entry = entry.map_err(io(&dir))?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            entries.push((name, entry.file_type().map_err(io(&entry.path()))?));
+        }
+        if !ignored {
+            rules.extend(dir_rules(&dir, |n| entries.iter().any(|(e, _)| e == n)));
+        }
+        for (name, ft) in entries {
+            if RESERVED.iter().any(|r| name.eq_ignore_ascii_case(r)) {
+                keep(&format!("{prefix}/{name}"));
+                continue;
+            }
+            let rel = if prefix.is_empty() {
+                name.clone()
+            } else {
+                format!("{prefix}/{name}")
+            };
+            let path = dir.join(&name);
+            let all = selects(wanted, &rel);
+            if !all
+                && !wanted
+                    .iter()
+                    .any(|w| selects(std::slice::from_ref(&rel), w.trim_end_matches('/')))
+            {
+                continue;
+            }
+            if ft.is_dir() {
+                let skip = ignored || is_ignored(&rules, &path, true);
+                let nested = RESERVED.iter().any(|r| path.join(r).exists());
+                if (skip && !ignored_too) || nested {
+                    keep(&rel);
+                    continue;
+                }
+                // Walked into even when it goes whole, so nothing nested inside goes with it
+                if all && !tracks_under(tracked, &rel) {
+                    whole.push(rel.clone());
+                }
+                dirs.push((path, rel, rules.clone(), skip));
+                continue;
+            }
+            if tracked.contains_key(&rel) || !all {
+                continue;
+            }
+            if (ignored || is_ignored(&rules, &path, false)) && !ignored_too {
+                keep(&rel);
+                continue;
+            }
+            out.push(rel);
+        }
+    }
+    // An untracked directory left with nothing inside goes as one, the outermost such
+    whole.sort();
+    let mut gone: Vec<String> = Vec::new();
+    for d in whole {
+        if !keeps.contains(&d) && !gone.iter().any(|g| d.starts_with(&format!("{g}/"))) {
+            gone.push(d);
+        }
+    }
+    out.retain(|p| !gone.iter().any(|g| p.starts_with(&format!("{g}/"))));
+    out.extend(gone.into_iter().map(|g| format!("{g}/")));
+    out.sort();
+    Ok(out)
+}
+
+/// Whether `path` is one of `paths` or under one of them (`.` or an empty path is everything).
+pub(crate) fn selects(paths: &[String], path: &str) -> bool {
+    paths.iter().map(|w| w.trim_end_matches('/')).any(|w| {
+        w.is_empty() || w == "." || path == w || (path.starts_with(w) && path.as_bytes().get(w.len()) == Some(&b'/'))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
