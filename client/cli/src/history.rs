@@ -355,7 +355,7 @@ pub async fn reflog(ctx: &Ctx, reference: Option<&str>, limit: usize) -> Result<
             .entries
             .into_iter()
             .next()
-            .map(|e| e.message.lines().next().unwrap_or_default().to_owned())
+            .map(|e| crate::output::subject(&e.message))
             .unwrap_or_default();
         entries.push(ReflogLine {
             version: m.version,
@@ -429,13 +429,7 @@ impl Render for LogOut {
             return self
                 .entries
                 .iter()
-                .map(|e| {
-                    format!(
-                        "{} {}",
-                        &e.id[..12.min(e.id.len())],
-                        e.message.lines().next().unwrap_or("")
-                    )
-                })
+                .map(|e| format!("{} {}", &e.id[..12.min(e.id.len())], crate::output::subject(&e.message)))
                 .collect::<Vec<_>>()
                 .join("\n");
         }

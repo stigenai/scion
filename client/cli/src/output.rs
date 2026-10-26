@@ -652,3 +652,27 @@ mod tests {
         assert!(render(&v, false).starts_with("scn "));
     }
 }
+
+/// git's subject of a commit message: its first paragraph, lines joined by spaces.
+pub fn subject(message: &str) -> String {
+    message
+        .lines()
+        .skip_while(|l| l.trim().is_empty())
+        .take_while(|l| !l.trim().is_empty())
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[cfg(test)]
+mod subject_tests {
+    use super::subject;
+
+    #[test]
+    fn first_paragraph_joined() {
+        assert_eq!(subject("one line"), "one line");
+        assert_eq!(subject("1. a\n2. b\n\nbody\n"), "1. a 2. b");
+        assert_eq!(subject("\n\n  title  \n"), "title");
+        assert_eq!(subject(""), "");
+    }
+}

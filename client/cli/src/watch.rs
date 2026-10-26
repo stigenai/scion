@@ -86,7 +86,7 @@ fn commit_of(e: &LogItem) -> WatchCommit {
         id: e.id.to_string(),
         author: e.author.name.clone(),
         email: e.author.email.clone(),
-        subject: e.message.lines().next().unwrap_or("").to_owned(),
+        subject: crate::output::subject(&e.message),
         rebased_from: e.rebased_from().map(|id| id.to_string()),
     }
 }

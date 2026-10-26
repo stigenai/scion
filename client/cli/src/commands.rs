@@ -1351,7 +1351,7 @@ pub async fn pick(
         .next()
         .ok_or_else(|| CliError::Usage(format!("{revision} has no history")))?;
     let parent = pick_parent(&commit, mainline)?;
-    let subject = commit.message.lines().next().unwrap_or("").to_owned();
+    let subject = crate::output::subject(&commit.message);
     let message = match kind {
         PickKind::Revert => format!("Revert \"{subject}\"\n\nThis reverts commit {}.", commit.id),
         PickKind::CherryPick if record_origin => format!(
@@ -1370,7 +1370,7 @@ pub async fn pick(
         ),
         None => (None, None),
     };
-    let new_subject = message.lines().next().unwrap_or("").to_owned();
+    let new_subject = crate::output::subject(&message);
     let o = wc
         .pick(&client, kind, commit.id, parent, message, author, committer)
         .await
