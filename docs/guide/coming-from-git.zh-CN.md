@@ -51,6 +51,7 @@
 | `git show [REV] [-- PATH]` | `scn show [REV] [--name-only | --name-status | --stat] [-- PATH]` | |
 | `git diff`、`git diff A B`、`A..B`、`A...B` | `scn diff`、`scn diff A B`、`A..B`、`A...B` | `--name-only`、`--name-status`、`--stat`、`-- PATH` |
 | `git blame [REV] -- PATH` | `scn blame [REV:]PATH` | |
+| `git grep [-n] [-l] [-i] [-F] PATTERN [REV] [-- PATH...]` | 相同，另有 `-m N` | 在服务端对某个提交（默认 HEAD）搜索，所以不需要检出，稀疏检出没检出的部分也能搜到；不搜索本地改动。使用 Rust 正则语法（接近 `-E`）。跳过二进制文件、超过 1 MiB 的文件、符号链接和被 redact 的文件；默认找到 1000 行就停止，`-m` 可以调整（最多 10000）。什么也没找到时退出码为 1 |
 | `git reflog [BRANCH]` | `scn reflog [BRANCH] [-n N]` | 由服务端保存，每个分支和标签都有，所以包括所有人的合入，而不只是某一个 clone 的：`ID main@{N}: 时间 created / fast-forward / forced: 标题`，从新到旧。暂时不记录是谁移动的分支；删除分支会同时删除它的记录 |
 | `git show REV:PATH` | `scn cat REV:PATH` | 不需要工作副本 |
 | `git ls-tree REV DIR` | `scn ls REV:DIR`，根目录用 `scn ls REV` | 不是版本号的单个参数按目录处理；`:DIR` 强制当作目录 |
@@ -102,5 +103,5 @@ hint: `scn push` is a transitional git-style spelling; use `scn land` instead
 ## 尚未支持
 
 - **工作副本**：在分离状态下提交、交互式 rebase、只提交文件的一部分（`add -p`）。
-- **查询**：附注标签、`grep`、`bisect`、`REF@{N}` 写法的版本（用 `scn reflog` 打印的 id）。
+- **查询**：附注标签、`bisect`、`REF@{N}` 写法的版本（用 `scn reflog` 打印的 id）。
 - **协作**：`remote add`、`fetch`。git 命令行本身可以克隆、拉取和推送 Scion 仓库（见 [git 客户端](git-clients.zh-CN.md)）。

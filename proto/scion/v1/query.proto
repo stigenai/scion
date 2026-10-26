@@ -36,6 +36,9 @@ service QueryService {
   rpc ListLastCommits(ListLastCommitsRequest) returns (ListLastCommitsResponse);
   // 目录（含全部子目录）下的文件数、子目录数与总字节数；path 为空表示整个仓库。
   rpc GetTreeStats(GetTreeStatsRequest) returns (GetTreeStatsResponse);
+  // Lines of files at a revision that match a pattern (`scn grep`), in path order, streamed in
+  // batches. Needs read access to the paths searched (the whole repository when none are given).
+  rpc Grep(GrepRequest) returns (stream GrepResponse);
 }
 
 message ReadFileRequest {
@@ -297,4 +300,35 @@ message GetTreeStatsResponse {
   uint64 directories = 4;
   // 文件字节数之和。
   uint64 bytes = 5;
+}
+
+message GrepRequest {
+  string repo = 1;
+  string revision = 2;
+  // A regular expression (Rust regex syntax, close to git grep -E), or with fixed_strings a literal.
+  string pattern = 3;
+  bool fixed_strings = 4;
+  bool ignore_case = 5;
+  // Directories or files to search, in this order; empty: the whole tree.
+  repeated string paths = 6;
+  // Stop after this many matching lines: default 1000, at most 10000.
+  uint32 max_matches = 7;
+}
+
+message GrepMatch {
+  string path = 1;
+  // 1-based.
+  uint64 line_number = 2;
+  // The line without its end, cut to 1000 bytes; not necessarily UTF-8.
+  bytes line = 3;
+}
+
+message GrepResponse {
+  bytes changeset_id = 1;
+  repeated GrepMatch matches = 2;
+  // Set on the last message: whether it stopped at max_matches, and how many files it searched
+  // and left out (binary, larger than 1 MiB, redacted, links and submodules).
+  bool truncated = 3;
+  uint64 files_searched = 4;
+  uint64 files_skipped = 5;
 }

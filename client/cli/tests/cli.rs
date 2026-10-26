@@ -949,6 +949,78 @@ async fn switch_detach_checks_out_an_old_commit() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn grep_searches_the_commit_on_the_server() {
+    use scion_store::MetaStore;
+    let store = Arc::new(MemStore::new());
+    store.create_repo("app").await.expect("repo");
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let url = format!("http://{}", listener.local_addr().expect("addr"));
+    let app = App {
+        config: Arc::new(ServerConfig::default()),
+        meta: store.clone(),
+        blobs: store,
+    };
+    tokio::spawn(serve(listener, app, std::future::pending()));
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let wc = root.join("app");
+        let author = ["--author", "Ada <ada@example.com>"];
+        let out = |dir: &std::path::Path, args: &[&str]| {
+            let o = scn_in(dir, args);
+            (o.status.code(), String::from_utf8_lossy(&o.stdout).into_owned())
+        };
+        json_of(&scn_in(&root, &["clone", &format!("{url}/app"), "--json"]));
+        std::fs::create_dir_all(wc.join("src")).expect("mkdir");
+        std::fs::create_dir_all(wc.join("docs")).expect("mkdir");
+        std::fs::write(wc.join("src/main.rs"), "// todo\nfn main() {}\n").expect("write");
+        std::fs::write(wc.join("docs/notes.md"), "TODO: write docs\n").expect("write");
+        json_of(&scn_in(
+            &wc,
+            &[&["commit", "-m", "base", "--json"][..], &author].concat(),
+        ));
+        json_of(&scn_in(&wc, &["land", "--json"]));
+        // A local change is not searched: the commit is
+        std::fs::write(wc.join("src/main.rs"), "fn changed() {}\n").expect("write");
+
+        assert_eq!(
+            out(&wc, &["grep", "-n", "fn"]),
+            (Some(0), "src/main.rs:2:fn main() {}\n".into())
+        );
+        assert_eq!(
+            out(&wc, &["grep", "-i", "todo"]),
+            (Some(0), "docs/notes.md:TODO: write docs\nsrc/main.rs:// todo\n".into())
+        );
+        assert_eq!(
+            out(&wc.join("src"), &["grep", "-il", "todo"]),
+            (Some(0), "main.rs\n".into())
+        );
+        assert_eq!(
+            out(&wc.join("src"), &["grep", "-l", "TODO", "--", "../docs"]),
+            (Some(0), "../docs/notes.md\n".into())
+        );
+        assert_eq!(out(&wc, &["grep", "nothing here"]), (Some(1), String::new()));
+        let v = json_of(&scn_in(
+            &root,
+            &["grep", "-F", "()", "main", "--repo", &format!("{url}/app"), "--json"],
+        ));
+        assert_eq!(v["schema"], "scion.cli.grep/v1");
+        assert_eq!(v["matches"][0]["path"], "src/main.rs");
+        assert_eq!(
+            (v["files_searched"].as_u64(), v["truncated"].as_bool()),
+            (Some(2), Some(false))
+        );
+        let o = scn_in(&wc, &["grep", "-m", "1", "o"]);
+        assert_eq!(String::from_utf8_lossy(&o.stdout).lines().count(), 1);
+        assert!(String::from_utf8_lossy(&o.stderr).contains("stopped at 1 matching lines"));
+        assert_eq!(scn_in(&wc, &["grep", "("]).status.code(), Some(1));
+    })
+    .await
+    .expect("test");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn clone_commit_land_sync_workflow() {
     use scion_store::MetaStore;
     let store = Arc::new(MemStore::new());

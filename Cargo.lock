@@ -3572,6 +3572,8 @@ dependencies = [
  "flate2",
  "futures",
  "hex",
+ "memchr",
+ "regex",
  "scion-object",
  "scion-store",
  "scion-store-sql",

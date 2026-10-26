@@ -28,6 +28,7 @@
 | `git show [REV] [-- PATH]` | 相同 | |
 | `git diff [--cached]`、`git diff A B`、`A..B`、`A...B` | 相同 | `--name-only`、`--name-status`、`--stat`、`-- PATH`；没有暂存区，`--cached` / `--staged` 显示同样的本地改动 |
 | `git blame [-L N,M] PATH` | `scn blame [-L N,M] PATH` | 指定版本用 `scn blame REV:PATH` |
+| `git grep [-n] [-l] [-i] [-F] PATTERN [REV] [-- PATH...]` | 相同 | 在服务端搜索提交（默认 HEAD）里的文件，不搜索本地改动 |
 | `git reflog [BRANCH]` | `scn reflog [BRANCH] [-n N]` | 分支在服务端的移动记录：新建、快进或强制移动，以及时间 |
 | `git remote -v`、`git remote get-url origin`、`git remote set-url origin URL` | 相同 | 只有一个 remote，`origin`；`set-url` 会先检查新地址上有工作副本所在的提交 |
 | `git archive REV` | `scn archive REV` | `--format tar.gz\|zip\|tar`、`--prefix`、`-o FILE` |
@@ -71,4 +72,4 @@
 
 ## 尚未支持
 
-交互式 rebase、`add -p`、`grep`、`bisect`、`REF@{N}` 写法的版本、附注标签、`remote add` 和 `fetch`。`scn init`、`fetch`、`remote add` 会提示该改用什么。git 命令行本身可以通过 [git 网关](git-clients.zh-CN.md) clone、fetch 和 push Scion 仓库。
+交互式 rebase、`add -p`、`bisect`、`REF@{N}` 写法的版本、附注标签、`remote add` 和 `fetch`。`scn init`、`fetch`、`remote add` 会提示该改用什么。git 命令行本身可以通过 [git 网关](git-clients.zh-CN.md) clone、fetch 和 push Scion 仓库。

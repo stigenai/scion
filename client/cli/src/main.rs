@@ -533,6 +533,38 @@ enum Command {
         #[arg(last = true, value_name = "PATH")]
         paths: Vec<String>,
     },
+    /// Search the files of a commit (default HEAD) on the server, like `git grep`; local changes
+    /// are not searched. Exits 1 when nothing matches.
+    #[command(
+        after_help = "Inside a working copy, paths are relative to the current directory, which is also \
+        what it searches without paths.\n\nExamples:\n  scn grep TODO\n  scn grep -n -i 'fn main' -- src\n  \
+        scn grep -l -F 'a.b' v1.0\n  scn grep --repo http://scion.example.com:7080/org/app -n LICENSE main"
+    )]
+    Grep {
+        /// A regular expression (Rust regex syntax, close to git grep -E).
+        pattern: String,
+        /// The commit to search (default: HEAD in a working copy, else the default branch).
+        #[arg(value_name = "REV")]
+        revision: Option<String>,
+        /// Show line numbers.
+        #[arg(short = 'n', long)]
+        line_number: bool,
+        /// Only the names of files that match.
+        #[arg(short = 'l', long)]
+        files_with_matches: bool,
+        /// Ignore case.
+        #[arg(short = 'i', long)]
+        ignore_case: bool,
+        /// The pattern is a literal string, not a regular expression.
+        #[arg(short = 'F', long)]
+        fixed_strings: bool,
+        /// Stop after this many matching lines (default 1000, at most 10000).
+        #[arg(short = 'm', long, value_name = "N", default_value_t = 1000)]
+        max_count: u32,
+        /// `-- PATH...`: only these directories or files.
+        #[arg(last = true, value_name = "PATH")]
+        paths: Vec<String>,
+    },
     /// Show how a branch or tag moved on the server, newest first (git's reflog, kept by the server).
     #[command(
         after_help = "Each line: ID BRANCH@{N}: TIME (UTC) HOW: SUBJECT, where HOW is created, fast-forward \
@@ -1697,6 +1729,29 @@ async fn run(cli: Cli) -> ExitCode {
             Err(e) => fail(&e, json),
         },
         Command::Blame { spec, lines } => emit(history::blame(&ctx, &spec, &lines).await, json),
+        Command::Grep {
+            pattern,
+            revision,
+            line_number,
+            files_with_matches,
+            ignore_case,
+            fixed_strings,
+            max_count,
+            paths,
+        } => {
+            let query = scion_client::GrepQuery {
+                pattern,
+                fixed: fixed_strings,
+                ignore_case,
+                paths,
+                max_matches: max_count,
+            };
+            let found = history::grep(&ctx, query, revision.as_deref(), line_number, files_with_matches).await;
+            // Like git grep: nothing found is exit status 1
+            let none = matches!(&found, Ok(f) if f.matches.is_empty());
+            let code = emit(found, json);
+            if none { ExitCode::from(1) } else { code }
+        }
         Command::Reflog { reference, max_count } => {
             emit(history::reflog(&ctx, reference.as_deref(), max_count).await, json)
         }
@@ -1872,6 +1927,7 @@ Branches and history:
   log        Show the history
   show       Show a commit and its changes
   blame      Show the commit that last changed each line
+  grep       Search the files of a commit on the server
   reflog     Show how a branch moved on the server
   watch      Follow branches on the server as commits land
 

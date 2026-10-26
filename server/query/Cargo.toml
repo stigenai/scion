@@ -13,6 +13,8 @@ hex.workspace = true
 async-trait.workspace = true
 scion-tree.workspace = true
 sha1 = "0.10"
+regex = "1"
+memchr = "2"
 similar = { version = "3", features = ["bytes"] }
 scion-object.workspace = true
 scion-store.workspace = true

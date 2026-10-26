@@ -6,6 +6,7 @@
 mod archive;
 mod blame;
 mod gitsha;
+mod grep;
 mod lastcommit;
 mod reindex;
 mod treestats;
@@ -18,6 +19,7 @@ pub use gitsha::{
     git_commit_body_plain, git_hash, git_sha_of, git_tree_body, index_git_sha, lookup_git_sha, parse_git_sha,
     tree_git_sha,
 };
+pub use grep::{GrepMatch, GrepOptions, GrepResult, GrepStart, MAX_LINE, grep};
 pub use lastcommit::{LAST_COMMIT_KIND, LAST_COMMIT_VERSION, last_commits};
 pub use reindex::{ReindexStats, all_records, describe, reindex};
 pub use treestats::{TREE_STATS_KIND, TREE_STATS_VERSION, TreeStats, tree_stats};

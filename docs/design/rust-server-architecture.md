@@ -131,7 +131,7 @@ service RefService {
 
 service QueryService {            // "source control as an API": no local repository needed
   rpc ReadFile(ReadFileRequest) returns (stream ReadFileChunk);   // rev:path
-  rpc ListDir / Stat / Log / Blame / Diff(stream) / IsAncestor / MergeBase / ResolveRevision
+  rpc ListDir / Stat / Log / Blame / Diff(stream) / IsAncestor / MergeBase / ResolveRevision / Grep(stream)
   rpc GetDerived(GetDerivedRequest) returns (GetDerivedResponse);  // generic derived data queries
 }
 

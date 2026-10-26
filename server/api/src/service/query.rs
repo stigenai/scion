@@ -8,8 +8,8 @@ use scion_object::{EntryMode, ObjectId, TreeEntry};
 use scion_proto::v1::query_service_server::QueryService;
 use scion_proto::v1::{
     self, ArchiveRequest, ArchiveResponse, BlameRequest, BlameResponse, DiffRequest, DiffResponse, GetDerivedRequest,
-    GetDerivedResponse, GetGitShasRequest, GetGitShasResponse, GetTreeStatsRequest, GetTreeStatsResponse,
-    IsAncestorRequest, IsAncestorResponse, ListDirRequest, ListDirResponse, ListLastCommitsRequest,
+    GetDerivedResponse, GetGitShasRequest, GetGitShasResponse, GetTreeStatsRequest, GetTreeStatsResponse, GrepRequest,
+    GrepResponse, IsAncestorRequest, IsAncestorResponse, ListDirRequest, ListDirResponse, ListLastCommitsRequest,
     ListLastCommitsResponse, LogRequest, LogResponse, MergeBaseRequest, MergeBaseResponse, ReadFileRequest,
     ReadFileResponse, ResolveRevisionRequest, ResolveRevisionResponse, StatRequest, StatResponse,
 };
@@ -28,6 +28,14 @@ use scion_auth::{Action, Guard, Principal, Request as AuthRequest};
 pub type ReadFileStream = Pin<Box<dyn Stream<Item = Result<ReadFileResponse, Status>> + Send>>;
 pub type DiffStream = Pin<Box<dyn Stream<Item = Result<DiffResponse, Status>> + Send>>;
 pub type ArchiveStream = Pin<Box<dyn Stream<Item = Result<ArchiveResponse, Status>> + Send>>;
+pub type GrepStream = Pin<Box<dyn Stream<Item = Result<GrepResponse, Status>> + Send>>;
+
+/// Matching lines a grep returns by default and at most, and per message.
+const DEFAULT_GREP_MATCHES: usize = 1000;
+const MAX_GREP_MATCHES: usize = 10_000;
+const GREP_BATCH: usize = 500;
+/// Files larger than this are not searched.
+const GREP_MAX_FILE: u64 = 1 << 20;
 
 /// 归档路径前缀：为空，或是以 `/` 结尾的合法相对路径。
 pub(crate) fn check_prefix(prefix: &str) -> Result<(), Status> {
@@ -341,6 +349,80 @@ impl QueryService for QuerySvc {
     }
 
     type ArchiveStream = ArchiveStream;
+    type GrepStream = GrepStream;
+
+    async fn grep(&self, request: Request<GrepRequest>) -> Result<Response<Self::GrepStream>, Status> {
+        let p = principal(&request);
+        let req = request.into_inner();
+        let max = match req.max_matches {
+            0 => DEFAULT_GREP_MATCHES,
+            n => (n as usize).min(MAX_GREP_MATCHES),
+        };
+        let opts = scion_query::GrepOptions::new(&req.pattern, req.fixed_strings, req.ignore_case, max, GREP_MAX_FILE)
+            .map_err(|e| Status::invalid_argument(format!("pattern: {e}")))?;
+        let paths = if req.paths.is_empty() {
+            vec![String::new()]
+        } else {
+            req.paths.clone()
+        };
+        for path in &paths {
+            check_path(path)?;
+            self.authorize_subtree(&p, &req.repo, path).await?;
+        }
+        let rec = resolve_revision(self.meta.as_ref(), &req.repo, &req.revision).await?;
+        let src = self.source();
+        let mut starts = Vec::with_capacity(paths.len());
+        for path in paths {
+            let start = if path.is_empty() {
+                scion_query::GrepStart {
+                    path,
+                    mode: EntryMode::Tree,
+                    id: rec.root_tree,
+                    size: 0,
+                }
+            } else {
+                let e = lookup(&src, rec.root_tree, &path)
+                    .await
+                    .map_err(status::from_tree)?
+                    .ok_or_else(|| status::path_not_found(&path))?;
+                scion_query::GrepStart {
+                    path,
+                    mode: e.mode,
+                    id: e.id,
+                    size: e.size,
+                }
+            };
+            starts.push(start);
+        }
+        let found = scion_query::grep(&self.contents(&req.repo), &starts, &opts)
+            .await
+            .map_err(history::from_query)?;
+        let mut batches: Vec<GrepResponse> = found
+            .matches
+            .chunks(GREP_BATCH)
+            .map(|part| GrepResponse {
+                matches: part
+                    .iter()
+                    .map(|m| v1::GrepMatch {
+                        path: m.path.clone(),
+                        line_number: m.line,
+                        line: Bytes::copy_from_slice(&m.text),
+                    })
+                    .collect(),
+                ..Default::default()
+            })
+            .collect();
+        if batches.is_empty() {
+            batches.push(GrepResponse::default());
+        }
+        batches[0].changeset_id = Bytes::copy_from_slice(&rec.id.to_bytes());
+        if let Some(last) = batches.last_mut() {
+            last.truncated = found.truncated;
+            last.files_searched = found.searched;
+            last.files_skipped = found.skipped;
+        }
+        Ok(Response::new(Box::pin(tokio_stream::iter(batches.into_iter().map(Ok)))))
+    }
 
     async fn archive(&self, request: Request<ArchiveRequest>) -> Result<Response<Self::ArchiveStream>, Status> {
         let p = principal(&request);
@@ -535,6 +617,55 @@ mod tests {
                 Err(Code::InvalidArgument),
                 "{bad}"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn grep_streams_matches_and_checks_its_request() {
+        let (_store, svc, cs) = setup().await;
+        let grep = |pattern: &str, paths: &[&str]| GrepRequest {
+            repo: REPO.into(),
+            revision: "main".into(),
+            pattern: pattern.into(),
+            paths: paths.iter().map(|p| p.to_string()).collect(),
+            ..Default::default()
+        };
+        let run = |req: GrepRequest| async {
+            let mut stream = QueryService::grep(&svc, Request::new(req)).await?.into_inner();
+            let mut out = Vec::new();
+            while let Some(msg) = stream.next().await {
+                out.push(msg?);
+            }
+            Ok::<_, Status>(out)
+        };
+        let msgs = run(grep("hello|sh$", &[])).await.expect("grep");
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(ObjectId::from_bytes(&msgs[0].changeset_id), Ok(cs));
+        let found: Vec<(&str, u64)> = msgs[0]
+            .matches
+            .iter()
+            .map(|m| (m.path.as_str(), m.line_number))
+            .collect();
+        assert_eq!(found, [("bin/run.sh", 1), ("docs/readme.md", 1)]);
+        assert_eq!((msgs[0].files_searched, msgs[0].truncated), (2, false));
+
+        let only = run(GrepRequest {
+            ignore_case: true,
+            fixed_strings: true,
+            max_matches: 1,
+            ..grep("HELLO", &["docs", "bin/run.sh"])
+        })
+        .await
+        .expect("grep");
+        assert_eq!(only[0].matches[0].line.as_ref(), b"hello world");
+        assert!(run(grep("nothing", &[])).await.expect("grep")[0].matches.is_empty());
+
+        for (req, code) in [
+            (grep("(", &[]), Code::InvalidArgument),
+            (grep("x", &["../up"]), Code::InvalidArgument),
+            (grep("x", &["nope"]), Code::NotFound),
+        ] {
+            assert_eq!(run(req).await.map(|_| ()).expect_err("refused").code(), code);
         }
     }
 

@@ -131,7 +131,7 @@ service RefService {
 
 service QueryService {            // 「源码管理即 API」：不需要本地仓库
   rpc ReadFile(ReadFileRequest) returns (stream ReadFileChunk);   // rev:path
-  rpc ListDir / Stat / Log / Blame / Diff(stream) / IsAncestor / MergeBase / ResolveRevision
+  rpc ListDir / Stat / Log / Blame / Diff(stream) / IsAncestor / MergeBase / ResolveRevision / Grep(stream)
   rpc GetDerived(GetDerivedRequest) returns (GetDerivedResponse);  // 通用派生数据查询
 }
 

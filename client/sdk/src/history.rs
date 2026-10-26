@@ -6,7 +6,7 @@ use bytes::Bytes;
 use scion_object::ObjectId;
 use scion_proto::v1::{
     self, ArchiveRequest, BlameRequest, DerivedKind, DiffRequest, GetDerivedRequest, GetGitShasRequest,
-    GetTreeStatsRequest, IsAncestorRequest, ListLastCommitsRequest, LogRequest, MergeBaseRequest,
+    GetTreeStatsRequest, GrepRequest, IsAncestorRequest, ListLastCommitsRequest, LogRequest, MergeBaseRequest,
     ResolveRevisionRequest, StatRequest, query_service_client::QueryServiceClient,
 };
 
@@ -99,6 +99,41 @@ pub struct Revision {
     pub root_tree: ObjectId,
     pub generation: u64,
     pub parents: Vec<ObjectId>,
+}
+
+/// What [`Client::grep`] looks for.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GrepQuery {
+    /// A regular expression, or with `fixed` a literal string.
+    pub pattern: String,
+    pub fixed: bool,
+    pub ignore_case: bool,
+    /// Directories or files to search; empty: everything.
+    pub paths: Vec<String>,
+    /// 0: the server's default (1000).
+    pub max_matches: u32,
+}
+
+/// A matching line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrepLine {
+    pub path: String,
+    /// 1-based.
+    pub line: u64,
+    /// Cut to 1000 bytes; not necessarily UTF-8.
+    pub text: Bytes,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GrepFound {
+    /// The commit searched.
+    pub changeset: Option<ObjectId>,
+    pub matches: Vec<GrepLine>,
+    /// It stopped at the limit: there may be more.
+    pub truncated: bool,
+    pub searched: u64,
+    /// Files left out: binary, larger than 1 MiB, redacted, links and submodules.
+    pub skipped: u64,
 }
 
 /// Blame 中出现的一个提交。
@@ -304,6 +339,35 @@ impl Client {
             return Err(Error::Protocol("GetGitShas returned a malformed response".into()));
         }
         Ok(resp.git_sha1.iter().map(hex::encode).collect())
+    }
+
+    /// Lines of the files at `revision` that match `query`'s pattern, in path order.
+    pub async fn grep(&self, revision: &str, query: &GrepQuery) -> Result<GrepFound> {
+        let req = GrepRequest {
+            repo: self.repo()?,
+            revision: revision.to_owned(),
+            pattern: query.pattern.clone(),
+            fixed_strings: query.fixed,
+            ignore_case: query.ignore_case,
+            paths: query.paths.clone(),
+            max_matches: query.max_matches,
+        };
+        let mut stream = self.query().grep(self.request(req)?).await?.into_inner();
+        let mut found = GrepFound::default();
+        while let Some(msg) = stream.message().await? {
+            if found.changeset.is_none() {
+                found.changeset = Some(id_from(&msg.changeset_id, "changeset id")?);
+            }
+            found.matches.extend(msg.matches.into_iter().map(|m| GrepLine {
+                path: m.path,
+                line: m.line_number,
+                text: m.line,
+            }));
+            found.truncated |= msg.truncated;
+            found.searched += msg.files_searched;
+            found.skipped += msg.files_skipped;
+        }
+        Ok(found)
     }
 
     /// 把 `revision` 中的目录 `path`（空串为整个仓库）打包，边接收边写入 `out`。

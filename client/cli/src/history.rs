@@ -87,6 +87,109 @@ pub struct LogLine {
 }
 
 #[derive(Debug, Serialize)]
+pub struct GrepOut {
+    pub schema: &'static str,
+    pub changeset: Option<String>,
+    pub matches: Vec<GrepMatchOut>,
+    /// It stopped at the limit (--max-count): there may be more.
+    pub truncated: bool,
+    pub files_searched: u64,
+    pub files_skipped: u64,
+    /// For the text: line numbers (-n), file names only (-l), and paths as seen from here.
+    #[serde(skip)]
+    pub line_numbers: bool,
+    #[serde(skip)]
+    pub names_only: bool,
+    #[serde(skip)]
+    pub cwd: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GrepMatchOut {
+    pub path: String,
+    pub line: u64,
+    pub text: String,
+}
+
+/// git grep's `PATH:LINE` (`PATH:N:LINE` with -n, `PATH` once with -l), paths relative to the
+/// current directory.
+impl Render for GrepOut {
+    fn text(&self) -> String {
+        let shown = |p: &str| crate::commands::relative_to(&self.cwd, p);
+        let mut lines: Vec<String> = Vec::new();
+        for m in &self.matches {
+            let path = shown(&m.path);
+            if self.names_only {
+                if lines.last() != Some(&path) {
+                    lines.push(path);
+                }
+            } else if self.line_numbers {
+                lines.push(format!("{path}:{}:{}", m.line, m.text));
+            } else {
+                lines.push(format!("{path}:{}", m.text));
+            }
+        }
+        lines.join("\n")
+    }
+}
+
+/// `scn grep`: searches the commit (by default the working copy's, HEAD), not local changes,
+/// on the server. In a working copy, paths are relative to the current directory, and with none
+/// given it searches the current directory.
+pub async fn grep(
+    ctx: &Ctx,
+    query: scion_client::GrepQuery,
+    revision: Option<&str>,
+    line_numbers: bool,
+    names_only: bool,
+) -> Result<GrepOut, CliError> {
+    let (client, default_rev) = query_client(ctx).await?;
+    let revision = ctx.expand_rev(&revision.map_or(default_rev, str::to_owned))?;
+    let wc = ctx.working_copy();
+    let (paths, cwd) = match &wc {
+        Some(w) => {
+            let here = crate::commands::wc_relative(w.root(), &ctx.cwd, &[".".to_owned()])?.remove(0);
+            let given = if query.paths.is_empty() {
+                vec![here.clone()]
+            } else {
+                crate::commands::wc_relative(w.root(), &ctx.cwd, &query.paths)?
+            };
+            let paths = given.into_iter().filter(|p| p != ".").collect();
+            (paths, if here == "." { String::new() } else { here })
+        }
+        None => (query.paths.clone(), String::new()),
+    };
+    let found = client
+        .grep(&revision, &scion_client::GrepQuery { paths, ..query })
+        .await?;
+    if found.truncated && ctx.chatty {
+        eprintln!(
+            "note: stopped at {} matching lines; narrow it with a path, or raise --max-count",
+            found.matches.len()
+        );
+    }
+    Ok(GrepOut {
+        schema: "scion.cli.grep/v1",
+        changeset: found.changeset.map(|c| c.to_string()),
+        matches: found
+            .matches
+            .into_iter()
+            .map(|m| GrepMatchOut {
+                path: m.path,
+                line: m.line,
+                text: String::from_utf8_lossy(&m.text).into_owned(),
+            })
+            .collect(),
+        truncated: found.truncated,
+        files_searched: found.searched,
+        files_skipped: found.skipped,
+        line_numbers,
+        names_only,
+        cwd,
+    })
+}
+
+#[derive(Debug, Serialize)]
 pub struct ReflogOut {
     pub schema: &'static str,
     #[serde(rename = "ref")]

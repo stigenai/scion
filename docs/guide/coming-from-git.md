@@ -51,6 +51,7 @@ English | [简体中文](coming-from-git.zh-CN.md)
 | `git show [REV] [-- PATH]` | `scn show [REV] [--name-only | --name-status | --stat] [-- PATH]` | |
 | `git diff`, `git diff A B`, `A..B`, `A...B` | `scn diff`, `scn diff A B`, `A..B`, `A...B` | `--name-only`, `--name-status`, `--stat`, `-- PATH` |
 | `git blame [REV] -- PATH` | `scn blame [REV:]PATH` | |
+| `git grep [-n] [-l] [-i] [-F] PATTERN [REV] [-- PATH...]` | the same, plus `-m N` | Runs on the server against a commit (HEAD by default), so it needs no checkout and also covers what a sparse checkout leaves out; local changes are not searched. Rust regex syntax (close to `-E`). Binary files, files over 1 MiB, links and redacted files are left out; it stops after 1000 matching lines unless `-m` says otherwise (at most 10000). Exits 1 when nothing matches |
 | `git reflog [BRANCH]` | `scn reflog [BRANCH] [-n N]` | The server keeps it, for every branch and tag, so it covers everyone's lands, not one clone's: `ID main@{N}: TIME created / fast-forward / forced: SUBJECT`, newest first. It does not say who moved the branch yet, and deleting a branch deletes its log |
 | `git show REV:PATH` | `scn cat REV:PATH` | No working copy needed |
 | `git ls-tree REV DIR` | `scn ls REV:DIR`, or `scn ls REV` for the root | A bare argument that is not a revision is a directory; `:DIR` forces a directory |
@@ -102,5 +103,5 @@ Suffixes combine as in git, for example `main~2^2`. A branch whose name literall
 ## Not available yet
 
 - **Working copy**: commits on a detached working copy, interactive rebase, committing part of a file (`add -p`).
-- **Queries**: annotated tags, `grep`, `bisect`, `REF@{N}` revisions (use the id `scn reflog` prints).
+- **Queries**: annotated tags, `bisect`, `REF@{N}` revisions (use the id `scn reflog` prints).
 - **Collaboration**: `remote add`, `fetch`. The git CLI itself can clone, fetch and push a Scion repository (see [git clients](git-clients.md)).

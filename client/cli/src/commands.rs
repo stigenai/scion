@@ -389,7 +389,7 @@ impl Behind {
 }
 
 /// `path` (relative to the working copy root) as seen from `cwd` (also relative to the root).
-fn relative_to(cwd: &str, path: &str) -> String {
+pub(crate) fn relative_to(cwd: &str, path: &str) -> String {
     let (mut from, mut to): (Vec<&str>, Vec<&str>) = (
         cwd.split('/').filter(|s| !s.is_empty()).collect(),
         path.split('/').collect(),
@@ -1109,7 +1109,7 @@ pub async fn restore(ctx: &Ctx, paths: &[String], source: Option<&str>) -> Resul
 }
 
 /// Converts paths given relative to `cwd` into working-copy paths (`/`-separated, no `..`).
-fn wc_relative(root: &Path, cwd: &Path, paths: &[String]) -> Result<Vec<String>, CliError> {
+pub(crate) fn wc_relative(root: &Path, cwd: &Path, paths: &[String]) -> Result<Vec<String>, CliError> {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
     let base = cwd
