@@ -406,7 +406,10 @@ async fn tags_are_created_at_the_tagged_commit() {
     let v2 = tags.iter().find(|t| t.name == "v2").expect("v2");
     let note = v2.annotation.as_ref().expect("annotated");
     assert_eq!(Some(v2.target), s.tip);
-    assert_eq!((note.message.as_str(), note.tagger.name.as_str()), ("Second release\n", "CI Bot"));
+    assert_eq!(
+        (note.message.as_str(), note.tagger.name.as_str()),
+        ("Second release\n", "CI Bot")
+    );
     import(&c, dir, "v2", "from-tag", |_, _| {}).await.expect("as a branch");
     assert_eq!(c.resolve_ref("from-tag").await.expect("ok").map(|r| r.changeset), s.tip);
 }
