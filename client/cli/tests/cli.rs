@@ -937,6 +937,37 @@ async fn log_follow_crosses_renames() {
             subjects(&["--follow", "-n", "3", "--", "docs/new.txt"]),
             ["rewrite", "move", "edit"]
         );
+        // Paths are relative to the current directory, as in git; REV:PATH is from the root
+        let docs = wc.join("docs");
+        let text = |dir: &std::path::Path, args: &[&str]| {
+            let out = scn_in(dir, args);
+            assert!(out.status.success(), "{out:?}");
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        assert_eq!(
+            text(&docs, &["log", "--oneline", "--follow", "--", "new.txt"])
+                .lines()
+                .count(),
+            4
+        );
+        assert_eq!(text(&docs, &["log", "--oneline", "--", "."]).lines().count(), 2);
+        assert_eq!(text(&docs, &["log", "--oneline", "--", ".."]).lines().count(), 4);
+        assert!(text(&docs, &["blame", "new.txt"]).ends_with(") 1\n"));
+        assert!(text(&docs, &["blame", "main:docs/new.txt"]).ends_with(") 1\n"));
+        assert_eq!(
+            text(&docs, &["show", "--name-only", "HEAD~1", "--", "new.txt"])
+                .lines()
+                .last(),
+            Some("docs/new.txt")
+        );
+        assert_eq!(
+            text(&docs, &["diff", "HEAD~2", "HEAD", "--name-only", "--", "../old.txt"]),
+            "old.txt\n"
+        );
+        std::fs::write(docs.join("new.txt"), "2\n").expect("write");
+        assert_eq!(text(&docs, &["diff", "--name-only", "--", "new.txt"]), "docs/new.txt\n");
+        let out = scn_in(&docs, &["log", "--", "../.."]);
+        assert_eq!(out.status.code(), Some(2), "{out:?}");
         let out = scn_in(&wc, &["log", "--follow"]);
         assert_eq!(out.status.code(), Some(2), "{out:?}");
         assert!(String::from_utf8_lossy(&out.stderr).contains("--follow needs one file path"));

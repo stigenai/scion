@@ -376,6 +376,18 @@ fn log_line(e: LogItem) -> LogLine {
 }
 
 /// 自动翻页直到凑够 `limit` 条或历史结束。
+/// A path argument as git takes it: in a working copy, relative to the current directory. The
+/// working copy's root (or above it) means no path.
+fn repo_path(ctx: &Ctx, path: Option<&str>) -> Result<Option<String>, CliError> {
+    match (path, ctx.working_copy()) {
+        (Some(p), Some(w)) => {
+            let p = crate::commands::wc_relative(w.root(), &ctx.cwd, &[p.to_owned()])?.remove(0);
+            Ok((p != ".").then_some(p))
+        }
+        (p, _) => Ok(p.map(str::to_owned)),
+    }
+}
+
 pub async fn log(
     ctx: &Ctx,
     revision: Option<&str>,
@@ -384,6 +396,8 @@ pub async fn log(
     limit: usize,
     oneline: bool,
 ) -> Result<LogOut, CliError> {
+    let path = repo_path(ctx, path)?;
+    let path = path.as_deref();
     if follow && path.is_none() {
         return Err(CliError::Usage("--follow needs one file path".into()));
     }
@@ -499,9 +513,14 @@ fn split_lines(data: &[u8]) -> Vec<&[u8]> {
 pub async fn blame(ctx: &Ctx, spec: &str, ranges: &[(usize, usize)]) -> Result<BlameOut, CliError> {
     let (client, default_rev) = query_client(ctx).await?;
     let (rev, path) = split_spec(spec, &default_rev);
+    // `REV:PATH` names a path from the root, as in git; a bare path is relative
+    let path = match spec.contains(':') {
+        true => path.to_owned(),
+        false => repo_path(ctx, Some(path))?.unwrap_or_default(),
+    };
     let rev = ctx.expand_rev(rev)?;
     let rev = rev.as_str();
-    let info = client.blame(rev, path).await?;
+    let info = client.blame(rev, &path).await?;
     let data = client.get_object(&info.blob).await?;
     let raw = split_lines(&data);
     if raw.len() != info.lines.len() {
@@ -871,6 +890,8 @@ pub(crate) fn split_range(rev: &str) -> Option<(&str, &str, bool)> {
 /// - 一个版本：该提交相对第一个父提交引入的改动；
 /// - 两个版本，或 `A..B`：两者之间的差异；`A...B`：B 相对两者的公共祖先的改动。
 pub async fn diff(ctx: &Ctx, revs: &[String], path: Option<&str>, name_only: bool) -> Result<DiffOut, CliError> {
+    let path = repo_path(ctx, path)?;
+    let path = path.as_deref();
     let or_head = |r: &str| if r.is_empty() { "HEAD".to_owned() } else { r.to_owned() };
     let (from, to) = match revs {
         [] => return local_diff(ctx, path, name_only).await,
@@ -963,6 +984,8 @@ impl Render for ShowOut {
 /// `scn show [REV] [-- PATH]`: the commit's metadata and the changes it introduced (relative to
 /// its first parent). REV defaults to HEAD in a working copy, else to the default ref.
 pub async fn show(ctx: &Ctx, revision: Option<&str>, path: Option<&str>, name_only: bool) -> Result<ShowOut, CliError> {
+    let path = repo_path(ctx, path)?;
+    let path = path.as_deref();
     let (client, default_rev) = query_client(ctx).await?;
     let rev = match revision {
         Some(r) => ctx.expand_rev(r)?,
