@@ -7,8 +7,9 @@ use std::sync::Arc;
 use scion_proto::v1::ref_service_client::RefServiceClient;
 use scion_proto::v1::ref_service_server::RefService;
 use scion_proto::v1::{
-    CreateRefRequest, CreateRefResponse, DeleteRefRequest, DeleteRefResponse, ListRefsRequest, ListRefsResponse,
-    ResolveRefRequest, ResolveRefResponse, UpdateRefRequest, UpdateRefResponse, WatchRefsRequest, WatchRefsResponse,
+    CreateRefRequest, CreateRefResponse, DeleteRefRequest, DeleteRefResponse, ListRefLogRequest, ListRefLogResponse,
+    ListRefsRequest, ListRefsResponse, ResolveRefRequest, ResolveRefResponse, UpdateRefRequest, UpdateRefResponse,
+    WatchRefsRequest, WatchRefsResponse,
 };
 use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
@@ -49,6 +50,14 @@ impl RefService for DaemonRefSvc {
         let up = self.daemon.upstreams.get(&upstream_of(&request)?)?;
         let fwd = forward(&request, request.get_ref().clone());
         let resp = RefServiceClient::new(up.raw.clone()).list_refs(fwd).await?;
+        Ok(Response::new(resp.into_inner()))
+    }
+
+    async fn list_ref_log(&self, request: Request<ListRefLogRequest>) -> Result<Response<ListRefLogResponse>, Status> {
+        self.daemon.touch();
+        let up = self.daemon.upstreams.get(&upstream_of(&request)?)?;
+        let fwd = forward(&request, request.get_ref().clone());
+        let resp = RefServiceClient::new(up.raw.clone()).list_ref_log(fwd).await?;
         Ok(Response::new(resp.into_inner()))
     }
 

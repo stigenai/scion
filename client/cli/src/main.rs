@@ -525,6 +525,19 @@ enum Command {
         #[arg(last = true, value_name = "PATH")]
         paths: Vec<String>,
     },
+    /// Show how a branch or tag moved on the server, newest first (git's reflog, kept by the server).
+    #[command(
+        after_help = "Each line: ID BRANCH@{N}: TIME (UTC) HOW: SUBJECT, where HOW is created, fast-forward \
+        (lands) or forced (moved anywhere else, such as back).\n\nExamples:\n  scn reflog\n  scn reflog release -n 50"
+    )]
+    Reflog {
+        /// The branch or tag (default: the working copy's branch, else main).
+        #[arg(value_name = "REF")]
+        reference: Option<String>,
+        /// At most this many moves.
+        #[arg(short = 'n', long = "max-count", value_name = "N", default_value_t = 20)]
+        max_count: usize,
+    },
     /// Show a commit (default HEAD) and the changes it introduced, like `git show`.
     Show {
         /// The commit (default: HEAD in a working copy, else the default branch).
@@ -1664,6 +1677,9 @@ async fn run(cli: Cli) -> ExitCode {
             Err(e) => fail(&e, json),
         },
         Command::Blame { spec, lines } => emit(history::blame(&ctx, &spec, &lines).await, json),
+        Command::Reflog { reference, max_count } => {
+            emit(history::reflog(&ctx, reference.as_deref(), max_count).await, json)
+        }
         Command::Watch { refs, count } => {
             let quiet = cli.quiet;
             let mut start = |tips: &[watch::Tip]| {
@@ -1836,6 +1852,7 @@ Branches and history:
   log        Show the history
   show       Show a commit and its changes
   blame      Show the commit that last changed each line
+  reflog     Show how a branch moved on the server
   watch      Follow branches on the server as commits land
 
 Read without a working copy:

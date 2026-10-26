@@ -17,6 +17,43 @@ service RefService {
   // 只保证最终送达每个 ref 的最新状态：同一 ref 短时间内多次前进时，中间版本可能被合并掉。
   // 断开后带上已知版本（known_versions）重新订阅即可续上，不会漏掉变化。
   rpc WatchRefs(WatchRefsRequest) returns (stream WatchRefsResponse);
+  // A ref's history (`scn reflog`): one entry per move, newest first, kept until the ref is deleted.
+  // Needs read access to the repository.
+  rpc ListRefLog(ListRefLogRequest) returns (ListRefLogResponse);
+}
+
+message ListRefLogRequest {
+  string repo = 1;
+  string ref = 2;
+  // Entries below this version; 0 starts at the newest.
+  uint64 before_version = 3;
+  // Default 20, at most 1000.
+  uint32 limit = 4;
+}
+
+message RefLogEntry {
+  // The ref's version after the move (1 when it was created).
+  uint64 version = 1;
+  bytes changeset_id = 2;
+  int64 updated_at_ms = 3;
+  RefMove move = 4;
+}
+
+// How a ref got to an entry from the one before.
+enum RefMove {
+  REF_MOVE_UNSPECIFIED = 0;
+  // The ref was created (version 1).
+  REF_MOVE_CREATED = 1;
+  // It moved forward: the old commit is in the new one's history (lands, fast-forward updates).
+  REF_MOVE_FAST_FORWARD = 2;
+  // It moved anywhere else (a forced update, such as moving back).
+  REF_MOVE_FORCED = 3;
+}
+
+message ListRefLogResponse {
+  repeated RefLogEntry entries = 1;
+  // For the next page: before_version to ask with; 0 when there are no more.
+  uint64 next_before_version = 2;
 }
 
 message ResolveRefRequest {

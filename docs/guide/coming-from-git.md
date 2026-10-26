@@ -50,6 +50,7 @@ English | [简体中文](coming-from-git.zh-CN.md)
 | `git show [REV] [-- PATH]` | `scn show [REV] [--name-only | --name-status | --stat] [-- PATH]` | |
 | `git diff`, `git diff A B`, `A..B`, `A...B` | `scn diff`, `scn diff A B`, `A..B`, `A...B` | `--name-only`, `--name-status`, `--stat`, `-- PATH` |
 | `git blame [REV] -- PATH` | `scn blame [REV:]PATH` | |
+| `git reflog [BRANCH]` | `scn reflog [BRANCH] [-n N]` | The server keeps it, for every branch and tag, so it covers everyone's lands, not one clone's: `ID main@{N}: TIME created / fast-forward / forced: SUBJECT`, newest first. It does not say who moved the branch yet, and deleting a branch deletes its log |
 | `git show REV:PATH` | `scn cat REV:PATH` | No working copy needed |
 | `git ls-tree REV DIR` | `scn ls REV:DIR`, or `scn ls REV` for the root | A bare argument that is not a revision is a directory; `:DIR` forces a directory |
 | `git archive REV` | `scn archive REV`, `scn archive [REV:][DIR] --format tar.gz\|zip\|tar [--prefix P] [-o FILE]` | |
@@ -99,5 +100,5 @@ Suffixes combine as in git, for example `main~2^2`. A branch whose name literall
 ## Not available yet
 
 - **Working copy**: checking out an old revision, interactive rebase, committing part of a file (`add -p`).
-- **Queries**: annotated tags, `grep`, `bisect`, `reflog`.
+- **Queries**: annotated tags, `grep`, `bisect`, `REF@{N}` revisions (use the id `scn reflog` prints).
 - **Collaboration**: `remote add`, `fetch`. The git CLI itself can clone, fetch and push a Scion repository (see [git clients](git-clients.md)).

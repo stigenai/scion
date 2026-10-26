@@ -87,6 +87,108 @@ pub struct LogLine {
 }
 
 #[derive(Debug, Serialize)]
+pub struct ReflogOut {
+    pub schema: &'static str,
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub entries: Vec<ReflogLine>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReflogLine {
+    pub version: u64,
+    pub changeset: String,
+    pub time_ms: i64,
+    /// `created`, `fast-forward`, `forced`, or `unknown` (the entry before is gone).
+    #[serde(rename = "move")]
+    pub how: &'static str,
+    pub subject: String,
+}
+
+/// git's `ID REF@{N}: WHAT: SUBJECT`, with the time of the move (UTC) after `REF@{N}`.
+impl Render for ReflogOut {
+    fn text(&self) -> String {
+        self.entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                format!(
+                    "{} {}@{{{i}}}: {} {}: {}",
+                    &e.changeset[..e.changeset.len().min(12)],
+                    self.reference,
+                    format_time(e.time_ms, 0),
+                    e.how,
+                    e.subject
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+/// `scn reflog [REF] [-n N]`: how a branch (default: the working copy's, else main) or tag
+/// moved, newest first, each move with the subject of the commit it went to.
+pub async fn reflog(ctx: &Ctx, reference: Option<&str>, limit: usize) -> Result<ReflogOut, CliError> {
+    let (client, _) = query_client(ctx).await?;
+    let wc = ctx.working_copy();
+    let mut name = match reference {
+        None | Some("HEAD" | "@") => wc.as_ref().map_or_else(
+            || crate::commands::DEFAULT_REF.to_owned(),
+            |w| w.state().reference.clone(),
+        ),
+        Some(r) => r.strip_prefix("origin/").unwrap_or(r).to_owned(),
+    };
+    if client.resolve_ref(&name).await?.is_none() {
+        let tag = format!("tags/{name}");
+        if client.resolve_ref(&tag).await?.is_none() {
+            return Err(CliError::Usage(format!("no branch or tag {name:?}")));
+        }
+        name = tag;
+    }
+    let mut moves = Vec::new();
+    let mut before = None;
+    while moves.len() < limit {
+        let want = u32::try_from(limit - moves.len()).unwrap_or(u32::MAX).min(1000);
+        let (page, next) = client.ref_log(&name, before, want).await?;
+        moves.extend(page);
+        match next {
+            Some(n) => before = Some(n),
+            None => break,
+        }
+    }
+    moves.truncate(limit);
+    let mut entries = Vec::with_capacity(moves.len());
+    for m in moves {
+        let id = m.changeset.to_string();
+        let subject = client
+            .log(&id, None, 1, None)
+            .await?
+            .entries
+            .into_iter()
+            .next()
+            .map(|e| e.message.lines().next().unwrap_or_default().to_owned())
+            .unwrap_or_default();
+        entries.push(ReflogLine {
+            version: m.version,
+            changeset: id,
+            time_ms: m.updated_at_ms,
+            how: match m.how {
+                scion_proto::v1::RefMove::Created => "created",
+                scion_proto::v1::RefMove::FastForward => "fast-forward",
+                scion_proto::v1::RefMove::Forced => "forced",
+                scion_proto::v1::RefMove::Unspecified => "unknown",
+            },
+            subject,
+        });
+    }
+    Ok(ReflogOut {
+        schema: "scion.cli.reflog/v1",
+        reference: name.strip_prefix("tags/").unwrap_or(&name).to_owned(),
+        entries,
+    })
+}
+
+#[derive(Debug, Serialize)]
 pub struct LogOut {
     pub schema: &'static str,
     pub revision: String,

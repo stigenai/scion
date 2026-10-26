@@ -50,6 +50,7 @@
 | `git show [REV] [-- PATH]` | `scn show [REV] [--name-only | --name-status | --stat] [-- PATH]` | |
 | `git diff`、`git diff A B`、`A..B`、`A...B` | `scn diff`、`scn diff A B`、`A..B`、`A...B` | `--name-only`、`--name-status`、`--stat`、`-- PATH` |
 | `git blame [REV] -- PATH` | `scn blame [REV:]PATH` | |
+| `git reflog [BRANCH]` | `scn reflog [BRANCH] [-n N]` | 由服务端保存，每个分支和标签都有，所以包括所有人的合入，而不只是某一个 clone 的：`ID main@{N}: 时间 created / fast-forward / forced: 标题`，从新到旧。暂时不记录是谁移动的分支；删除分支会同时删除它的记录 |
 | `git show REV:PATH` | `scn cat REV:PATH` | 不需要工作副本 |
 | `git ls-tree REV DIR` | `scn ls REV:DIR`，根目录用 `scn ls REV` | 不是版本号的单个参数按目录处理；`:DIR` 强制当作目录 |
 | `git archive REV` | `scn archive REV`，`scn archive [REV:][DIR] --format tar.gz\|zip\|tar [--prefix P] [-o FILE]` | |
@@ -99,5 +100,5 @@ hint: `scn push` is a transitional git-style spelling; use `scn land` instead
 ## 尚未支持
 
 - **工作副本**：检出旧版本、交互式 rebase、只提交文件的一部分（`add -p`）。
-- **查询**：附注标签、`grep`、`bisect`、`reflog`。
+- **查询**：附注标签、`grep`、`bisect`、`REF@{N}` 写法的版本（用 `scn reflog` 打印的 id）。
 - **协作**：`remote add`、`fetch`。git 命令行本身可以克隆、拉取和推送 Scion 仓库（见 [git 客户端](git-clients.zh-CN.md)）。

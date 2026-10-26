@@ -133,6 +133,8 @@ async fn sdk_works_through_the_daemon() {
     let tip = c.resolve_ref("main").await.expect("resolve").expect("main");
     assert_eq!(tip.changeset, a.id);
     assert_eq!(c.list_refs().await.expect("refs").len(), 1);
+    let (log, next) = c.ref_log("main", None, 0).await.expect("ref log");
+    assert_eq!((log.len(), log[0].changeset, next), (1, a.id, None));
     assert_eq!(c.log("main", None, 10, None).await.expect("log").entries.len(), 1);
     // 分支与仓库管理同样转发（RepoService 走透明代理）
     assert_eq!(c.create_ref("dev", &a.id).await.expect("create ref"), (a.id, 1));

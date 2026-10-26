@@ -7,13 +7,23 @@ use bytes::{Bytes, BytesMut};
 use scion_object::{EntryMode, ObjectId};
 use scion_proto::v1::{
     self, ChangesetSpec, CreateChangesetRequest, GetLandStatusRequest, LandRequest, LandResponse, LandState,
-    ListDirRequest, ListRefsRequest, ReadFileRequest, ResolveRefRequest, UploadBlobsRequest, file_change,
-    land_service_client::LandServiceClient, query_service_client::QueryServiceClient,
+    ListDirRequest, ListRefLogRequest, ListRefsRequest, ReadFileRequest, ResolveRefRequest, UploadBlobsRequest,
+    file_change, land_service_client::LandServiceClient, query_service_client::QueryServiceClient,
     ref_service_client::RefServiceClient, write_service_client::WriteServiceClient,
 };
 
 use crate::client::Client;
 use crate::error::{Error, Result};
+
+/// One move of a ref (`scn reflog`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RefLogEntry {
+    /// The ref's version after the move (1: created).
+    pub version: u64,
+    pub changeset: ObjectId,
+    pub updated_at_ms: i64,
+    pub how: v1::RefMove,
+}
 
 /// ref 当前状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -330,6 +340,42 @@ impl Client {
             .into_iter()
             .map(|r| Ok((r.name, id_from(&r.changeset_id, "changeset id")?, r.version)))
             .collect()
+    }
+
+    /// The moves of ref `name`, newest first: versions below `before` (from the newest when None),
+    /// at most `limit` (0: the server's default). Also returns where the next page starts.
+    pub async fn ref_log(
+        &self,
+        name: &str,
+        before: Option<u64>,
+        limit: u32,
+    ) -> Result<(Vec<RefLogEntry>, Option<u64>)> {
+        let req = ListRefLogRequest {
+            repo: self.repo()?,
+            r#ref: name.to_owned(),
+            before_version: before.unwrap_or(0),
+            limit,
+        };
+        let resp = RefServiceClient::new(self.channel.clone())
+            .list_ref_log(self.request(req)?)
+            .await?
+            .into_inner();
+        let entries = resp
+            .entries
+            .iter()
+            .map(|e| {
+                Ok(RefLogEntry {
+                    version: e.version,
+                    changeset: id_from(&e.changeset_id, "changeset id")?,
+                    updated_at_ms: e.updated_at_ms,
+                    how: e.r#move(),
+                })
+            })
+            .collect::<Result<_>>()?;
+        Ok((
+            entries,
+            (resp.next_before_version > 0).then_some(resp.next_before_version),
+        ))
     }
 
     /// 读取 `revision`（ref 名或提交 id）下的文件，并校验内容哈希。

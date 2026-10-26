@@ -11,9 +11,9 @@ use bytes::Bytes;
 use scion_object::ObjectId;
 use scion_proto::v1::ref_service_server::RefService;
 use scion_proto::v1::{
-    CreateRefRequest, CreateRefResponse, DeleteRefRequest, DeleteRefResponse, ListRefsRequest, ListRefsResponse,
-    RefEvent, RefInfo, ResolveRefRequest, ResolveRefResponse, UpdateRefRequest, UpdateRefResponse, WatchRefsRequest,
-    WatchRefsResponse,
+    CreateRefRequest, CreateRefResponse, DeleteRefRequest, DeleteRefResponse, ListRefLogRequest, ListRefLogResponse,
+    ListRefsRequest, ListRefsResponse, RefEvent, RefInfo, RefLogEntry, RefMove, ResolveRefRequest, ResolveRefResponse,
+    UpdateRefRequest, UpdateRefResponse, WatchRefsRequest, WatchRefsResponse,
 };
 use scion_store::{MetaStore, RefExpect, RefState};
 use tokio::sync::{broadcast, mpsc};
@@ -26,6 +26,10 @@ use crate::service::support::{check_repo, parse_id, resolve_revision};
 use crate::status;
 use crate::watch::{RefHub, RefUpdate};
 use scion_auth::{Action, Guard, Principal, Request as AuthRequest};
+
+/// Entries a ref log page holds by default and at most.
+const DEFAULT_REF_LOG: usize = 20;
+const MAX_REF_LOG: usize = 1000;
 
 pub type WatchRefsStream = Pin<Box<dyn Stream<Item = Result<WatchRefsResponse, Status>> + Send>>;
 
@@ -210,6 +214,54 @@ impl RefService for RefSvc {
         }))
     }
 
+    async fn list_ref_log(&self, request: Request<ListRefLogRequest>) -> Result<Response<ListRefLogResponse>, Status> {
+        let p = principal(&request);
+        let req = request.into_inner();
+        authorize_any(&self.guard, &p, &req.repo, Action::Read).await?;
+        check_repo(self.meta.as_ref(), &req.repo).await?;
+        let limit = match req.limit {
+            0 => DEFAULT_REF_LOG,
+            n => (n as usize).min(MAX_REF_LOG),
+        };
+        let before = (req.before_version > 0).then_some(req.before_version);
+        // One more than the page: the move into its oldest entry starts there
+        let rows = self
+            .meta
+            .ref_log(&req.repo, &req.r#ref, before, limit + 1)
+            .await
+            .map_err(status::from_store)?;
+        let mut entries = Vec::with_capacity(rows.len().min(limit));
+        for (i, e) in rows.iter().take(limit).enumerate() {
+            let prev = rows.get(i + 1).filter(|p| p.version + 1 == e.version);
+            let ref_move = match prev {
+                _ if e.version == 1 => RefMove::Created,
+                Some(p) => {
+                    let forward = scion_query::is_ancestor(self.meta.as_ref(), &req.repo, p.target, e.target)
+                        .await
+                        .map_err(crate::service::history::from_query)?;
+                    if forward { RefMove::FastForward } else { RefMove::Forced }
+                }
+                // The entry before is gone (a fork starts its log afresh)
+                None => RefMove::Unspecified,
+            };
+            entries.push(RefLogEntry {
+                version: e.version,
+                changeset_id: Bytes::copy_from_slice(&e.target.to_bytes()),
+                updated_at_ms: e.updated_at_ms,
+                r#move: ref_move.into(),
+            });
+        }
+        let next_before_version = if rows.len() > limit {
+            entries.last().map_or(0, |e| e.version)
+        } else {
+            0
+        };
+        Ok(Response::new(ListRefLogResponse {
+            entries,
+            next_before_version,
+        }))
+    }
+
     async fn list_refs(&self, request: Request<ListRefsRequest>) -> Result<Response<ListRefsResponse>, Status> {
         let p = principal(&request);
         let req = request.into_inner();
@@ -360,6 +412,79 @@ mod tests {
             .into_inner();
         assert_eq!(l.refs.len(), 1);
         assert_eq!(l.refs[0].name, "main");
+    }
+
+    #[tokio::test]
+    async fn ref_log_says_how_each_move_happened() {
+        let (store, w) = svc().await;
+        let refs = RefSvc::new(
+            store.clone(),
+            RefHub::new(store.clone(), std::time::Duration::from_secs(3600)),
+        );
+        let a = w
+            .create(REPO, &spec_to_changeset(spec(&[], vec![]), 10).expect("s"))
+            .await
+            .expect("a");
+        let b = w
+            .create(REPO, &spec_to_changeset(spec(&[a.id], vec![]), 11).expect("s"))
+            .await
+            .expect("b");
+        let id = |x: ObjectId| Bytes::copy_from_slice(&x.to_bytes());
+        refs.create_ref(Request::new(CreateRefRequest {
+            repo: REPO.into(),
+            r#ref: "main".into(),
+            changeset_id: id(a.id),
+        }))
+        .await
+        .expect("create");
+        for target in [b.id, a.id] {
+            refs.update_ref(Request::new(UpdateRefRequest {
+                repo: REPO.into(),
+                r#ref: "main".into(),
+                changeset_id: id(target),
+                expected_version: 0,
+            }))
+            .await
+            .expect("update");
+        }
+        let log = |before_version, limit| {
+            refs.list_ref_log(Request::new(ListRefLogRequest {
+                repo: REPO.into(),
+                r#ref: "main".into(),
+                before_version,
+                limit,
+            }))
+        };
+        let all = log(0, 0).await.expect("log").into_inner();
+        let brief: Vec<(u64, Option<ObjectId>, RefMove)> = all
+            .entries
+            .iter()
+            .map(|e| (e.version, ObjectId::from_bytes(&e.changeset_id).ok(), e.r#move()))
+            .collect();
+        assert_eq!(
+            brief,
+            [
+                (3, Some(a.id), RefMove::Forced),
+                (2, Some(b.id), RefMove::FastForward),
+                (1, Some(a.id), RefMove::Created),
+            ]
+        );
+        assert_eq!(all.next_before_version, 0);
+        // Pages: the move into a page's oldest entry still comes from the entry before it
+        let first = log(0, 1).await.expect("page").into_inner();
+        assert_eq!((first.entries.len(), first.next_before_version), (1, 3));
+        let second = log(3, 1).await.expect("page").into_inner();
+        assert_eq!(second.entries[0].r#move(), RefMove::FastForward);
+        assert_eq!(second.next_before_version, 2);
+
+        let err = refs
+            .list_ref_log(Request::new(ListRefLogRequest {
+                repo: "nope".into(),
+                ..Default::default()
+            }))
+            .await
+            .expect_err("no repo");
+        assert_eq!(err.code(), Code::NotFound);
     }
 
     #[tokio::test]

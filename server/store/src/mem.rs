@@ -12,7 +12,7 @@ use crate::repo::validate_repo_name;
 use crate::{
     BlobStore, ChangesetRecord, IdempotencyRecord, IndexedObject, LandedChange, Lease, MetaStore, OrgMember, OrgRecord,
     PackLocation, PackedObject, PathChange, PathHistoryEntry, Redaction, RedactionFilter, RefEvent, RefExpect,
-    RefState, RepoFilter, RepoInfo, RepoPatch, TokenRecord, path_within, prefix_upper_bound,
+    RefLogEntry, RefState, RepoFilter, RepoInfo, RepoPatch, TokenRecord, path_within, prefix_upper_bound,
 };
 
 #[derive(Clone)]
@@ -28,6 +28,8 @@ struct RepoData {
     landed: HashMap<(String, [u8; 16]), LandedChange>,
     /// request id → 请求结果。
     idempotency: HashMap<String, IdempotencyRecord>,
+    /// ref → its moves, oldest first.
+    ref_log: HashMap<String, Vec<RefLogEntry>>,
 }
 
 impl RepoData {
@@ -41,6 +43,7 @@ impl RepoData {
             paths: BTreeMap::new(),
             landed: HashMap::new(),
             idempotency: HashMap::new(),
+            ref_log: HashMap::new(),
         }
     }
 
@@ -323,6 +326,7 @@ impl MetaStore for MemStore {
                 current,
             }),
             (Some(_), _) => {
+                data.ref_log.remove(name);
                 if let Some(old) = data.refs.remove(name) {
                     inner.push_event(repo, name, Some(old.target), None, old.version);
                 }
@@ -338,6 +342,19 @@ impl MetaStore for MemStore {
     async fn get_ref(&self, repo: &str, name: &str) -> Result<Option<RefState>> {
         let inner = self.read()?;
         Ok(repo_ref(&inner, repo)?.refs.get(name).copied())
+    }
+
+    async fn ref_log(&self, repo: &str, name: &str, before: Option<u64>, limit: usize) -> Result<Vec<RefLogEntry>> {
+        let inner = self.read()?;
+        let log = repo_ref(&inner, repo)?.ref_log.get(name);
+        Ok(log
+            .into_iter()
+            .flatten()
+            .rev()
+            .filter(|e| before.is_none_or(|b| e.version < b))
+            .take(limit)
+            .copied()
+            .collect())
     }
 
     async fn land_commit(
@@ -370,6 +387,11 @@ impl MetaStore for MemStore {
             version: next_version,
         };
         data.refs.insert(name.to_owned(), state);
+        data.ref_log.entry(name.to_owned()).or_default().push(RefLogEntry {
+            version: next_version,
+            target,
+            updated_at_ms: now_ms(),
+        });
         for l in landed {
             data.landed.entry((name.to_owned(), l.change_id)).or_insert(*l);
         }
@@ -884,6 +906,7 @@ mod tests {
         testsuite::redactions(&MemStore::new()).await;
         testsuite::repo_admin(&MemStore::new()).await;
         testsuite::ref_events(&MemStore::new()).await;
+        testsuite::ref_log(&MemStore::new()).await;
     }
 
     #[tokio::test]

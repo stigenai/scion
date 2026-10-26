@@ -107,6 +107,15 @@ pub struct RefState {
     pub version: u64,
 }
 
+/// One move of a ref, from its audit log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RefLogEntry {
+    /// The version after the move (1: created).
+    pub version: u64,
+    pub target: ObjectId,
+    pub updated_at_ms: i64,
+}
+
 /// 合入过 ref 的 change（`landed` 表）：同一 ref 上每个 change id 只合入一次。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LandedChange {
@@ -490,6 +499,12 @@ pub trait MetaStore: Send + Sync + 'static {
     /// [`Error::RefVersionMismatch`]（`current` 为当前版本）。
     async fn delete_ref(&self, _repo: &str, _name: &str, _expect: Option<u64>) -> Result<()> {
         Err(unsupported("ref deletion"))
+    }
+
+    /// The ref's moves, newest first: versions below `before` (all when None), at most `limit`.
+    /// Deleting a ref deletes them; a ref that never existed has none.
+    async fn ref_log(&self, _repo: &str, _name: &str, _before: Option<u64>, _limit: usize) -> Result<Vec<RefLogEntry>> {
+        Err(unsupported("ref log"))
     }
 }
 

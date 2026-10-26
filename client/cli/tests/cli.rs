@@ -824,6 +824,68 @@ async fn stash_saves_lists_shows_and_pops() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn reflog_lists_moves_newest_first() {
+    use scion_store::MetaStore;
+    let store = Arc::new(MemStore::new());
+    store.create_repo("app").await.expect("repo");
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let url = format!("http://{}", listener.local_addr().expect("addr"));
+    let app = App {
+        config: Arc::new(ServerConfig::default()),
+        meta: store.clone(),
+        blobs: store,
+    };
+    tokio::spawn(serve(listener, app, std::future::pending()));
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let wc = root.join("app");
+        let author = ["--author", "Ada <ada@example.com>"];
+        json_of(&scn_in(&root, &["clone", &format!("{url}/app"), "--json"]));
+        for (i, subject) in ["first", "second"].iter().enumerate() {
+            std::fs::write(wc.join("a.txt"), format!("{i}")).expect("write");
+            json_of(&scn_in(
+                &wc,
+                &[&["commit", "-m", subject, "--json"][..], &author].concat(),
+            ));
+            json_of(&scn_in(&wc, &["land", "--json"]));
+        }
+        json_of(&scn_in(&wc, &["tag", "v1", "--json"]));
+
+        let out = scn_in(&wc, &["reflog"]);
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "{text}");
+        assert!(
+            lines[0].contains(" main@{0}: ") && lines[0].ends_with(" fast-forward: second"),
+            "{text}"
+        );
+        assert!(
+            lines[1].contains(" main@{1}: ") && lines[1].ends_with(" created: first"),
+            "{text}"
+        );
+        let v = json_of(&scn_in(
+            &root,
+            &["reflog", "main", "-n", "1", "--repo", &format!("{url}/app"), "--json"],
+        ));
+        assert_eq!(v["schema"], "scion.cli.reflog/v1");
+        assert_eq!(v["entries"].as_array().map(Vec::len), Some(1));
+        assert_eq!(v["entries"][0]["move"], "fast-forward");
+        let v = json_of(&scn_in(&wc, &["reflog", "v1", "--json"]));
+        assert_eq!(
+            (v["ref"].as_str(), v["entries"][0]["move"].as_str()),
+            (Some("v1"), Some("created"))
+        );
+        let out = scn_in(&wc, &["reflog", "nope"]);
+        assert_eq!(out.status.code(), Some(2), "{out:?}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("no branch or tag \"nope\""));
+    })
+    .await
+    .expect("test");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn clone_commit_land_sync_workflow() {
     use scion_store::MetaStore;
     let store = Arc::new(MemStore::new());

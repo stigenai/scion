@@ -125,7 +125,7 @@ service LandService {
 
 service RefService {
   rpc ResolveRef(ResolveRefRequest) returns (ResolveRefResponse);     // 永远不缓存
-  rpc ListRefs / CreateRef / UpdateRef / DeleteRef / GetRefLog
+  rpc ListRefs / CreateRef / UpdateRef / DeleteRef / ListRefLog
   rpc WatchRefs(WatchRefsRequest) returns (stream RefEvent);          // daemon 预取、CI 触发
 }
 

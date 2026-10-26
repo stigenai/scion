@@ -51,6 +51,7 @@ scn cat main:README.md              # read files without a working copy (add --r
 scn ls main:                        # list a directory; every command supports --json
 scn log -n 10 -- src                # history from HEAD, newest first, optionally limited to a path (git-style: HEAD~1, A..B)
 scn log main                        # the branch on the server, with what others landed since your last sync
+scn reflog main                     # how the branch moved: created, fast-forward (lands) or forced, with times
 scn watch                           # follow the branches on the server: one line per commit as it lands (--json for agents)
 scn diff                            # uncommitted local changes (unified diff)
 scn diff main                       # what the tip of main changed; `scn diff A B` compares two revisions

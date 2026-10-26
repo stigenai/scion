@@ -1456,6 +1456,41 @@ pub async fn repo_admin<S: MetaStore + ?Sized>(s: &S) {
 }
 
 /// ref 变化的事件流：与 ref 修改同一事务写入，按 seq 递增；失败的 CAS 不产生事件；fork 为每个 ref 产生创建事件。
+/// The ref log: one entry per move, newest first, paged by version, gone with the ref.
+pub async fn ref_log<S: MetaStore + ?Sized>(s: &S) {
+    s.create_repo("log/a").await.expect("create");
+    let (x, y, z) = (cs(111), cs(112), cs(113));
+    s.cas_ref("log/a", "main", RefExpect::Absent, x).await.expect("create");
+    s.land_commit("log/a", "main", RefExpect::Version(1), y, &[], &[])
+        .await
+        .expect("land");
+    s.cas_ref("log/a", "main", RefExpect::Version(2), z)
+        .await
+        .expect("move");
+    assert!(s.cas_ref("log/a", "main", RefExpect::Version(1), x).await.is_err());
+    s.cas_ref("log/a", "other", RefExpect::Absent, x).await.expect("other");
+
+    let brief = |v: Vec<crate::RefLogEntry>| v.into_iter().map(|e| (e.version, e.target)).collect::<Vec<_>>();
+    let all = s.ref_log("log/a", "main", None, 10).await.expect("log");
+    assert!(all.iter().all(|e| e.updated_at_ms > 0));
+    assert_eq!(brief(all), [(3, z), (2, y), (1, x)]);
+    assert_eq!(
+        brief(s.ref_log("log/a", "main", None, 1).await.expect("page")),
+        [(3, z)]
+    );
+    assert_eq!(
+        brief(s.ref_log("log/a", "main", Some(3), 10).await.expect("before")),
+        [(2, y), (1, x)]
+    );
+    assert!(s.ref_log("log/a", "nope", None, 10).await.expect("none").is_empty());
+    s.delete_ref("log/a", "main", None).await.expect("delete");
+    assert!(s.ref_log("log/a", "main", None, 10).await.expect("deleted").is_empty());
+    assert_eq!(
+        brief(s.ref_log("log/a", "other", None, 10).await.expect("other")),
+        [(1, x)]
+    );
+}
+
 pub async fn ref_events<S: MetaStore + ?Sized>(s: &S) {
     use crate::RefEvent;
     let start = s.ref_event_bounds().await.expect("bounds").1;

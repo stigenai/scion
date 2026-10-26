@@ -9,7 +9,8 @@ use scion_object::ObjectId;
 use scion_store::{
     ChangesetRecord, Error, IdempotencyRecord, IndexedObject, LandedChange, Lease, MetaStore, OrgMember, OrgRecord,
     PackLocation, PackedObject, PathChange, PathHistoryEntry, Redaction, RedactionFilter, RefEvent, RefExpect,
-    RefState, RepoFilter, RepoInfo, RepoPatch, Result, TokenRecord, prefix_upper_bound, validate_repo_name,
+    RefLogEntry, RefState, RepoFilter, RepoInfo, RepoPatch, Result, TokenRecord, prefix_upper_bound,
+    validate_repo_name,
 };
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
 
@@ -244,6 +245,27 @@ impl MetaStore for PgMetaStore {
             })
         })
         .transpose()
+    }
+
+    async fn ref_log(&self, repo: &str, name: &str, before: Option<u64>, limit: usize) -> Result<Vec<RefLogEntry>> {
+        let repo_id = self.repo_id(repo).await?;
+        let rows: Vec<(i64, Vec<u8>, i64)> = sqlx::query_as("SELECT version, target, updated_at_ms FROM ref_log WHERE repo_id = $1 AND name = $2 AND version < $3 ORDER BY version DESC LIMIT $4")
+            .bind(repo_id)
+            .bind(name)
+            .bind(before.map_or(Ok(i64::MAX), version_to_db)?)
+            .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| backend("read ref log", e))?;
+        rows.into_iter()
+            .map(|(version, target, updated_at_ms)| {
+                Ok(RefLogEntry {
+                    version: version_from_db(version)?,
+                    target: id_from_db(&target)?,
+                    updated_at_ms,
+                })
+            })
+            .collect()
     }
 
     async fn land_commit(
@@ -1855,6 +1877,7 @@ mod tests {
         testsuite::redactions(&s).await;
         testsuite::repo_admin(&s).await;
         testsuite::ref_events(&s).await;
+        testsuite::ref_log(&s).await;
     }
 
     #[tokio::test]

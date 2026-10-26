@@ -35,7 +35,8 @@ pub use history::{
 pub use identity::{DeviceLogin, DeviceLoginPoll, Identity};
 pub use info::{Limits, ProtocolVersion, ReadEndpoint, Role, ServerInfo};
 pub use ops::{
-    ChangesetBuilder, CreatedChangeset, DirEntry, LAND_ATTEMPTS, Landed, LandedChangeset, Person, RefTip, Signature,
+    ChangesetBuilder, CreatedChangeset, DirEntry, LAND_ATTEMPTS, Landed, LandedChangeset, Person, RefLogEntry, RefTip,
+    Signature,
 };
 pub use orgs::{MemberInfo, OrgInfo};
 pub use repos::{NewRepo, RefEventInfo, RefEventPage, RepoInfo, RepoPage};

@@ -51,6 +51,7 @@ scn cat main:README.md              # 不需要工作副本就能读文件（在
 scn ls main:                        # 列出目录；所有命令都支持 --json
 scn log -n 10 -- src                # 从 HEAD 开始的历史，从新到旧，可以只看某个路径（git 写法：HEAD~1、A..B）
 scn log main                        # 服务端的分支，包括上次 sync 之后别人合入的提交
+scn reflog main                     # 分支的移动记录：新建、快进（合入）或强制移动，以及时间
 scn watch                           # 跟踪服务端的分支：每合入一个提交打印一行（agent 用 --json）
 scn diff                            # 未提交的本地改动（unified diff）
 scn diff main                       # main 最新提交改了什么；`scn diff A B` 比较两个版本
