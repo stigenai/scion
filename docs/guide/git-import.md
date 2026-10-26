@@ -79,7 +79,7 @@ Commits the branches share are not uploaded twice, and get the same Scion commit
 
 Because of this, a re-import does not upgrade commits imported by an older scn. Before 0.1.11, signed commits and commits with unusual headers were imported without their raw git object, so [git clients](git-clients.md) cannot fetch them; to serve such a repository over git, import it again into a new Scion repository.
 
-**Tags:** import a git tag into `tags/NAME` to create a Scion tag at the same commit, for example `scn import git ~/src/my-repo --repo mono --git-ref v1.0 --ref tags/v1.0`. The tag is created in one step (tags never move); importing it again is a no-op, and a tag that already points elsewhere is reported instead of moved.
+**Tags:** import a git tag into `tags/NAME` to create a Scion tag at the same commit, for example `scn import git ~/src/my-repo --repo mono --git-ref v1.0 --ref tags/v1.0`. The tag is created in one step (tags never move); importing it again is a no-op, and a tag that already points elsewhere is reported instead of moved. An annotated tag keeps its tag object, byte for byte: its message and tagger show in `scn show v1.0`, and the git gateway serves it with the same SHA.
 
 ## What is imported
 
@@ -130,7 +130,7 @@ Differential tests check the importer (`client/gitimport/tests/differential.rs`)
 |---|---|
 | Submodules | Skipped: submodule pointers are not imported |
 | Commit signatures | GPG and SSH signatures (`gpgsig`) are not imported; Scion commit ids depend on content, not signatures |
-| Tag objects | Not imported; import the history a tag points at with `--git-ref <tag> --ref tags/<name>` (see above) |
+| Tags | One per import, with `--git-ref <tag> --ref tags/<name>` (see above); annotated tags keep their objects, tags of trees or blobs are refused |
 | Renames | Recorded as a deletion and an addition; unchanged contents are not uploaded again |
 | File size | Bounded by the server's upload limit, 256 MiB by default; larger files fail the import. Chunked storage will allow larger files in a later version |
 | Git LFS | The LFS pointer files themselves are imported; LFS objects are not downloaded |

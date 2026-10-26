@@ -89,6 +89,17 @@ impl Repo {
         Ok(out.stdout)
     }
 
+    /// The object `git_ref` names, when it is a tag object (an annotated tag): raw.
+    pub fn tag_object(&self, cat: &mut CatFile, git_ref: &str) -> Result<Option<Vec<u8>>> {
+        let sha = String::from_utf8_lossy(&self.run(&["rev-parse", git_ref])?)
+            .trim()
+            .to_owned();
+        match cat.read(&sha)? {
+            (k, data) if k == "tag" => Ok(Some(data)),
+            _ => Ok(None),
+        }
+    }
+
     /// `git_ref` 可达的全部提交，父提交在前（拓扑序）。
     pub fn commits(&self, git_ref: &str) -> Result<Vec<String>> {
         let out = self.run(&["rev-list", "--reverse", "--topo-order", git_ref, "--"])?;

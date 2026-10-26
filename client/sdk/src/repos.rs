@@ -217,6 +217,23 @@ impl Client {
             .await
     }
 
+    /// Creates tag ref `name` (`tags/…`) on `target` from the git tag object `raw`, kept as it
+    /// is: its message and tagger come from it, and the server checks it names the target.
+    pub async fn create_tag_from_git(&self, name: &str, target: &ObjectId, raw: Vec<u8>) -> Result<(ObjectId, u64)> {
+        let tag = scion_object::git::parse_tag(&raw);
+        let annotation = v1::TagAnnotation {
+            message: tag.as_ref().map(|t| t.message.clone()).unwrap_or_default(),
+            tagger: tag.and_then(|t| t.tagger).map(|s| v1::Signature {
+                name: s.name,
+                email: s.email,
+                time_ms: s.time_ms,
+                tz_offset_minutes: s.tz_offset_minutes,
+            }),
+            git_object: raw.into(),
+        };
+        self.create_ref_with(name, target, Some(annotation)).await
+    }
+
     async fn create_ref_with(
         &self,
         name: &str,

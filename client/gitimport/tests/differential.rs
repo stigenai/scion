@@ -398,6 +398,17 @@ async fn tags_are_created_at_the_tagged_commit() {
         .await
         .expect_err("moved tag");
     assert!(matches!(err, Error::Diverged { .. }), "{err:?}");
+
+    // An annotated tag keeps its message and tagger; imported as a branch it is just the commit
+    git(dir, &["tag", "-a", "v2", "-m", "Second release"]);
+    let s = import(&c, dir, "v2", "tags/v2", |_, _| {}).await.expect("annotated");
+    let tags = c.list_tags().await.expect("tags");
+    let v2 = tags.iter().find(|t| t.name == "v2").expect("v2");
+    let note = v2.annotation.as_ref().expect("annotated");
+    assert_eq!(Some(v2.target), s.tip);
+    assert_eq!((note.message.as_str(), note.tagger.name.as_str()), ("Second release\n", "CI Bot"));
+    import(&c, dir, "v2", "from-tag", |_, _| {}).await.expect("as a branch");
+    assert_eq!(c.resolve_ref("from-tag").await.expect("ok").map(|r| r.changeset), s.tip);
 }
 
 /// 历史超过服务端单次合入上限时分段快进，每个提交的 change id 都被记录。

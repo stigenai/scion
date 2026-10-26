@@ -79,7 +79,7 @@ scn import git ~/src/my-repo --repo mono --git-ref release/1.x --ref release/1.x
 
 也正因如此，重新导入不会更新旧版 scn 导入的提交。0.1.11 之前，签名提交和带特殊头部的提交导入时没有保存原始 git 对象，[git 客户端](git-clients.zh-CN.md)无法拉取它们；要让这样的仓库能通过 git 访问，需要把它重新导入到一个新的 Scion 仓库。
 
-**标签**：把 git 标签导入到 `tags/NAME`，就在同一个提交上建一个 Scion 标签，例如 `scn import git ~/src/my-repo --repo mono --git-ref v1.0 --ref tags/v1.0`。标签一步建成（标签不会移动）；再次导入不做任何事，已经指向别处的标签会报出来，而不会被移动。
+**标签**：把 git 标签导入到 `tags/NAME`，就在同一个提交上建一个 Scion 标签，例如 `scn import git ~/src/my-repo --repo mono --git-ref v1.0 --ref tags/v1.0`。标签一步建成（标签不会移动）；再次导入不做任何事，已经指向别处的标签会报出来，而不会被移动。附注标签会原样保留它的标签对象：`scn show v1.0` 能看到说明和打标签的人，git 网关提供的也是同一个 SHA。
 
 ## 导入了什么
 
@@ -130,7 +130,7 @@ scn import git ~/src/my-repo --repo mono --ref main-rewritten
 |---|---|
 | 子模块 | 跳过，不导入子模块指针 |
 | 提交签名 | GPG / SSH 签名（`gpgsig`）不导入。Scion 提交的 id 由内容决定，与签名无关 |
-| 标签对象 | 不导入；用 `--git-ref <tag> --ref tags/<name>` 导入标签指向的历史（见上文） |
+| 标签 | 每次导入一个，用 `--git-ref <tag> --ref tags/<name>`（见上文）；附注标签保留标签对象，指向目录树或文件的标签会被拒绝 |
 | 改名 | 记为「删除 + 新增」。内容不变的文件不会重复上传 |
 | 单个文件大小 | 受服务端上传上限约束，默认 256 MiB；更大的文件会导致导入失败。分块存储会在后续版本支持更大的文件 |
 | Git LFS | 导入的是 LFS 指针文件本身，不会下载 LFS 对象 |

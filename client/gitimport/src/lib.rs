@@ -213,7 +213,13 @@ pub async fn import_with(
 
     let tip = all.last().and_then(|sha| mapping.get(sha).copied());
     if let Some(tip) = tip {
-        land_chain(client, target_ref, tip, &first_parent_of, options.land_step).await?;
+        // An annotated tag imported as a tag keeps its tag object
+        let annotation = if target_ref.starts_with(TAG_PREFIX) {
+            repo.tag_object(&mut cat, git_ref)?
+        } else {
+            None
+        };
+        land_chain(client, target_ref, tip, &first_parent_of, options.land_step, annotation).await?;
     }
     Ok(Summary {
         commits: all.len(),
@@ -263,6 +269,7 @@ async fn land_chain(
     tip: ObjectId,
     first_parent_of: &HashMap<ObjectId, Option<ObjectId>>,
     step: usize,
+    annotation: Option<Vec<u8>>,
 ) -> Result<()> {
     let current = client.resolve_ref(target_ref).await?.map(|t| t.changeset);
     // A tag (`tags/…`) is never moved by the server: create it at the tip in one step. Importing
@@ -270,7 +277,10 @@ async fn land_chain(
     if target_ref.starts_with(TAG_PREFIX) {
         return match current {
             None => {
-                client.create_ref(target_ref, &tip).await?;
+                match annotation {
+                    Some(raw) => client.create_tag_from_git(target_ref, &tip, raw).await?,
+                    None => client.create_ref(target_ref, &tip).await?,
+                };
                 Ok(())
             }
             Some(c) if c == tip => Ok(()),
