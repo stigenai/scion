@@ -20,7 +20,7 @@ QueryService.ListLastCommits(repo, revision, path, offset, limit)
 - **Semantics:** along the first-parent chain:
   - an entry is changed by a commit when it is among the commit's changes against its first parent;
   - a subdirectory is changed when any file below it is;
-  - changes brought in by a merge count for the merge commit.
+  - a merge that took the entry as one of the merged branches had it did not change it: the last change is that branch's, as `git log -1 -- PATH` shows; a merge that made the entry differ from every parent changed it.
 - **Users who can read only some paths:** only visible entries are listed. An entry whose contents they cannot all see (`src` for someone who can read only `src/ui`) comes back with its name and no last commit.
 - **SDK:** `Client::last_commits(revision, path, offset, limit)`.
 

@@ -34,7 +34,7 @@ service QueryService {
   rpc GetGitShas(GetGitShasRequest) returns (GetGitShasResponse);
   // 把一个版本（或其中的目录）打包成 tar.gz / zip / tar，分块流式返回。
   rpc Archive(ArchiveRequest) returns (stream ArchiveResponse);
-  // 目录中每个条目最后一次被改动的提交（沿第一父提交链：经由合并进来的改动归到合并提交上），按名字分页。
+  // 目录中每个条目最后一次被改动的提交（沿第一父提交链；合并提交照搬某个分支上的条目时，归到那个分支上的提交，与 git log -1 -- PATH 相同），按名字分页。
   rpc ListLastCommits(ListLastCommitsRequest) returns (ListLastCommitsResponse);
   // 目录（含全部子目录）下的文件数、子目录数与总字节数；path 为空表示整个仓库。
   rpc GetTreeStats(GetTreeStatsRequest) returns (GetTreeStatsResponse);

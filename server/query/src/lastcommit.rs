@@ -1,7 +1,8 @@
 //! LastCommitPerEntry 派生数据：目录中每个条目最后一次被改动的提交（文件列表页的「最后提交」列）。
 //!
-//! 语义与 blame 相同，沿第一父提交链追溯：条目在某个提交的 delta（相对第一父提交）中出现，
-//! 就算被这个提交改动；经由合并带进来的改动归到合并提交上。子目录被改动指它下面的任意路径被改动。
+//! 沿第一父提交链追溯：条目在某个提交的 delta（相对第一父提交）中出现，就算被这个提交改动。
+//! 子目录被改动指它下面的任意路径被改动。As `git log -1 -- PATH` does, a merge that took the entry
+//! as one of the merged branches had it did not change it: the change is that branch's last one.
 //!
 //! 计算顺序：
 //! 1. 缓存（提交, 目录）命中直接返回；
@@ -20,7 +21,10 @@ use crate::{Graph, QueryError, Result, load_changeset, on_first_parent_chain};
 use scion_store::BlobStore;
 
 pub const LAST_COMMIT_KIND: &str = "last-commit";
-pub const LAST_COMMIT_VERSION: u32 = 1;
+/// 2: a merge that took an entry from a merged branch gives it to that branch's last change.
+pub const LAST_COMMIT_VERSION: u32 = 2;
+/// Merges followed into their branches for one entry, at most.
+const MAX_SIDE_HOPS: usize = 16;
 /// 扫描回退时最多检查的提交数。
 pub const MAX_SCAN: usize = 2000;
 /// 往回找有缓存的祖先时最多检查的提交数。
@@ -258,6 +262,7 @@ pub async fn last_commits(
     if !unknown.is_empty() {
         by_scan(blobs, &mut g, cs, dir, &mut unknown, &mut found).await?;
     }
+    through_merges(meta, blobs, repo, dir, names, &mut found).await?;
     let out: Vec<Option<ObjectId>> = names.iter().map(|n| found.get(n).copied()).collect();
     if cache && unknown.is_empty() && !complete_hit {
         let all: Vec<(String, ObjectId)> = names
@@ -275,6 +280,53 @@ pub async fn last_commits(
         .await?;
     }
     Ok(out)
+}
+
+/// Entries given to a merge that took them as a merged branch had them go to that branch's last
+/// change instead (again, when that is such a merge too).
+async fn through_merges(
+    meta: &dyn MetaStore,
+    blobs: &dyn BlobStore,
+    repo: &str,
+    dir: &str,
+    names: &[String],
+    found: &mut HashMap<String, ObjectId>,
+) -> Result<()> {
+    let wanted: Vec<(String, ObjectId)> = names.iter().filter_map(|n| Some((n.clone(), *found.get(n)?))).collect();
+    let moved = futures::stream::iter(wanted.into_iter().map(|(name, mut id)| async move {
+        let mut g = Graph::new(meta, repo);
+        let path = join(dir, &name);
+        for _ in 0..MAX_SIDE_HOPS {
+            let rec = g.get(id).await?.clone();
+            if rec.parents.len() < 2 {
+                break;
+            }
+            let Some(side) = crate::side_with_same(&mut g, blobs, &rec, &path).await? else {
+                break;
+            };
+            id = match by_index(meta, &mut g, repo, side, &path).await? {
+                Some(c) => c,
+                None => {
+                    let mut one = HashSet::from([name.clone()]);
+                    let mut at = HashMap::new();
+                    by_scan(blobs, &mut g, side, dir, &mut one, &mut at).await?;
+                    match at.remove(&name) {
+                        Some(c) => c,
+                        None => break,
+                    }
+                }
+            };
+        }
+        Ok::<_, QueryError>((name, id))
+    }))
+    .buffer_unordered(INDEX_PARALLEL)
+    .collect::<Vec<_>>()
+    .await;
+    for m in moved {
+        let (name, id) = m?;
+        found.insert(name, id);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -307,37 +359,62 @@ mod tests {
         assert_eq!(decode(&[]), Some(HashMap::new()));
     }
 
+    async fn lc(store: &scion_store::MemStore, cs: ObjectId, dir: &str, n: &[&str]) -> Vec<Option<ObjectId>> {
+        last_commits(store, store, REPO, cs, dir, &names(n), false)
+            .await
+            .expect("last commits")
+    }
+
     /// a ─ b ─ c ─ m
     ///      \     /
     ///       d ──'
     #[tokio::test]
     async fn first_parent_semantics_index_and_scan_agree() {
+        use crate::blame::tests::Repo;
         for indexed in [true, false] {
-            let mut b = Builder::with_index(indexed).await;
-            let a = b.commit(&[], &["README", "src/lib.rs", "src/util/x.rs"]).await;
-            let bb = b.commit(&[a], &["src/lib.rs"]).await;
-            let c = b.commit(&[bb], &["README"]).await;
-            let d = b.commit(&[bb], &["src/util/x.rs", "docs/new.md"]).await;
+            let mut r = Repo::with_index(indexed).await;
+            let a = r
+                .commit(
+                    &[],
+                    &[
+                        ("README", Some("r")),
+                        ("src/lib.rs", Some("l")),
+                        ("src/util/x.rs", Some("x")),
+                    ],
+                )
+                .await;
+            let bb = r.commit(&[a], &[("src/lib.rs", Some("l2"))]).await;
+            let c = r.commit(&[bb], &[("README", Some("r2"))]).await;
+            let d = r
+                .commit(&[bb], &[("src/util/x.rs", Some("x2")), ("docs/new.md", Some("n"))])
+                .await;
             // 合并提交的 delta 相对第一父提交：带进来 d 的改动
-            let m = b.commit(&[c, d], &["src/util/x.rs", "docs/new.md"]).await;
-
+            let m = r
+                .commit(&[c, d], &[("src/util/x.rs", Some("x2")), ("docs/new.md", Some("n"))])
+                .await;
+            // As git log -1: the merge took docs and src as d had them
             assert_eq!(
-                run(&b, m, "", &["README", "docs", "src"], false).await,
-                vec![Some(c), Some(m), Some(m)],
+                lc(&r.store, m, "", &["README", "docs", "src"]).await,
+                vec![Some(c), Some(d), Some(d)],
                 "indexed={indexed}"
             );
             assert_eq!(
-                run(&b, m, "src", &["lib.rs", "util"], false).await,
-                vec![Some(bb), Some(m)]
+                lc(&r.store, m, "src", &["lib.rs", "util"]).await,
+                vec![Some(bb), Some(d)]
             );
             assert_eq!(
-                run(&b, c, "src", &["lib.rs", "util"], false).await,
+                lc(&r.store, c, "src", &["lib.rs", "util"]).await,
                 vec![Some(bb), Some(a)]
             );
             // d 不在 c 的第一父提交链上
-            assert_eq!(run(&b, d, "", &["README", "docs"], false).await, vec![Some(a), Some(d)]);
+            assert_eq!(lc(&r.store, d, "", &["README", "docs"]).await, vec![Some(a), Some(d)]);
             // 不存在的条目
-            assert_eq!(run(&b, c, "", &["nope"], false).await, vec![None]);
+            assert_eq!(lc(&r.store, c, "", &["nope"]).await, vec![None]);
+            // A merge that resolved the file differently from both sides changed it
+            let e = r.commit(&[m], &[("README", Some("r3"))]).await;
+            let f = r.commit(&[m], &[("README", Some("r4"))]).await;
+            let m2 = r.commit(&[e, f], &[("README", Some("r5"))]).await;
+            assert_eq!(lc(&r.store, m2, "", &["README", "docs"]).await, vec![Some(m2), Some(d)]);
         }
     }
 

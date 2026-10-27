@@ -307,15 +307,25 @@ fn touches(cs: &Changeset, path: &str) -> bool {
 
 /// Whether `path` in merge `rec` is the same as in one of its parents after the first.
 async fn same_as_a_side(g: &mut Graph<'_>, blobs: &dyn BlobStore, rec: &ChangesetRecord, path: &str) -> Result<bool> {
+    Ok(side_with_same(g, blobs, rec, path).await?.is_some())
+}
+
+/// The first of merge `rec`'s parents after the first that has `path` as `rec` has it.
+pub(crate) async fn side_with_same(
+    g: &mut Graph<'_>,
+    blobs: &dyn BlobStore,
+    rec: &ChangesetRecord,
+    path: &str,
+) -> Result<Option<ObjectId>> {
     let trees = blame::Trees(blobs);
     let ours = scion_tree::lookup(&trees, rec.root_tree, path).await?.map(|e| e.id);
     for p in rec.parents.iter().skip(1) {
         let root = g.get(*p).await?.root_tree;
         if scion_tree::lookup(&trees, root, path).await?.map(|e| e.id) == ours {
-            return Ok(true);
+            return Ok(Some(*p));
         }
     }
-    Ok(false)
+    Ok(None)
 }
 
 /// 读取并解码提交对象。

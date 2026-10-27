@@ -519,20 +519,23 @@ async fn history_queries_end_to_end() {
     let sha = c.git_sha("main").await.expect("sha").expect("computed");
     assert_eq!(c.git_shas(&[m.id]).await.expect("batch"), vec![sha.clone()]);
     assert_eq!(c.resolve_revision(&sha).await.expect("by sha").id, m.id);
-    // 每个条目的最后提交：合并带进来的 other 归到合并提交
+    // 每个条目的最后提交：合并照搬 d 的 other，归到 d（与 git log -1 -- other 相同）
     assert!(c.has_feature(scion_proto::features::QUERY_LAST_COMMITS));
     let last = c.last_commits("main", "", 0, 0).await.expect("last commits");
     let want = vec![
         ("README".to_string(), Some(m.id)),
-        ("other".to_string(), Some(m.id)),
+        ("other".to_string(), Some(d.id)),
         ("src".to_string(), Some(b.id)),
     ];
     assert_eq!((last.total, last.entries.clone()), (3, want.clone()));
-    assert_eq!(last.commits.iter().map(|e| e.id).collect::<Vec<_>>(), vec![m.id, b.id]);
-    assert_eq!(last.commits[1].message, "b");
+    assert_eq!(
+        last.commits.iter().map(|e| e.id).collect::<Vec<_>>(),
+        vec![m.id, d.id, b.id]
+    );
+    assert_eq!(last.commits[2].message, "b");
     assert_eq!(c.last_commits("main", "", 0, 0).await.expect("cached").entries, want);
     let page = c.last_commits("main", "", 1, 1).await.expect("page");
-    assert_eq!((page.total, page.entries), (3, vec![("other".to_string(), Some(m.id))]));
+    assert_eq!((page.total, page.entries), (3, vec![("other".to_string(), Some(d.id))]));
     assert!(
         c.last_commits("main", "", 9, 0)
             .await

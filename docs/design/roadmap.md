@@ -86,7 +86,6 @@ Legend: 🔵 has an initial design, ⚪ idea only.
 - **`LfsPointerIndex`**: the LFS pointer files in a repository, for starhub's `GetRepoLfsPointers`.
 - **`Sha256`**: the SHA-256 of each blob, for the LFS and HF protocols.
 - **`GetTrees`**: return several levels of a tree in one call, for recursive listings.
-- **Merges in last commits**: ListLastCommits gives what a merge brought in to the merge commit.
 - **A path cursor for ListLastCommits**: when one generation fills a whole page of index rows, it currently falls back to a scan. The result is correct, just slower.
 
 ### 2.5 Git compatibility (`git-gateway`): in progress
