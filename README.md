@@ -127,7 +127,7 @@ With an OIDC provider or a GitHub OAuth app configured, people sign in with `scn
 
 | | |
 |---|---|
-| **Use** | [Deploy](docs/guide/deploy.md) · [CLI tour](docs/guide/cli.md) · [Git commands](docs/guide/git-commands.md) · [Coming from git](docs/guide/coming-from-git.md) · [Git import](docs/guide/git-import.md) · [Sparse checkout](docs/guide/sparse-checkout.md) · [Repos](docs/guide/repos.md) · [Archives](docs/guide/archive.md) · [Browse](docs/guide/browse.md) · [Git SHAs](docs/guide/git-sha.md) · [git clients](docs/guide/git-clients.md) |
+| **Use** | [Deploy](docs/guide/deploy.md) · [CLI tour](docs/guide/cli.md) · [Agents (MCP)](docs/guide/agents.md) · [Git commands](docs/guide/git-commands.md) · [Coming from git](docs/guide/coming-from-git.md) · [Git import](docs/guide/git-import.md) · [Sparse checkout](docs/guide/sparse-checkout.md) · [Repos](docs/guide/repos.md) · [Archives](docs/guide/archive.md) · [Browse](docs/guide/browse.md) · [Git SHAs](docs/guide/git-sha.md) · [git clients](docs/guide/git-clients.md) |
 | **Operate** | [Storage](docs/guide/object-storage.md) · [Clusters](docs/guide/cluster.md) · [Caching](docs/guide/cache.md) · [Auth](docs/guide/auth.md) · [Redaction](docs/guide/redaction.md) · [Events](docs/guide/events.md) · [Observability](docs/guide/observability.md) |
 | **Design** | [Server](docs/design/rust-server-architecture.md) · [Client](docs/design/rust-client-architecture.md) · [starhub](docs/design/starhub-integration.md) · [Object format](SPEC.md) · [Protocol](proto/scion/v1/) |
 

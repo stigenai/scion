@@ -56,6 +56,7 @@ scn log main                        # the branch on the server, with what others
 scn log --follow -- docs/guide.md   # one file's history across renames, as in git
 scn reflog main                     # how the branch moved: created, fast-forward (lands) or forced, when and by whom
 scn grep -n TODO -- src             # search the working tree, as git grep; with REV, that commit on the server
+scn mcp --repo URL                  # serve the repository to an agent over MCP, with no checkout (agents.md)
 scn watch                           # follow the branches on the server: one line per commit as it lands (--json for agents)
 scn diff                            # uncommitted local changes (unified diff)
 scn diff main                       # what the tip of main changed; `scn diff A B` compares two revisions

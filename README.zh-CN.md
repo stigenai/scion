@@ -127,7 +127,7 @@ docker exec scion scion admin token create --subject admin --group admins
 
 | | |
 |---|---|
-| **使用** | [部署](docs/guide/deploy.zh-CN.md) · [命令导览](docs/guide/cli.zh-CN.md) · [git 命令](docs/guide/git-commands.zh-CN.md) · [从 git 迁移](docs/guide/coming-from-git.zh-CN.md) · [git 导入](docs/guide/git-import.zh-CN.md) · [稀疏检出](docs/guide/sparse-checkout.zh-CN.md) · [仓库与分支](docs/guide/repos.zh-CN.md) · [打包下载](docs/guide/archive.zh-CN.md) · [文件列表](docs/guide/browse.zh-CN.md) · [git SHA](docs/guide/git-sha.zh-CN.md) · [git 客户端](docs/guide/git-clients.zh-CN.md) |
+| **使用** | [部署](docs/guide/deploy.zh-CN.md) · [命令导览](docs/guide/cli.zh-CN.md) · [Agent（MCP）](docs/guide/agents.zh-CN.md) · [git 命令](docs/guide/git-commands.zh-CN.md) · [从 git 迁移](docs/guide/coming-from-git.zh-CN.md) · [git 导入](docs/guide/git-import.zh-CN.md) · [稀疏检出](docs/guide/sparse-checkout.zh-CN.md) · [仓库与分支](docs/guide/repos.zh-CN.md) · [打包下载](docs/guide/archive.zh-CN.md) · [文件列表](docs/guide/browse.zh-CN.md) · [git SHA](docs/guide/git-sha.zh-CN.md) · [git 客户端](docs/guide/git-clients.zh-CN.md) |
 | **运维** | [存储](docs/guide/object-storage.zh-CN.md) · [多节点](docs/guide/cluster.zh-CN.md) · [缓存](docs/guide/cache.zh-CN.md) · [认证](docs/guide/auth.zh-CN.md) · [redaction](docs/guide/redaction.zh-CN.md) · [事件](docs/guide/events.zh-CN.md) · [可观测性](docs/guide/observability.zh-CN.md) |
 | **设计** | [服务端](docs/design/rust-server-architecture.zh-CN.md) · [客户端](docs/design/rust-client-architecture.zh-CN.md) · [starhub](docs/design/starhub-integration.zh-CN.md) · [对象格式](SPEC.zh-CN.md) · [协议](proto/scion/v1/) |
 

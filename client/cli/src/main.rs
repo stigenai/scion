@@ -9,6 +9,7 @@ mod creds;
 mod daemon;
 mod history;
 mod login;
+mod mcp;
 mod orgs;
 mod output;
 mod progress;
@@ -580,6 +581,13 @@ enum Command {
         #[arg(last = true, value_name = "PATH")]
         paths: Vec<String>,
     },
+    /// Serve the repository to an agent over MCP (stdio): read, search, history and commits on the
+    /// server at any revision, with no checkout.
+    #[command(
+        after_help = "Inside a working copy it serves that repository; elsewhere give --repo.\n\n\
+        For Claude Code:\n  claude mcp add scion -- scn mcp --repo http://scion.example.com:7080/org/app"
+    )]
+    Mcp,
     /// Show how a branch or tag moved on the server, newest first (git's reflog, kept by the server).
     #[command(
         after_help = "Each line: ID BRANCH@{N}: TIME (UTC) HOW: SUBJECT, where HOW is created, fast-forward \
@@ -1784,6 +1792,17 @@ async fn run(cli: Cli) -> ExitCode {
             let code = emit(found, json);
             if none { ExitCode::from(1) } else { code }
         }
+        Command::Mcp => {
+            // Paths are from the repository root: serve from the working copy's
+            let mut ctx = ctx;
+            if let Some(w) = ctx.working_copy() {
+                ctx.cwd = w.root().to_path_buf();
+            }
+            match mcp::serve(&ctx).await {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => fail(&e, json),
+            }
+        }
         Command::Reflog { reference, max_count } => {
             emit(history::reflog(&ctx, reference.as_deref(), max_count).await, json)
         }
@@ -1959,7 +1978,7 @@ Branches and history:
   log        Show the history
   show       Show a commit and its changes
   blame      Show the commit that last changed each line
-  grep       Search the files of a commit on the server
+  grep       Search the working tree or a commit, like git grep
   reflog     Show how a branch moved on the server
   watch      Follow branches on the server as commits land
 
@@ -1967,6 +1986,7 @@ Read without a working copy:
   cat        Print a file at a revision
   ls         List a directory at a revision
   archive    Download a revision or directory as tar.gz, zip or tar
+  mcp        Serve the repository to an agent over MCP, with no checkout
 
 Repositories, accounts and setup:
   repo       Create, list, change, delete, restore or fork repositories
