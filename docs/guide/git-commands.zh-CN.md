@@ -58,7 +58,7 @@
 | git | scn | 原因 |
 |---|---|---|
 | `git init` | `scn repo create NAME` 或 `scn repo create URL` | 仓库在服务端 |
-| `git push [-u] [origin [BRANCH]]` | `scn land` | 分支已经前进时由服务端 rebase，并且只合入一次；拒绝 `--force`（合入从不改写分支） |
+| `git push [-u] [origin [BRANCH]]` | `scn land` | 分支已经前进时由服务端 rebase，并且只合入一次；拒绝 `--force`（合入从不改写分支）；`-n` / `--dry-run` 只说明会怎样 |
 | `git pull [--rebase \| --ff-only] [origin [BRANCH]]` | `scn sync` | 没有单独的 `fetch`：本地没有历史 |
 | `git reset --soft HEAD~1` | `scn uncommit` | |
 | 解决冲突后的 `git add` | `scn resolve PATH` | 用 `--ours` / `--theirs` 直接取一边 |

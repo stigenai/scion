@@ -26,7 +26,7 @@ Inside a working copy, `scn mcp` serves that working copy's repository and lands
 | `show` | A commit's message, author and changes |
 | `commit` | A commit on top of a revision from whole file contents, deletions and `edits`; with `land`, also on the branch |
 | `edit_file` | Replaces `old_string` with `new_string` in one file and commits it (landed unless `land` is false) |
-| `land` | Puts a commit on a branch |
+| `land` | Puts a commit on a branch; with `dry_run`, only says what it would do (fast-forward, rebase or the conflicts) |
 
 - **Edits are applied by the server.** `edit_file` and `commit`'s `edits` replace text in the file as the base commit has it: the agent sends only the text it changes, not the file, and needs no copy of it. `old_string` must appear exactly once unless `replace_all`; otherwise the call fails and says how many times it appears. The SDK has the same as `ChangesetBuilder::edit`.
 - **Revisions** are branch and tag names, commit ids, git SHAs and `HEAD~N`; without one, the branch.

@@ -260,12 +260,31 @@ impl Client {
         request_id: &str,
         fast_forward_only: bool,
     ) -> Result<Landed> {
+        self.land_call(reference, changeset, request_id, fast_forward_only, false)
+            .await
+    }
+
+    /// What [`Client::land`] would do now, without doing it: the commits it would add (rebased
+    /// ones with the ids they would get), or the error it would fail with, such as a conflict.
+    pub async fn land_check(&self, reference: &str, changeset: &ObjectId) -> Result<Landed> {
+        self.land_call(reference, changeset, "", false, true).await
+    }
+
+    async fn land_call(
+        &self,
+        reference: &str,
+        changeset: &ObjectId,
+        request_id: &str,
+        fast_forward_only: bool,
+        dry_run: bool,
+    ) -> Result<Landed> {
         let req = LandRequest {
             repo: self.repo()?,
             request_id: request_id.to_owned(),
             r#ref: reference.to_owned(),
             changeset_id: bytes_of(changeset),
             fast_forward_only,
+            dry_run,
         };
         let mut attempt = 0;
         let resp = loop {

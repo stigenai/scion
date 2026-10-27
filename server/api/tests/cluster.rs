@@ -107,6 +107,7 @@ fn land(id: ObjectId, request_id: &str) -> LandRequest {
         r#ref: "main".into(),
         changeset_id: Bytes::copy_from_slice(&id.to_bytes()),
         fast_forward_only: false,
+        dry_run: false,
     }
 }
 

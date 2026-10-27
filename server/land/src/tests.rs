@@ -1357,3 +1357,55 @@ async fn shutdown_releases_leases_for_immediate_takeover() {
         })
     );
 }
+
+#[tokio::test]
+async fn check_says_what_a_land_would_do_and_writes_nothing() {
+    let fx = Fx::new().await;
+    let l = fx.lander();
+    let base = fx.commit(&[], &[("f", Some("1\n2\n3\n")), ("g", Some("g"))]).await;
+    // A new branch, then a fast-forward
+    let out = l.check(REPO, "main", base, false).await.expect("new branch");
+    assert_eq!((out.state.target, out.state.version, out.landed.len()), (base, 1, 1));
+    assert_eq!(
+        fx.store.get_ref(REPO, "main").await.expect("get"),
+        None,
+        "nothing written"
+    );
+    l.land(req(REPO, "main", base, false)).await.expect("land");
+    let a = fx.commit(&[base], &[("f", Some("1\n2\n3\nA\n"))]).await;
+    let out = l.check(REPO, "main", a, false).await.expect("fast-forward");
+    assert_eq!((out.state.target, out.state.version), (a, 2));
+    // Someone lands first: a rebase, which a fast-forward-only land refuses
+    let other = fx.commit(&[base], &[("g", Some("g2"))]).await;
+    l.land(req(REPO, "main", other, false)).await.expect("other");
+    let out = l.check(REPO, "main", a, false).await.expect("rebase");
+    assert_ne!(out.landed[0].landed, a, "would be rebased");
+    assert_eq!(out.state.version, 3);
+    assert!(matches!(
+        l.check(REPO, "main", a, true).await,
+        Err(LandError::NotFastForward { .. })
+    ));
+    let head = fx.store.get_ref(REPO, "main").await.expect("get").expect("main");
+    assert_eq!((head.target, head.version), (other, 2), "still nothing written");
+    // The same lines changed on the branch: the conflict a land would report
+    let mine = fx.commit(&[base], &[("g", Some("mine"))]).await;
+    assert!(matches!(
+        l.check(REPO, "main", mine, false).await,
+        Err(LandError::Conflict { .. })
+    ));
+    // Already there, a tag, a repository that does not exist
+    let out = l.check(REPO, "main", other, false).await.expect("already there");
+    assert!(out.landed.is_empty() && out.state.version == 2);
+    assert!(matches!(
+        l.check(REPO, "tags/v1", a, false).await,
+        Err(LandError::TagImmutable(_))
+    ));
+    assert!(matches!(
+        l.check("nope", "main", a, false).await,
+        Err(LandError::RepoNotFound(_))
+    ));
+    // The coordinator answers the same
+    let c = coordinator(fx.w.clone());
+    let out = c.check(REPO, "main", a, false).await.expect("coordinator");
+    assert_eq!(out.state.version, 3);
+}

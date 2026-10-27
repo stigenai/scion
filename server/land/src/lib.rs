@@ -15,7 +15,7 @@ mod stack;
 
 pub use coordinator::{ClusterConfig, Coordinator, CoordinatorConfig};
 pub use create::{Built, ChangesetWriter};
-pub use land::{LandOutcome, LandRequest, Lander};
+pub use land::{LandOutcome, LandRequest, Lander, check_land};
 pub use stack::{Landed, Prepared, StackOptions, prepare};
 
 use scion_merge::{Conflict, MergeError};

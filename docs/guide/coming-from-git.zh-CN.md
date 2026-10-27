@@ -33,6 +33,7 @@
 | `git clean -n` / `-f` / `-fd` / `-fdx` [PATH...] | `scn clean -n` / `-f` / `-fd` / `-fdx` [PATH...] | 删除未跟踪的文件，加 `-x` 连被忽略的文件（构建产物）一起删；必须加 `-f`，或者用 `-n` 只列出来。未跟踪的目录整个删除（接受 `-d`，但没有作用）；`.scion/`、`.git/` 以及嵌套的仓库或工作副本不会动 |
 | `git stash [push] [-m MSG]`、`list`、`show [-p]`、`pop`、`apply`、`drop` [`stash@{N}`] | 相同 | 保存所有本地改动，包括新增文件（git 不加 `-u` 时不包括），作为服务端上一个不在任何分支上的提交，然后把工作区恢复到当前提交。`pop` / `apply` 用三方合并把改动放回来，所以 `scn sync` 之后或者在别的分支上也能用；它们要求工作区干净，有冲突时文件里会有冲突标记，条目保留。stash 列表属于这个工作副本 |
 | `git remote -v`、`git remote set-url origin URL` | `scn remote -v`、`scn remote set-url URL` | 服务端的新地址，或有相同提交的另一个仓库（如 fork）；保存前会先检查 |
+| `git push --dry-run` | `scn land -n` | 询问服务端现在合入会怎样（快进、rebase 或冲突），不真正合入；显示的 rebase 后提交 id 只是暂定的 |
 | `git push` | `scn land` | 分支已经前进时由服务端 rebase |
 | `git pull --rebase` | `scn sync` | 移到分支最新提交，并把待合入的提交逐个 rebase；没有单独的 `fetch` |
 | `git rebase --abort` | `scn sync --abort` | 放弃停在冲突上的 sync：工作区回到 sync 之前所在的提交和待合入提交 |

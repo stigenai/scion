@@ -204,6 +204,25 @@ impl Coordinator {
         self.shared.queues.lock().map(|q| q.len()).unwrap_or(0)
     }
 
+    /// What landing would do, without doing it ([`crate::check_land`]); not queued with lands.
+    pub async fn check(
+        &self,
+        repo: &str,
+        reference: &str,
+        tip: ObjectId,
+        fast_forward_only: bool,
+    ) -> Result<LandOutcome> {
+        crate::check_land(
+            &self.shared.writer,
+            self.shared.config.stack,
+            repo,
+            reference,
+            tip,
+            fast_forward_only,
+        )
+        .await
+    }
+
     /// 合入一个请求，语义与 [`crate::Lander::land`] 相同。
     pub async fn land(&self, req: LandRequest<'_>) -> Result<LandOutcome> {
         validate_ref_name(req.reference)?;

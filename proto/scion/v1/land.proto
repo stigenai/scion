@@ -23,6 +23,11 @@ message LandRequest {
   bytes changeset_id = 4;
   // 只允许快进：提交不是 ref 当前提交的后继时返回 NOT_FAST_FORWARD，不做 rebase。
   bool fast_forward_only = 5;
+  // Only say what the land would do now, writing nothing: the same response (the version the
+  // ref would have; rebased commits with provisional ids, since a land stamps them when it
+  // happens), or the error the land would fail with, such as a conflict. Pre-land checks are not
+  // run, and the request id is ignored.
+  bool dry_run = 6;
 }
 
 message LandResponse {

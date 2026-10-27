@@ -232,6 +232,15 @@ impl LandService for LandSvc {
         )
         .await?;
         let cs_id = parse_id(&req.changeset_id)?;
+        // A forecast: any node can make it, and nothing is written
+        if req.dry_run {
+            let out = self
+                .coordinator
+                .check(&req.repo, &req.r#ref, cs_id, req.fast_forward_only)
+                .await
+                .map_err(|e| to_status(&req.r#ref, e))?;
+            return Ok(Response::new(response(&out)));
+        }
         if !trusted {
             RateLimiter::admit(self.limiter.as_deref(), &req.repo)?;
             if let Some(hook) = &self.pre_land {
@@ -352,6 +361,7 @@ mod tests {
             r#ref: "main".into(),
             changeset_id: id_bytes(&id),
             fast_forward_only: false,
+            dry_run: false,
         };
         let r = LandService::land(&land, Request::new(call(a)))
             .await
@@ -498,6 +508,7 @@ mod tests {
             r#ref: "main".into(),
             changeset_id: id_bytes(&id),
             fast_forward_only: false,
+            dry_run: false,
         };
         LandService::land(&land, Request::new(call(a))).await.expect("first");
         let err = LandService::land(&land, Request::new(call(b)))

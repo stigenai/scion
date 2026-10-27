@@ -58,7 +58,7 @@ These work too, and print a hint naming the scn command they ran. They are not i
 | git | scn | Why |
 |---|---|---|
 | `git init` | `scn repo create NAME` or `scn repo create URL` | Repositories live on the server |
-| `git push [-u] [origin [BRANCH]]` | `scn land` | The server rebases when the branch moved, and lands exactly once; `--force` is refused (landing never rewrites a branch) |
+| `git push [-u] [origin [BRANCH]]` | `scn land` | The server rebases when the branch moved, and lands exactly once; `--force` is refused (landing never rewrites a branch); `-n` / `--dry-run` only says what it would do |
 | `git pull [--rebase \| --ff-only] [origin [BRANCH]]` | `scn sync` | No separate `fetch`: there is no local history |
 | `git reset --soft HEAD~1` | `scn uncommit` | |
 | `git add` after a conflict | `scn resolve PATH` | `--ours` / `--theirs` to take one side |

@@ -388,3 +388,73 @@ async fn agents_edit_files_on_the_server() {
         "{content}"
     );
 }
+
+/// `land` with dry_run: what a land would do, with nothing landed.
+#[tokio::test(flavor = "multi_thread")]
+async fn land_dry_run_forecasts_rebases_and_conflicts() {
+    let url = server("app").await;
+    let repo = format!("{url}/app");
+    let r = repo.clone();
+    let replies = tokio::task::spawn_blocking(move || {
+        session(
+            &["--repo", &r],
+            "Agent <a@x>",
+            &[
+                call(
+                    1,
+                    "commit",
+                    json!({"message": "seed", "land": true, "files": [{"path": "a.txt", "content": "a\n"}]}),
+                ),
+                call(
+                    2,
+                    "commit",
+                    json!({"message": "mine", "files": [{"path": "a.txt", "content": "mine\n"}]}),
+                ),
+                call(
+                    3,
+                    "commit",
+                    json!({"message": "other", "files": [{"path": "b.txt", "content": "b\n"}]}),
+                ),
+                call(
+                    4,
+                    "commit",
+                    json!({"message": "theirs", "land": true, "files": [{"path": "a.txt", "content": "theirs\n"}]}),
+                ),
+            ],
+        )
+    })
+    .await
+    .expect("session");
+    let id = |i: usize| result(&replies[i]).0["changeset"].as_str().expect("id").to_owned();
+    let (mine, other) = (id(1), id(2));
+    let replies = tokio::task::spawn_blocking(move || {
+        session(
+            &["--repo", &repo],
+            "Agent <a@x>",
+            &[
+                call(1, "land", json!({"changeset": mine, "dry_run": true})),
+                call(2, "land", json!({"changeset": other, "dry_run": true})),
+                call(3, "log", json!({"max_count": 10})),
+            ],
+        )
+    })
+    .await
+    .expect("session");
+    let (conflict, err) = result(&replies[0]);
+    assert!(
+        err && conflict.to_string().to_lowercase().contains("conflict"),
+        "{conflict}"
+    );
+    let (forecast, err) = result(&replies[1]);
+    assert!(!err, "{forecast}");
+    assert_eq!(
+        (forecast["dry_run"].as_bool(), forecast["rebased"].as_bool()),
+        (Some(true), Some(true))
+    );
+    let (log, _) = result(&replies[2]);
+    assert_eq!(
+        log["entries"].as_array().map(Vec::len),
+        Some(2),
+        "nothing landed: seed and theirs"
+    );
+}

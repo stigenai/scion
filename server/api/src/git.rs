@@ -140,6 +140,7 @@ impl scion_git::receive::PushBackend for PushBackend {
                         r#ref: name,
                         changeset_id: id(new),
                         fast_forward_only: true,
+                        dry_run: false,
                     },
                 ),
             )

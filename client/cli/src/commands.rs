@@ -1572,6 +1572,9 @@ pub struct LandOut {
     pub old: Option<String>,
     #[serde(skip)]
     pub up_to_date: bool,
+    /// Only what it would do (`--dry-run`): nothing landed.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1592,15 +1595,16 @@ impl Render for LandOut {
             Some(old) => format!("   {}..{}  {r} -> {r}", short(old), short(&self.tip)),
             None => format!(" * [new branch]      {r} -> {r}"),
         };
-        let rebased = if self.rebased {
-            format!(" (rebased onto the latest {r})")
-        } else {
-            String::new()
+        let rebased = match (self.rebased, self.dry_run) {
+            (true, false) => format!(" (rebased onto the latest {r})"),
+            (true, true) => format!(" (would be rebased onto the latest {r})"),
+            (false, _) => String::new(),
         };
         let mut out = format!("To {}\n{update}{rebased}", self.url);
         for r in &self.rewritten {
+            let verb = if self.dry_run { "would be" } else { "is now" };
             out.push_str(&format!(
-                "\nYour commit {} is now {}",
+                "\nYour commit {} {verb} {}",
                 short(&r.committed),
                 short(&r.landed)
             ));
@@ -1611,10 +1615,19 @@ impl Render for LandOut {
     const REPORTS: bool = true;
 }
 
-pub async fn land(ctx: &Ctx) -> Result<LandOut, CliError> {
+/// `scn land`; with `dry_run` (`-n`), only what it would do, as `git push --dry-run`.
+pub async fn land(ctx: &Ctx, dry_run: bool) -> Result<LandOut, CliError> {
     let (mut wc, client) = open_wc(ctx).await?;
     let mut old = wc.state().base.clone();
-    let landed = wc.land(&client).await?;
+    let landed = if dry_run {
+        let head = wc.state().head.clone().ok_or(scion_wc::Error::NothingToLand)?;
+        let head: scion_client::ObjectId = head
+            .parse()
+            .map_err(|_| CliError::Usage(format!("pending commit {head:?} is not an id")))?;
+        client.land_check(&wc.state().reference, &head).await?
+    } else {
+        wc.land(&client).await?
+    };
     // After a rebase the range starts where the branch was on the server, as git shows the
     // remote's previous tip: the parent of the first commit landed. Only the text needs it,
     // so a failed lookup keeps the local base
@@ -1645,6 +1658,7 @@ pub async fn land(ctx: &Ctx) -> Result<LandOut, CliError> {
         ),
         old,
         up_to_date: landed.landed.is_empty(),
+        dry_run,
     })
 }
 
@@ -2415,6 +2429,7 @@ mod tests {
             url: "http://h:7080/mono".into(),
             old: None,
             up_to_date: false,
+            dry_run: false,
         };
         assert_eq!(land.text(), "To http://h:7080/mono\n * [new branch]      main -> main");
         let land = LandOut {

@@ -321,6 +321,9 @@ enum Command {
         /// Refused: landing never rewrites a branch.
         #[arg(short, long, alias = "force-with-lease")]
         force: bool,
+        /// Only say what it would do.
+        #[arg(short = 'n', long)]
+        dry_run: bool,
     },
     #[command(hide = true)]
     Pull {
@@ -483,7 +486,11 @@ enum Command {
         global: bool,
     },
     /// Land the pending commits on the branch.
-    Land,
+    Land {
+        /// Only say what it would do (fast-forward, rebase or conflicts), as `git push --dry-run`.
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+    },
     /// Update to the branch tip, rebasing the pending commits onto it one by one.
     #[command(after_help = "Examples:\n  scn sync\n  \
         scn sync --abort    # give up a sync that stopped on conflicts: back to before it")]
@@ -1558,10 +1565,10 @@ async fn run(cli: Cli) -> ExitCode {
             ),
             json,
         ),
-        Command::Push { args, .. } => {
+        Command::Push { args, dry_run, .. } => {
             arg!(remote_and_branch(&ctx, &args));
             transitional("push", "land");
-            emit(commands::land(&ctx).await, json)
+            emit(commands::land(&ctx, dry_run).await, json)
         }
         Command::Pull { args, ff_only, .. } => {
             arg!(remote_and_branch(&ctx, &args));
@@ -1789,7 +1796,7 @@ async fn run(cli: Cli) -> ExitCode {
                 json,
             )
         }
-        Command::Land => emit(commands::land(&ctx).await, json),
+        Command::Land { dry_run } => emit(commands::land(&ctx, dry_run).await, json),
         Command::Sync { abort: false } => emit(commands::sync(&ctx).await, json),
         Command::Sync { abort: true } => emit(commands::abort_sync(&ctx).await, json),
         Command::Ls { spec } => emit(commands::ls(&ctx, spec.as_deref()).await, json),
@@ -2041,8 +2048,8 @@ fn changes_working_copy(cmd: &Command) -> bool {
         | Command::Sync { .. }
         | Command::Pull { .. }
         | Command::Rebase { .. }
-        | Command::Land
-        | Command::Push { .. }
+        | Command::Land { dry_run: false }
+        | Command::Push { dry_run: false, .. }
         | Command::Reset { .. }
         | Command::Rm { .. }
         | Command::Mv { .. }

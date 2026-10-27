@@ -200,8 +200,9 @@ fn tools() -> Vec<Value> {
         ),
         tool(
             "land",
-            "Put a commit on a branch; the server rebases it onto what others landed, and refuses on conflicts.",
-            json!({"changeset": {"type": "string"}, "branch": {"type": "string"}}),
+            "Put a commit on a branch; the server rebases it onto what others landed, and refuses on conflicts. \
+             With dry_run, only say what it would do (fast-forward, rebase, or the conflicts), landing nothing.",
+            json!({"changeset": {"type": "string"}, "branch": {"type": "string"}, "dry_run": {"type": "boolean"}}),
             &["changeset"],
         ),
     ]
@@ -312,7 +313,14 @@ async fn call(ctx: &Ctx, name: &str, args: &Value) -> Result<Value, CliError> {
             let (client, _) = query_client(ctx).await?;
             let id = required(args, "changeset")?;
             let id = client.resolve_revision(id).await?.id;
-            landed(&branch(ctx, args), &client.land(&branch(ctx, args), &id).await?)
+            let branch = branch(ctx, args);
+            if args.get("dry_run").and_then(Value::as_bool).unwrap_or(false) {
+                let mut v = landed(&branch, &client.land_check(&branch, &id).await?);
+                v["dry_run"] = json!(true);
+                v
+            } else {
+                landed(&branch, &client.land(&branch, &id).await?)
+            }
         }
         other => return Err(CliError::Usage(format!("unknown tool {other:?}"))),
     })

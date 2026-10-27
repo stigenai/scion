@@ -34,6 +34,7 @@ English | [简体中文](coming-from-git.zh-CN.md)
 | `git stash [push] [-m MSG]`, `list`, `show [-p]`, `pop`, `apply`, `drop` [`stash@{N}`] | the same | Saves every local change, new files included (git leaves those without `-u`), as a commit on the server on no branch, and puts the tree back to its commit. `pop` / `apply` merge an entry back three-way, so it also applies after `scn sync` or on another branch; they need a clean tree, and on conflicts the files get markers and the entry is kept. The list belongs to the working copy |
 | `git remote -v`, `git remote set-url origin URL` | `scn remote -v`, `scn remote set-url URL` | The server's new address, or another repository with the same commits (a fork); checked before it is saved |
 | `git push` | `scn land` | The server rebases when the branch moved |
+| `git push --dry-run` | `scn land -n` | Asks the server what the land would do now (fast-forward, a rebase, or the conflicts) and lands nothing; the ids of rebased commits it shows are provisional |
 | `git pull --rebase` | `scn sync` | Moves to the branch tip and rebases the pending commits one by one; no separate `fetch` |
 | `git rebase --abort` | `scn sync --abort` | Gives up a sync that stopped on conflicts: the working copy goes back to its commit and pending commits from before the sync |
 | `git fetch` + `git log origin/main` | `scn log main` (or `origin/main`), `scn diff HEAD main` | Commands read the server, so there is nothing to fetch; the working copy stays as it is |

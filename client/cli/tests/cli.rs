@@ -276,6 +276,20 @@ async fn land_reports_the_server_rebase() {
             .expect("id")
             .to_owned();
         assert_eq!(sb(&["status", "-sb"]), "## main [ahead 1, behind 1]\n");
+        // --dry-run says it would be rebased, and changes nothing
+        let out = sb(&["land", "--dry-run"]);
+        assert!(
+            out.contains(" main -> main (would be rebased onto the latest main)\nYour commit "),
+            "{out}"
+        );
+        assert!(out.contains(" would be "), "{out}");
+        let v = json_of(&scn_in(&second, &["land", "-n", "--json"]));
+        assert_eq!(
+            (v["dry_run"].as_bool(), v["rebased"].as_bool()),
+            (Some(true), Some(true))
+        );
+        assert_eq!(head_now(&second), committed, "still pending");
+        assert_eq!(sb(&["status", "-sb"]), "## main [ahead 1, behind 1]\n");
         let out = scn_in(&second, &["land"]);
         assert!(out.status.success(), "{out:?}");
         let landed = head_now(&second);

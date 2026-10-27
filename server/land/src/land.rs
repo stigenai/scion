@@ -157,6 +157,17 @@ impl Lander {
         Err(LandError::Contention)
     }
 
+    /// What [`Lander::land`] would do, without doing it: see [`check_land`].
+    pub async fn check(
+        &self,
+        repo: &str,
+        reference: &str,
+        tip: ObjectId,
+        fast_forward_only: bool,
+    ) -> Result<LandOutcome> {
+        check_land(&self.writer, self.opts, repo, reference, tip, fast_forward_only).await
+    }
+
     /// 查询请求结果（GetLandStatus）：成功合入过返回结果，否则（未收到、进行中、失败或已过期）为 `None`。
     pub async fn status(&self, repo: &str, request_id: &str) -> Result<Option<LandOutcome>> {
         match self.writer.meta().get_idempotency(repo, request_id).await? {
@@ -189,6 +200,51 @@ pub(crate) fn backoff(attempt: u32) -> Duration {
         .map(|d| u64::from(d.subsec_nanos()))
         .unwrap_or(0);
     Duration::from_micros(cap_us / 2 + nanos % (cap_us / 2 + 1))
+}
+
+/// What landing `tip` on `reference` would do now, without writing anything: the commits it would
+/// add (rebased ones with the ids they would get) and the version the ref would have. Fails as
+/// the land would: [`LandError::Conflict`] when the rebase conflicts, not a fast-forward with
+/// `fast_forward_only`, and so on. Someone else may land in between, so it is a forecast.
+pub async fn check_land(
+    writer: &ChangesetWriter,
+    opts: StackOptions,
+    repo: &str,
+    reference: &str,
+    tip: ObjectId,
+    fast_forward_only: bool,
+) -> Result<LandOutcome> {
+    validate_ref_name(reference)?;
+    if crate::is_tag(reference) {
+        return Err(LandError::TagImmutable(reference.to_owned()));
+    }
+    let meta = writer.meta().as_ref();
+    if !meta.repo_exists(repo).await? {
+        return Err(LandError::RepoNotFound(repo.to_owned()));
+    }
+    let opts = StackOptions {
+        fast_forward_only,
+        ..opts
+    };
+    let head = meta.get_ref(repo, reference).await?;
+    let mut batch = Batch::new(writer, repo, reference, head.map(|h| h.target)).await?;
+    let prepared = batch.add(tip, opts).await?;
+    let state = match head {
+        Some(h) if prepared.landed.is_empty() => h,
+        Some(h) => RefState {
+            target: prepared.tip,
+            version: h.version.saturating_add(1),
+        },
+        None => RefState {
+            target: prepared.tip,
+            version: 1,
+        },
+    };
+    Ok(LandOutcome {
+        state,
+        landed: prepared.landed,
+        previously_landed: prepared.previously_landed,
+    })
 }
 
 #[cfg(test)]
