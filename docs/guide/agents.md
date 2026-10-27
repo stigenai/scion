@@ -43,3 +43,15 @@ scn workspace remove ../agent-1
 ```
 
 The new working copy takes every file this one has unchanged by copying it, which on APFS (macOS), Btrfs and XFS is a copy-on-write clone that costs neither time nor disk space, and fetches only the files that differ. It is ready in about the time it takes to list the files. Each is a full working copy with its own branch and pending commits; they land on the server like any other, so two of them on one branch are rebased onto each other there.
+
+## Undo: go back after a mistake
+
+Every command that changes a working copy (commit, restore, clean, sync, switch, merge, stash, land…) is logged first with what the working copy was, local changes included. An agent that went wrong goes back without knowing which command did it:
+
+```sh
+scn undo               # before the last command; again: redo
+scn op log             # the last 100, newest first
+scn op restore 12      # before operation 12
+```
+
+Going back makes the working tree that commit's files plus the local changes it had, and the state (branch, pending commits, a conflict in progress) what it was. Undo is itself logged. What a land put on the server stays there; `scn revert` undoes it on the branch.

@@ -16,6 +16,9 @@ pub enum Error {
     NotAWorkspace(PathBuf),
     #[error("{0} has local changes or commits not landed; land or drop them first, or pass --force")]
     WorkspaceInUse(PathBuf),
+    /// `scn undo` with nothing in the log, or `scn op restore` of an id it does not have.
+    #[error("{}", match .0 { Some(id) => format!("no operation {id} in the log (see scn op log)"), None => "nothing to undo".to_owned() })]
+    NoOperation(Option<u64>),
     /// A path the working copy refuses to write: it names the working copy's own metadata
     /// (`.scion`, `.git`), is not a plain relative path, or leads through a symbolic link.
     #[error("refusing to write {path}: {reason}")]

@@ -10,6 +10,7 @@ mod daemon;
 mod history;
 mod login;
 mod mcp;
+mod oplog;
 mod orgs;
 mod output;
 mod progress;
@@ -585,6 +586,15 @@ enum Command {
         #[arg(last = true, value_name = "PATH")]
         paths: Vec<String>,
     },
+    /// Undo the last command that changed the working copy, local changes included (again: redo).
+    #[command(
+        after_help = "Every command that changes the working copy is logged first; `scn op log` lists them \
+        and `scn op restore ID` goes back before any of them. Commits a land put on the server stay there."
+    )]
+    Undo,
+    /// The working copy's operation log.
+    #[command(subcommand)]
+    Op(OpCmd),
     /// Serve the repository to an agent over MCP (stdio): read, search, history and commits on the
     /// server at any revision, with no checkout.
     #[command(
@@ -1008,6 +1018,21 @@ pub(crate) enum WorkspaceCmd {
 }
 
 #[derive(Debug, Subcommand)]
+pub(crate) enum OpCmd {
+    /// The commands that changed the working copy, newest first.
+    Log {
+        /// At most this many.
+        #[arg(short = 'n', long = "max-count", value_name = "N", default_value_t = 20)]
+        max_count: usize,
+    },
+    /// Put the working copy back as it was before operation ID.
+    Restore {
+        /// The operation, from `scn op log`.
+        id: u64,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub(crate) enum SparseCmd {
     /// List the directories in the checkout.
     Ls,
@@ -1222,8 +1247,16 @@ async fn run(cli: Cli) -> ExitCode {
     if let Some(r) = &cli.repo {
         ctx.repo = Some(arg!(ctx.named_repo_arg(r)));
     }
-    match cli.command {
+    let op = if changes_working_copy(&cli.command) {
+        oplog::begin(&ctx)
+    } else {
+        None
+    };
+    let code = match cli.command {
         Command::Version => emit(Ok(version_out()), json),
+        Command::Undo => emit(oplog::restore(&ctx, None).await, json),
+        Command::Op(OpCmd::Log { max_count }) => emit(oplog::log(&ctx, max_count), json),
+        Command::Op(OpCmd::Restore { id }) => emit(oplog::restore(&ctx, Some(id)).await, json),
         Command::Doctor { server } => {
             if let Some(s) = server {
                 arg!(ctx.server_arg(&s));
@@ -1988,6 +2021,37 @@ async fn run(cli: Cli) -> ExitCode {
             }
             other => emit(other, json),
         },
+    };
+    oplog::finish(op);
+    code
+}
+
+/// Whether `cmd` can change the working copy, so the operation log keeps what it was first.
+fn changes_working_copy(cmd: &Command) -> bool {
+    match cmd {
+        Command::Commit { .. }
+        | Command::Uncommit
+        | Command::Restore { .. }
+        | Command::Resolve { .. }
+        | Command::Switch { .. }
+        | Command::Checkout { .. }
+        | Command::Merge { .. }
+        | Command::Revert { .. }
+        | Command::CherryPick { .. }
+        | Command::Sync { .. }
+        | Command::Pull { .. }
+        | Command::Rebase { .. }
+        | Command::Land
+        | Command::Push { .. }
+        | Command::Reset { .. }
+        | Command::Rm { .. }
+        | Command::Mv { .. }
+        | Command::Undo
+        | Command::Op(OpCmd::Restore { .. }) => true,
+        Command::Stash { cmd, .. } => !matches!(cmd, Some(StashCmd::List | StashCmd::Show { .. })),
+        Command::Clean { dry_run, .. } => !dry_run,
+        Command::Sparse(c) => !matches!(c, SparseCmd::Ls),
+        _ => false,
     }
 }
 
@@ -2014,6 +2078,8 @@ Work on a change:
   clean      Remove untracked files
   stash      Put local changes aside and bring them back
   resolve    Mark conflicts resolved, or take one side
+  undo       Undo the last command that changed the working copy
+  op         The log of those commands, to go back before any of them
 
 Share and update:
   land       Land the pending commits on the branch (git push)

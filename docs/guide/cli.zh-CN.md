@@ -56,6 +56,7 @@ scn log main                        # 服务端的分支，包括上次 sync 之
 scn log --follow -- docs/guide.md   # 跨越重命名查看一个文件的历史，与 git 相同
 scn reflog main                     # 分支的移动记录：新建、快进（合入）或强制移动，以及时间和操作人
 scn grep -n TODO -- src             # 与 git grep 相同，搜索工作区；给出 REV 时在服务端搜索那个提交
+scn undo                            # 撤销上一个改变了工作副本的命令（scn op log 列出这些命令）
 scn workspace add ../agent-2        # 几秒内再开一个工作副本，在分支 agent-2 上（相当于 git worktree）
 scn mcp --repo URL                  # 通过 MCP 把仓库提供给 agent，不需要检出（见 agents.zh-CN.md）
 scn watch                           # 跟踪服务端的分支：每合入一个提交打印一行（agent 用 --json）

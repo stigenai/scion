@@ -8,6 +8,7 @@
 mod error;
 mod fsutil;
 mod merge;
+mod oplog;
 mod sparse;
 mod state;
 mod workspace;
@@ -21,6 +22,7 @@ use scion_object::{EntryMode, ObjectId, Tree};
 
 pub use error::{Error, Result};
 pub use merge::{ConflictKind, MergeConflict};
+pub use oplog::{Operation, SavedChange};
 pub use sparse::Sparse;
 pub use state::{
     ConflictState, DirState, FileRecord, Mode, Pending, Pick, PickKind, Sides, StashEntry, State, Version,
