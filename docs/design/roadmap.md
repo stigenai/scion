@@ -36,7 +36,7 @@ Legend: 🔵 has an initial design, ⚪ idea only.
 
 ### 1.2 File-watcher status 🔵
 - **What**: the daemon watches the working copy (inotify / fanotify on Linux, FSEvents on macOS), and `scn status` reads the change list instead of walking the tree.
-- **Why it waits**: the stat cache is fast enough up to tens of thousands of files. `status` on this repository takes no measurable time.
+- **Why it waits**: the stat cache is fast enough up to tens of thousands of files. Measured on an M-series Mac mini (2026-10): `status` takes 82 ms on a 50,000-file working copy (88 ms with one change), about 165 ms projected at 100,000; on this repository it takes no measurable time.
 - **Start when**: a checkout scope has more than about 100,000 files, or `status` takes more than 200 ms.
 - **Design points**:
   - If the watcher loses events (queue overflow, daemon restart), fall back to a full scan.
