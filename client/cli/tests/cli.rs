@@ -967,6 +967,23 @@ async fn log_follow_crosses_renames() {
         );
         std::fs::write(docs.join("new.txt"), "2\n").expect("write");
         assert_eq!(text(&docs, &["diff", "--name-only", "--", "new.txt"]), "docs/new.txt\n");
+        // -q leaves out reports of what was done, as git's -q, but not what was asked for
+        std::fs::write(docs.join("new.txt"), "3\n").expect("write");
+        let quiet = |args: &[&str]| {
+            let out = scn_in(&wc, args);
+            assert!(out.status.success(), "{out:?}");
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        assert_eq!(quiet(&["status", "-s", "-q"]), "M  docs/new.txt\n");
+        assert_eq!(quiet(&["commit", "-q", "-m", "quiet"]), "");
+        assert_eq!(quiet(&["land", "-q"]), "");
+        assert_eq!(quiet(&["sync", "-q"]), "");
+        assert_eq!(
+            quiet(&["log", "-q", "--oneline", "-n", "1"])
+                .split_once(' ')
+                .map(|x| x.1),
+            Some("quiet\n")
+        );
         let out = scn_in(&docs, &["log", "--", "../.."]);
         assert_eq!(out.status.code(), Some(2), "{out:?}");
         let out = scn_in(&wc, &["log", "--follow"]);

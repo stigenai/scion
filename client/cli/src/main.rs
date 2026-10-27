@@ -45,7 +45,8 @@ struct Cli {
     /// Print JSON (with a schema field) for agents and scripts.
     #[arg(long, global = true, help_heading = "Global options")]
     json: bool,
-    /// No progress or notes on standard error (errors are still printed).
+    /// No progress or notes on standard error, and, as git's -q, no report of what a command did
+    /// (`[main c1…] subject`); what a command shows (log, status, diff…) and errors are still printed.
     #[arg(short, long, global = true, help_heading = "Global options")]
     quiet: bool,
     #[command(subcommand)]
@@ -1102,9 +1103,15 @@ fn one_path(flag: Option<String>, rest: Vec<String>) -> Result<Option<String>, C
     }
 }
 
+/// `--quiet`, for [`emit`].
+static QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn emit<T: Render>(v: Result<T, CliError>, json: bool) -> ExitCode {
     match v {
         Ok(v) => {
+            if !json && v.reports() && QUIET.load(std::sync::atomic::Ordering::Relaxed) {
+                return ExitCode::SUCCESS;
+            }
             // Like git, commands with nothing to say print nothing
             let text = render(&v, json);
             if !text.is_empty() {
@@ -1148,6 +1155,7 @@ async fn run(cli: Cli) -> ExitCode {
         }
     };
     let json = cli.json;
+    QUIET.store(cli.quiet, std::sync::atomic::Ordering::Relaxed);
     let mut ctx = Ctx {
         endpoint: cli.endpoint.clone(),
         repo: None,

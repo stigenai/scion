@@ -227,6 +227,8 @@ impl Render for BranchChangeOut {
             _ => String::new(),
         }
     }
+
+    const REPORTS: bool = true;
 }
 
 fn short(id: &str) -> &str {
@@ -366,6 +368,8 @@ impl Render for TagChangeOut {
             _ => String::new(),
         }
     }
+
+    const REPORTS: bool = true;
 }
 
 pub async fn tags(ctx: &Ctx, notes: bool) -> Result<TagListOut, CliError> {

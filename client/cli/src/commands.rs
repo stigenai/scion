@@ -226,6 +226,8 @@ impl Render for CloneOut {
     fn text(&self) -> String {
         String::new()
     }
+
+    const REPORTS: bool = true;
 }
 
 /// 默认目录名：仓库名的最后一段。
@@ -659,6 +661,8 @@ impl Render for ResolveOut {
             format!("still conflicted: {}", self.remaining.join(", "))
         }
     }
+
+    const REPORTS: bool = true;
 }
 
 /// `scn resolve`: paths are relative to the current directory; none lists the conflicts.
@@ -703,6 +707,8 @@ impl Render for AbortOut {
     fn text(&self) -> String {
         String::new()
     }
+
+    const REPORTS: bool = true;
 }
 
 pub async fn abort_merge(ctx: &Ctx) -> Result<AbortOut, CliError> {
@@ -782,6 +788,8 @@ impl Render for CommitOut {
         }
         s
     }
+
+    const REPORTS: bool = true;
 }
 
 /// Lines are counted only for commits up to this many files, whose old versions (fetched in one
@@ -874,6 +882,8 @@ impl Render for UncommitOut {
             short(&self.changeset)
         )
     }
+
+    const REPORTS: bool = true;
 }
 
 pub async fn uncommit(ctx: &Ctx) -> Result<UncommitOut, CliError> {
@@ -905,6 +915,8 @@ impl Render for RestoreOut {
             self.kept_added.join(", ")
         )
     }
+
+    const REPORTS: bool = true;
 }
 
 #[derive(Debug, Serialize)]
@@ -949,6 +961,10 @@ impl Render for StashOut {
             (StashAction::Push, true) => "No local changes to save".to_owned(),
             _ => self.entries.iter().map(line).collect::<Vec<_>>().join("\n"),
         }
+    }
+
+    fn reports(&self) -> bool {
+        !matches!(self.action, StashAction::List)
     }
 }
 
@@ -1071,6 +1087,10 @@ impl Render for CleanOut {
             .collect::<Vec<_>>()
             .join("\n")
     }
+
+    fn reports(&self) -> bool {
+        !self.dry_run
+    }
 }
 
 /// `scn clean`: untracked files (with `ignored`, ignored ones too) under `paths`, relative to the
@@ -1171,6 +1191,8 @@ impl Render for SwitchOut {
             format!("Switched to branch '{}'", self.reference)
         }
     }
+
+    const REPORTS: bool = true;
 }
 
 pub async fn switch(ctx: &Ctx, reference: &str, create: bool) -> Result<SwitchOut, CliError> {
@@ -1227,6 +1249,8 @@ impl Render for MergeOut {
             if n == 1 { "" } else { "s" }
         )
     }
+
+    const REPORTS: bool = true;
 }
 
 pub async fn merge(ctx: &Ctx, other: &str, message: Option<&str>, author: Option<&str>) -> Result<MergeOut, CliError> {
@@ -1303,6 +1327,8 @@ impl Render for PickOut {
             if n == 1 { "" } else { "s" }
         )
     }
+
+    const REPORTS: bool = true;
 }
 
 /// The parent a revert or cherry-pick compares `commit` with: its only parent, or for a merge
@@ -1581,6 +1607,8 @@ impl Render for LandOut {
         }
         out
     }
+
+    const REPORTS: bool = true;
 }
 
 pub async fn land(ctx: &Ctx) -> Result<LandOut, CliError> {
@@ -1652,6 +1680,8 @@ impl Render for SyncOut {
             _ => format!("{updating}Fast-forward\n{stat}"),
         }
     }
+
+    const REPORTS: bool = true;
 }
 
 pub fn sync_out(wc: &WorkingCopy, old: Option<String>, o: &SyncOutcome) -> SyncOut {
@@ -1719,6 +1749,8 @@ impl Render for ImportOut {
         }
         s
     }
+
+    const REPORTS: bool = true;
 }
 
 /// 把本地 git 仓库的历史导入 Scion。

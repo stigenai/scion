@@ -99,7 +99,7 @@ Listing files: 18342, done.
 Receiving objects: 100% (18342/18342), 212.40 MiB | 38.12 MiB/s, done.
 ```
 
-`-q` / `--quiet` drops progress and notes; errors are still printed. `--json` prints one JSON object with a `schema` field instead, and no progress.
+`-q` / `--quiet` drops progress and notes, and, as git's `-q`, the report of what a command did (`[main c1…] subject` after a commit, `Fast-forward` after a sync); what a command shows (`log`, `status`, `diff`, lists) and errors are still printed. `--json` prints one JSON object with a `schema` field instead, and no progress.
 
 ## What a checkout will not write
 

@@ -273,6 +273,12 @@ pub fn git_conflict_kind(kind: &str) -> &str {
 /// 每个命令的输出：JSON 形式由 `Serialize` 给出，文本形式由 `text()` 给出。
 pub trait Render: Serialize {
     fn text(&self) -> String;
+    /// Whether the text only reports what the command did (`[main c1…] subject`, `Switched to
+    /// branch`), which `--quiet` leaves out as git's `-q` does, rather than what was asked for.
+    const REPORTS: bool = false;
+    fn reports(&self) -> bool {
+        Self::REPORTS
+    }
 }
 
 pub fn render<T: Render>(v: &T, json: bool) -> String {

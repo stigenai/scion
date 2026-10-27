@@ -39,6 +39,8 @@ impl Render for LoginOut {
             self.endpoint, self.subject, self.stored_in
         )
     }
+
+    const REPORTS: bool = true;
 }
 
 /// 直接连接服务端（不经 daemon，登录本身不需要缓存）。
@@ -132,6 +134,8 @@ impl Render for LogoutOut {
             format!("no saved credentials for {}", self.endpoint)
         }
     }
+
+    const REPORTS: bool = true;
 }
 
 pub fn logout(ctx: &Ctx) -> Result<LogoutOut, CliError> {

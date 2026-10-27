@@ -126,6 +126,8 @@ impl Render for OrgChangeOut {
             _ => format!("removed {subject} from {org}"),
         }
     }
+
+    const REPORTS: bool = true;
 }
 
 fn change(org: &str, action: &'static str) -> OrgChangeOut {

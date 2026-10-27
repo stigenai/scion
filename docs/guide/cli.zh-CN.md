@@ -99,7 +99,7 @@ Listing files: 18342, done.
 Receiving objects: 100% (18342/18342), 212.40 MiB | 38.12 MiB/s, done.
 ```
 
-`-q` / `--quiet` 关掉进度和提示，错误照常输出。`--json` 改为输出一个带 `schema` 字段的 JSON 对象，不显示进度。
+`-q` / `--quiet` 关掉进度和提示，并且与 git 的 `-q` 一样，不输出命令做了什么的报告（commit 之后的 `[main c1…] 标题`、sync 之后的 `Fast-forward`）；命令本身要显示的内容（`log`、`status`、`diff`、各种列表）和错误照常输出。`--json` 改为输出一个带 `schema` 字段的 JSON 对象，不显示进度。
 
 ## 检出不会写入的路径
 

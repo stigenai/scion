@@ -153,6 +153,8 @@ impl Render for DaemonStopOut {
             _ => "daemon was not running".to_string(),
         }
     }
+
+    const REPORTS: bool = true;
 }
 
 /// 发送 SIGTERM 并等待 socket 消失。
