@@ -133,61 +133,20 @@ With an OIDC provider or a GitHub OAuth app configured, people sign in with `scn
 
 ## Status
 
-### Working copy
-
-- [x] Clone, status, diff, commit (a subset of paths, or `--amend`), restore, clean, stash
-- [x] Pending commits stack; `land` publishes them and the server rebases when the branch has moved
-- [x] `sync` rebases each pending commit; conflicts get markers, then `resolve` or `--abort`
-- [x] Branches: `switch`, `merge`, detached checkout; revert and cherry-pick
-- [x] Lightweight and annotated tags
-- [x] `.gitignore` and `.scionignore`
-- [x] Sparse checkout (`clone --sparse`, `sparse add|rm|set|disable`)
-- [x] Another working copy in seconds (`workspace`, git's worktree)
-- [x] Undo of local commands (`undo`, `op log`, `op restore`)
-- [x] `import git`, keeping authors, timestamps, git SHAs and annotated tags
-
-### History, without a clone
-
-- [x] `log`, `show`, `blame`, `grep`, `reflog`; `log --follow` across renames
-- [x] `cat` and `ls` of any revision; archives (tar.gz, zip, tar)
-- [x] Last commit of each directory entry, and directory statistics
-- [x] A git SHA on every commit
-
 ### Server
 
-- [x] Exactly-once lands, batched when several arrive together; `GetLandStatus` after a timeout
-- [x] Repositories: create, list, update, fork, soft-delete and restore; branches and organizations
-- [x] Lite (SQLite and a directory) and Standard (PostgreSQL and S3: MinIO, SeaweedFS, AWS)
-- [x] Packs, deltas, `admin repack`, and repack on a schedule
-- [x] Stateless nodes behind a load balancer; regional cache (`scion cache`) and a local daemon (`scn daemon`)
-- [x] Tokens, OIDC device login, GitHub OAuth; ACLs by repository, ref and path; external issuers and an authorization webhook
-- [x] Redaction and purge; `admin fsck`
-- [x] Ref events (poll, HMAC webhook, NATS) and a pre-land check
-- [x] Prometheus metrics, OpenTelemetry tracing, per-caller rate and concurrency limits
-- [x] Install script (systemd or launchd), Linux and macOS release binaries, Docker images for amd64 and arm64
+- ✅ Lands rebase on the server, exactly once, and batch when several arrive together
+- ✅ Repos, branches, organizations, fork; SQLite or PostgreSQL; a directory or S3; packs and repack
+- ✅ Clusters and a regional cache; tokens, OIDC, GitHub login, ACLs; redaction, events, pre-land checks, metrics
+- ✅ `git clone`, `fetch` and `push` on the same URL, including shallow and partial clones
+- [ ] YugabyteDB and Helm; Git over SSH; server-side import and native large files; the starhub adapter
 
-### Git clients
+### Client
 
-- [x] `git clone`, `fetch` and `push` over smart HTTP on the same URL as `scn` (protocol v0 and v2)
-- [x] Shallow clones and partial clones (`blob:none`, `blob:limit`)
-- [x] Fast-forward push; create, move and delete branches and tags; signed commits keep their SHA
-
-### Agents
-
-- [x] `scn mcp`: read, search, walk history and land with no checkout
-- [x] `scn watch`: one line per land
-- [x] Several agents on one branch: the server rebases; a land that touches the same lines is refused
-
-### Still open
-
-- [ ] YugabyteDB, and moving metadata between SQLite, PostgreSQL and YugabyteDB
-- [ ] Helm chart and chaos tests
-- [ ] Git over SSH, `git push --atomic`, submodules
-- [ ] A virtual checkout, and status from a file watcher
-- [ ] Server-side git import; native large-file storage
-- [ ] The starhub-server adapter (the Scion-side APIs are in place); CSGLite embedding the Lite tier
-- [ ] Windows builds
-- [ ] Interactive rebase, `add -p`, bisect, signed tags
+- ✅ Commit, amend, stash, sync, merge, resolve, revert, cherry-pick, tags, sparse checkout, workspaces, undo
+- ✅ Log, blame, grep, reflog and archives with no clone; `import git` keeps git SHAs
+- ✅ A local daemon, MCP, and `watch`
+- [ ] A virtual checkout and file-watcher status; Windows; interactive rebase, bisect, signed tags
 
 Details: [milestones](docs/design/milestones.md) · [roadmap](docs/design/roadmap.md)
 

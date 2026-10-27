@@ -133,61 +133,20 @@ docker exec scion scion admin token create --subject admin --group admins
 
 ## 进度
 
-### 工作区
+### Server
 
-- [x] 克隆、status、diff、提交（可只提交部分路径，或 `--amend`）、restore、clean、stash
-- [x] 多次提交叠成待合入的栈；`land` 一次发布；分支已前进时由服务端 rebase
-- [x] `sync` 逐个 rebase 待合入的提交；冲突写入标记，然后 `resolve` 或 `--abort`
-- [x] 分支：`switch`、`merge`、游离检出；revert 与 cherry-pick
-- [x] 轻量标签和附注标签
-- [x] `.gitignore` 与 `.scionignore`
-- [x] 稀疏检出（`clone --sparse`，`sparse add|rm|set|disable`）
-- [x] 几秒再建一个工作区（`workspace`，即 git worktree）
-- [x] 撤销本地命令（`undo`、`op log`、`op restore`）
-- [x] `import git`，保留作者、时间、git SHA 和附注标签
+- ✅ 合入时在服务端 rebase，恰好一次，同时到达的合入合成一批
+- ✅ 仓库、分支、组织、fork；SQLite 或 PostgreSQL；本地目录或 S3；pack 与 repack
+- ✅ 多节点与区域缓存；令牌、OIDC、GitHub 登录与 ACL；redaction、事件、合入前检查、指标
+- ✅ 同一 URL 上的 `git clone`、`fetch`、`push`，含浅克隆和部分克隆
+- [ ] YugabyteDB 与 Helm；Git over SSH；服务端导入与原生大文件；starhub 适配
 
-### 历史查询，不用克隆
+### Client
 
-- [x] `log`、`show`、`blame`、`grep`、`reflog`；`log --follow` 跨重命名
-- [x] 任意版本的 `cat` 与 `ls`；打包下载（tar.gz、zip、tar）
-- [x] 目录里每个条目的最后一次提交，以及目录统计
-- [x] 每个提交都有 git SHA
-
-### 服务端
-
-- [x] 恰好一次合入；同时到达的合入合成一批；超时后用 `GetLandStatus` 查询
-- [x] 仓库：创建、列出、修改、fork、软删除与恢复；分支与组织
-- [x] Lite（SQLite + 本地目录）和 Standard（PostgreSQL + S3：MinIO、SeaweedFS、AWS）
-- [x] pack、delta、`admin repack`，以及按间隔自动 repack
-- [x] 负载均衡后面的无状态节点；区域缓存（`scion cache`）和本机 daemon（`scn daemon`）
-- [x] 令牌、OIDC 设备流登录、GitHub OAuth；按仓库、ref、路径的 ACL；外部身份源和授权回调
-- [x] redaction 与清除；`admin fsck`
-- [x] ref 事件（轮询、HMAC webhook、NATS）和合入前检查
-- [x] Prometheus 指标、OpenTelemetry 追踪、按调用方的速率和并发限制
-- [x] 安装脚本（systemd 或 launchd）、Linux 与 macOS 发布包、amd64 与 arm64 的 Docker 镜像
-
-### git 客户端
-
-- [x] 与 `scn` 同一个 URL 上的 smart HTTP：`git clone`、`fetch`、`push`（协议 v0 和 v2）
-- [x] 浅克隆和部分克隆（`blob:none`、`blob:limit`）
-- [x] 只快进的推送；创建、移动、删除分支和标签；带签名的提交保持原 SHA
-
-### Agent
-
-- [x] `scn mcp`：不检出即可读文件、搜索、查历史并合入
-- [x] `scn watch`：每次合入一行
-- [x] 多个 agent 共用一个分支：服务端 rebase；改到同一行则拒绝这次合入
-
-### 尚未完成
-
-- [ ] YugabyteDB，以及在 SQLite、PostgreSQL、YugabyteDB 之间迁移元数据
-- [ ] Helm chart 和混沌测试
-- [ ] Git over SSH、`git push --atomic`、子模块
-- [ ] 虚拟文件系统检出，以及用文件监视做 status
-- [ ] 服务端执行的 git 导入；原生大文件存储
-- [ ] starhub-server 适配（Scion 侧接口已经就位）；CSGLite 嵌入 Lite
-- [ ] Windows 构建
-- [ ] 交互式 rebase、`add -p`、bisect、签名标签
+- ✅ 提交、amend、stash、sync、merge、resolve、revert、cherry-pick、标签、稀疏检出、多工作区、撤销
+- ✅ 不用克隆即可 log、blame、grep、reflog 和打包下载；`import git` 保留 git SHA
+- ✅ 本机 daemon、MCP、`watch`
+- [ ] 虚拟文件系统检出与文件监视 status；Windows；交互式 rebase、bisect、签名标签
 
 详见：[里程碑](docs/design/milestones.md) · [路线图](docs/design/roadmap.md)
 
