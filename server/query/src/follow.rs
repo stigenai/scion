@@ -26,12 +26,15 @@ const MAX_FILES: usize = 100_000;
 
 /// The path `path` had before commit `cs` when `cs` renamed or copied it there; `None` when `cs`
 /// did not add `path` or no file matches.
+/// With `copies`, also a file of the parent that stays (git's `--follow`); without, renames only
+/// (git blame).
 pub(crate) async fn renamed_from(
     g: &mut Graph<'_>,
     blobs: &dyn BlobStore,
     cs: ObjectId,
     changeset: &Changeset,
     path: &str,
+    copies: bool,
 ) -> Result<Option<String>> {
     let Some((new_id, new_size)) = changeset.delta.iter().find_map(|c| match &c.op {
         FileOp::Put { id, size, .. } if c.path == path => Some((*id, *size)),
@@ -66,6 +69,9 @@ pub(crate) async fn renamed_from(
     }
     if let Some(p) = best_match(blobs, &sources, new_id, new_size).await? {
         return Ok(Some(p));
+    }
+    if !copies {
+        return Ok(None);
     }
     // Copies, as git's --follow also finds: any file of the parent, those of the same name and
     // the closest size first

@@ -21,7 +21,8 @@ service QueryService {
   // 两个版本之间的文件级差异，按路径排序分批流式返回。
   rpc Diff(DiffRequest) returns (stream DiffResponse);
   // The commit that last changed each line of a file. As in git, a line a merge brought from
-  // another parent keeps that parent's blame; only lines no parent had go to the merge commit.
+  // another parent keeps that parent's blame; only lines no parent had go to the merge commit. A
+  // renamed file keeps the blame it had under its old path.
   rpc Blame(BlameRequest) returns (BlameResponse);
   // 把 revision（ref 名、提交 id 文本或 40 位 git sha）解析为提交。
   rpc ResolveRevision(ResolveRevisionRequest) returns (ResolveRevisionResponse);

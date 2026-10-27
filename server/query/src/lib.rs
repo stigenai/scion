@@ -455,7 +455,7 @@ async fn log_with(
         }
         if let (true, Some(p), Some(e)) = (follow, path, entries.last()) {
             if e.record.id == id {
-                renamed_from = follow::renamed_from(&mut g, blobs, id, &e.changeset, p).await?;
+                renamed_from = follow::renamed_from(&mut g, blobs, id, &e.changeset, p, true).await?;
                 if renamed_from.is_some() {
                     break;
                 }

@@ -6,7 +6,9 @@
 //!
 //! Versions are found along the first-parent chain. At a merge, lines the first parent does not
 //! have but another parent does keep that parent's blame (computed the same way, and cached), as
-//! in git; only lines no parent has go to the merge commit.
+//! in git; only lines no parent has go to the merge commit. A file that a commit renamed from
+//! another path (a deleted file with the same or similar content, as git finds renames) keeps
+//! the old path's blame there.
 
 use std::collections::HashMap;
 
@@ -21,7 +23,8 @@ use crate::{Graph, QueryError, Result, on_first_parent_chain};
 pub const BLAME_KIND: &str = "blame";
 /// 2: lines are carried with an exact (LCS) diff where affordable, matching git more closely.
 /// 3: lines a merge brings from another parent keep that parent's blame.
-pub const BLAME_VERSION: u32 = 3;
+/// 4: a file renamed from another path keeps that path's blame.
+pub const BLAME_VERSION: u32 = 4;
 
 /// 某个版本文件的逐行归属。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -214,7 +217,7 @@ fn from_other_parents<'a>(
     path: &'a str,
     data: &'a [u8],
     lines: &'a mut [ObjectId],
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+) -> Boxed<'a, ()> {
     Box::pin(async move {
         let parents = g.get(merge).await?.parents.clone();
         for p in parents.iter().skip(1) {
@@ -229,6 +232,32 @@ fn from_other_parents<'a>(
             adopt(&old, &side.lines, data, lines, merge);
         }
         Ok(())
+    })
+}
+
+/// A boxed future, for the functions that recurse into [`blame`].
+type Boxed<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = Result<T>> + Send + 'a>>;
+
+/// When `cs`, which added `path`, renamed it from another path: that file's content in the first
+/// parent and its blame there. Boxed: it recurses into [`blame`].
+fn renamed<'a>(
+    meta: &'a dyn MetaStore,
+    blobs: &'a dyn BlobStore,
+    g: &'a mut Graph<'_>,
+    repo: &'a str,
+    cs: ObjectId,
+    path: &'a str,
+) -> Boxed<'a, Option<(Vec<u8>, Vec<ObjectId>)>> {
+    Box::pin(async move {
+        let Some(parent) = g.get(cs).await?.first_parent() else {
+            return Ok(None);
+        };
+        let changeset = crate::load_changeset(blobs, cs).await?;
+        let Some(old) = crate::follow::renamed_from(g, blobs, cs, &changeset, path, false).await? else {
+            return Ok(None);
+        };
+        let before = blame(meta, blobs, repo, parent, &old).await?;
+        Ok(Some((content(blobs, &before.blob).await?, before.lines)))
     })
 }
 
@@ -450,7 +479,10 @@ pub async fn blame(
     let mut lines = match base {
         Some(lines) => lines,
         None => {
-            let mut lines = vec![first_cs; line_count(&prev)];
+            let mut lines = match renamed(meta, blobs, &mut g, repo, first_cs, path).await? {
+                Some((old, old_lines)) => carry(&old, &old_lines, &prev, first_cs),
+                None => vec![first_cs; line_count(&prev)],
+            };
             from_other_parents(meta, blobs, &mut g, &trees, repo, first_cs, path, &prev, &mut lines).await?;
             lines
         }
@@ -700,6 +732,25 @@ pub(crate) mod tests {
         let e1 = r.commit(&[a], &[("g", Some("e"))]).await;
         let m4 = r.commit(&[later, e1, c1, d1], &[("o", Some("c\nd\nm\n"))]).await;
         assert_eq!(r.blame(m4, "o").await.expect("blame").lines, vec![c1, d1, m4]);
+    }
+
+    #[tokio::test]
+    async fn a_renamed_file_keeps_its_blame_but_a_copy_does_not() {
+        for indexed in [true, false] {
+            let mut r = Repo::with_index(indexed).await;
+            let a = r.commit(&[], &[("f.txt", Some("one\ntwo\nthree\n"))]).await;
+            let b = r.commit(&[a], &[("f.txt", Some("one\nTWO\nthree\n"))]).await;
+            let c = r
+                .commit(&[b], &[("f.txt", None), ("dir/g.txt", Some("one\nTWO\nthree\nfour\n"))])
+                .await;
+            let d = r
+                .commit(&[c], &[("dir/g.txt", Some("zero\none\nTWO\nthree\nfour\n"))])
+                .await;
+            assert_eq!(r.blame(d, "dir/g.txt").await.expect("blame").lines, vec![d, a, b, a, c]);
+            // As git blame without -C: a copy starts afresh
+            let e = r.commit(&[d], &[("copy.txt", Some("one\nTWO\nthree\n"))]).await;
+            assert_eq!(r.blame(e, "copy.txt").await.expect("blame").lines, vec![e, e, e]);
+        }
     }
 
     #[tokio::test]
