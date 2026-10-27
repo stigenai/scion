@@ -255,12 +255,12 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
+pub(crate) fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
     let bytes = std::fs::read(path).map_err(io(path))?;
     serde_json::from_slice(&bytes).map_err(|e| Error::Corrupt(format!("{}: {e}", path.display())))
 }
 
-fn write_json<T: Serialize>(path: &Path, v: &T) -> Result<()> {
+pub(crate) fn write_json<T: Serialize>(path: &Path, v: &T) -> Result<()> {
     let bytes = serde_json::to_vec_pretty(v).map_err(|e| Error::Corrupt(e.to_string()))?;
     write_atomic(path, &bytes)
 }

@@ -65,6 +65,7 @@ These work too, and print a hint naming the scn command they ran. They are not i
 | `git show REV:PATH` | `scn cat REV:PATH` | No working copy needed |
 | `git ls-tree REV DIR` | `scn ls REV:DIR` | |
 | `git sparse-checkout set DIRS` | `scn clone … --sparse DIRS`, `scn sparse set/add/rm/disable` | |
+| `git worktree add/list/remove` | `scn workspace add/list/remove` | Files the working copy has are copied, not fetched |
 | `git config user.name` / `user.email` | `scn config set user.name` / `user.email` | |
 | `git fast-import`, migrating a repository | `scn import git PATH --repo REPO` | Keeps the original SHAs |
 

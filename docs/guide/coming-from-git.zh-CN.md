@@ -21,6 +21,7 @@
 | `git init` | `scn repo create NAME` | 仓库在服务端 |
 | `git clone URL [DIR]` | `scn clone URL [DIR] [-b B]`，或 `scn --endpoint SERVER clone REPO` | `URL` 为 `http(s)://host[:port]/REPO`。下载快照，不下载历史；进入工作副本后命令不用再写地址 |
 | `git clone --sparse` + `git sparse-checkout set` | `scn clone REPO --sparse src --sparse docs`，`scn sparse set/add/rm/disable` | 按目录；也可以写 `--sparse a,b` |
+| `git worktree add PATH [BRANCH]`、`-b NEW`、`--detach`、`list`、`remove` | `scn workspace add PATH [BRANCH]`、`-b NEW`、`--detach`、`list`、`remove` | 与 git 相同，不给分支时使用以 PATH 命名的分支，不存在就在 HEAD 新建。新工作副本里，当前工作副本已有且没改过的文件直接复制（在 APFS、Btrfs、XFS 上是写时复制的克隆），只下载其余的文件；稀疏目录也相同。从其中任何一个都能列出整组；有本地改动或未合入的提交时 `remove` 会拒绝，除非加 `--force` |
 | `git status` | `scn status` | git 的长格式；`-s` 显示 `A ` / `M ` / `D `（所有改动都算已暂存），冲突是 `UU`。和 git 对比 `origin/main` 一样，会说明服务端的分支比工作副本多几个提交（`-sb`：`## main [ahead 1, behind 2]`）；这要问一次服务端，`--no-ahead-behind` 可以跳过 |
 | `git add`、`git rm`、`git mv` | 不需要 | 直接改文件 |
 | `git commit -m MSG`、`-am MSG` | `scn commit -m MSG`、`-am MSG` | 接受 `-a`，但没有作用。作者依次取 `--author`、`scn config`、git 的 `user.name` / `user.email` |

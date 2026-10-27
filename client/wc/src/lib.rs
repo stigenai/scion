@@ -10,6 +10,7 @@ mod fsutil;
 mod merge;
 mod sparse;
 mod state;
+mod workspace;
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -24,6 +25,7 @@ pub use sparse::Sparse;
 pub use state::{
     ConflictState, DirState, FileRecord, Mode, Pending, Pick, PickKind, Sides, StashEntry, State, Version,
 };
+pub use workspace::{AddedWorkspace, WorkspaceInfo};
 
 use crate::fsutil::Found;
 use crate::state::Paths;

@@ -30,3 +30,16 @@ Inside a working copy, `scn mcp` serves that working copy's repository and lands
 - **Revisions** are branch and tag names, commit ids, git SHAs and `HEAD~N`; without one, the branch.
 - **Results** are the JSON the same `scn` command prints with `--json`; a failed call returns `scn`'s error JSON (`reason`, `retryable`, `hint`) with `isError`.
 - **Agents at the same time.** Each commit names the commit it was made on (`base`, by default the branch's tip when it is made). Landing rebases it onto whatever other agents landed meanwhile, on the server, without the agent fetching anything. When two agents changed the same lines, the second land is refused with the conflict, and that agent reads the new tip and tries again.
+
+## Workspaces: a working copy per agent in seconds
+
+Agents that need files on disk (to build and run tests) each get their own working copy with `scn workspace add`, git's `git worktree add`:
+
+```sh
+scn workspace add ../agent-1            # on branch agent-1, made at HEAD
+scn workspace add ../agent-2 main       # on main
+scn workspace list
+scn workspace remove ../agent-1
+```
+
+The new working copy takes every file this one has unchanged by copying it, which on APFS (macOS), Btrfs and XFS is a copy-on-write clone that costs neither time nor disk space, and fetches only the files that differ. It is ready in about the time it takes to list the files. Each is a full working copy with its own branch and pending commits; they land on the server like any other, so two of them on one branch are rebased onto each other there.

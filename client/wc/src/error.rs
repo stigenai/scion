@@ -10,6 +10,12 @@ pub enum Error {
     NotAWorkingCopy(PathBuf),
     #[error("{0} already exists and is not empty")]
     TargetNotEmpty(PathBuf),
+    /// `scn workspace remove` of a directory that is not one of this set's (or is the one they
+    /// were made from).
+    #[error("{0} is not a workspace made from this working copy's set")]
+    NotAWorkspace(PathBuf),
+    #[error("{0} has local changes or commits not landed; land or drop them first, or pass --force")]
+    WorkspaceInUse(PathBuf),
     /// A path the working copy refuses to write: it names the working copy's own metadata
     /// (`.scion`, `.git`), is not a plain relative path, or leads through a symbolic link.
     #[error("refusing to write {path}: {reason}")]

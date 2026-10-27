@@ -420,6 +420,28 @@ pub(crate) fn create_file(root: &Path, rel: &str, mode: Mode, data: &[u8]) -> Re
     Ok(mtime_ns(&meta))
 }
 
+/// What `rel` is on disk (a regular file, an executable or a link, not followed); None when it
+/// is missing or something else.
+pub(crate) fn found(root: &Path, rel: &str) -> Option<Found> {
+    let meta = std::fs::symlink_metadata(path_of(root, rel)).ok()?;
+    Some(Found {
+        mode: mode_of(&meta)?,
+        size: meta.len(),
+        mtime_ns: mtime_ns(&meta),
+    })
+}
+
+/// Copies the regular file `rel` under `from` to the same place under `to` (whose directory
+/// exists), keeping its permissions: a copy-on-write clone where the file system can (APFS,
+/// Btrfs, XFS), so it costs neither time nor space. Returns the copy's modification time.
+pub(crate) fn copy_file(from: &Path, to: &Path, rel: &str) -> Result<u64> {
+    check_rel(rel)?;
+    let (src, dst) = (path_of(from, rel), path_of(to, rel));
+    std::fs::copy(&src, &dst).map_err(io(&dst))?;
+    let meta = std::fs::symlink_metadata(&dst).map_err(io(&dst))?;
+    Ok(mtime_ns(&meta))
+}
+
 /// 建好一组文件的全部上级目录。
 pub(crate) fn create_parents<'a>(root: &Path, rels: impl IntoIterator<Item = &'a str>) -> Result<()> {
     let mut dirs: Vec<&str> = Vec::new();

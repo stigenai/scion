@@ -30,3 +30,16 @@ claude mcp add scion -- scn mcp --repo http://scion.example.com:7080/org/app
 - **版本**可以是分支名、标签名、提交 id、git SHA 和 `HEAD~N`；不给时就是当前分支。
 - **结果**就是同一条 `scn` 命令加 `--json` 时输出的 JSON；调用失败时返回 `scn` 的错误 JSON（`reason`、`retryable`、`hint`），并标记 `isError`。
 - **多个 agent 同时工作。** 每个提交都记录它基于哪个提交（`base`，默认是生成提交时分支的最新提交）。合入时，服务端把它 rebase 到其他 agent 在这期间合入的内容之上，agent 不需要拉取任何东西。两个 agent 改了同样的行时，后合入的一方会被拒绝并收到冲突信息，它读取新的最新提交后再试一次即可。
+
+## 工作区：几秒内给每个 agent 一个工作副本
+
+需要磁盘上有文件（用来编译、跑测试）的 agent，可以用 `scn workspace add` 各开一个工作副本，相当于 git 的 `git worktree add`：
+
+```sh
+scn workspace add ../agent-1            # 在分支 agent-1 上，在 HEAD 新建
+scn workspace add ../agent-2 main       # 在 main 上
+scn workspace list
+scn workspace remove ../agent-1
+```
+
+新工作副本里，当前工作副本已有且没改过的文件都直接复制。在 APFS（macOS）、Btrfs 和 XFS 上这是写时复制的克隆，既不花时间也不占磁盘空间；只有内容不同的文件才从服务端下载。所以它准备好所需的时间，大约就是列出文件的时间。每个工作区都是完整的工作副本，有自己的分支和待合入的提交；它们和其他工作副本一样在服务端合入，所以同一分支上的两个工作区会在服务端互相 rebase。

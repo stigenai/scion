@@ -16,6 +16,7 @@ mod progress;
 mod remote;
 mod repos;
 mod watch;
+mod workspace;
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -107,6 +108,9 @@ enum Command {
     /// The directories of a sparse checkout.
     #[command(subcommand)]
     Sparse(SparseCmd),
+    /// More working copies of this repository, made in seconds from this one (git worktree).
+    #[command(subcommand, alias = "worktree")]
+    Workspace(WorkspaceCmd),
     /// Repositories: create, list, change, delete, restore, fork.
     #[command(subcommand)]
     Repo(RepoCmd),
@@ -968,6 +972,42 @@ enum BranchCmd {
 }
 
 #[derive(Debug, Subcommand)]
+pub(crate) enum WorkspaceCmd {
+    /// Make a working copy at PATH, as `git worktree add`: on BRANCH, else on the branch named
+    /// after PATH (made at HEAD if missing). Files this working copy has are copied, not fetched.
+    #[command(
+        after_help = "Examples:\n  scn workspace add ../agent-1            # branch agent-1 at HEAD\n  \
+        scn workspace add ../fix main           # branch main's tip\n  \
+        scn workspace add -b feat ../feat HEAD~2\n  scn workspace add --detach ../look v1.0"
+    )]
+    Add {
+        /// Where to make it: a directory that is missing or empty.
+        path: std::path::PathBuf,
+        /// An existing branch, or with -b the commit to start at, or with --detach the commit.
+        #[arg(value_name = "BRANCH|REV")]
+        branch: Option<String>,
+        /// Make a new branch NEW (at REV, default HEAD).
+        #[arg(short = 'b', value_name = "NEW")]
+        new_branch: Option<String>,
+        /// On no branch, at REV (default HEAD).
+        #[arg(long)]
+        detach: bool,
+    },
+    /// List the working copies made from the same one.
+    #[command(alias = "ls")]
+    List,
+    /// Delete a working copy made with `add` (refused with local changes or pending commits).
+    #[command(alias = "rm")]
+    Remove {
+        /// The working copy to delete.
+        path: std::path::PathBuf,
+        /// Even with local changes or pending commits.
+        #[arg(short, long)]
+        force: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub(crate) enum SparseCmd {
     /// List the directories in the checkout.
     Ls,
@@ -1204,6 +1244,17 @@ async fn run(cli: Cli) -> ExitCode {
             )
         }
         Command::Sparse(cmd) => emit(commands::sparse(&ctx, cmd).await, json),
+        Command::Workspace(WorkspaceCmd::Add {
+            path,
+            branch,
+            new_branch,
+            detach,
+        }) => emit(
+            workspace::add(&ctx, &path, branch.as_deref(), new_branch.as_deref(), detach).await,
+            json,
+        ),
+        Command::Workspace(WorkspaceCmd::List) => emit(workspace::list(&ctx), json),
+        Command::Workspace(WorkspaceCmd::Remove { path, force }) => emit(workspace::remove(&ctx, &path, force), json),
         Command::Remote { verbose, cmd } => match cmd {
             None => emit(
                 remote::show(
@@ -1952,6 +2003,7 @@ const COMMANDS: &str = "\
 Start a working copy:
   clone      Check out a repository into a new directory
   sparse     Choose the directories a sparse checkout has
+  workspace  More working copies of this repository, made in seconds (git worktree)
 
 Work on a change:
   status     Show local changes

@@ -62,7 +62,7 @@ impl Ctx {
     }
 
     /// 服务端地址：命令行或环境变量 > 工作副本记录 > 默认值。
-    fn endpoint_or(&self, wc: Option<&WorkingCopy>) -> String {
+    pub(crate) fn endpoint_or(&self, wc: Option<&WorkingCopy>) -> String {
         self.endpoint
             .clone()
             .or_else(|| wc.map(|w| w.state().endpoint.clone()))

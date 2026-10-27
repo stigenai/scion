@@ -65,6 +65,7 @@
 | `git show REV:PATH` | `scn cat REV:PATH` | 不需要工作副本 |
 | `git ls-tree REV DIR` | `scn ls REV:DIR` | |
 | `git sparse-checkout set DIRS` | `scn clone … --sparse DIRS`，`scn sparse set/add/rm/disable` | |
+| `git worktree add/list/remove` | `scn workspace add/list/remove` | 当前工作副本已有的文件直接复制，不从服务端下载 |
 | `git config user.name` / `user.email` | `scn config set user.name` / `user.email` | |
 | `git fast-import`、迁移仓库 | `scn import git PATH --repo REPO` | 保留原始 SHA |
 
