@@ -112,7 +112,6 @@ Packs, deltas and `scion admin repack` are done ([object storage](../guide/objec
 - **Smaller pack format**: deltas name their base by its full id (38 bytes each, 2 MB on starhub-server), and the trailer stores offsets that follow from the lengths (0.8 MB).
 - **Smaller metadata**: `path_changes` repeats each path in every row and in its index; ids for paths would save about 3 MB on starhub-server, at the cost of one more insert per write.
 - **Pack locations on large installs**: past 256 MB the table is only vacuumed after a repack, so it stays at twice its size; partition it by pack generation, or rewrite it without locking.
-- **Incremental repack**: only the objects written since the last one, appended as new packs.
 
 ### 2.10 Caching and multiple regions ⚪
 - **Cold-ref detection**: stop warming and prefetching refs nobody reads.

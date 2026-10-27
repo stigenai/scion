@@ -25,6 +25,9 @@ pub struct RepackOptions {
     pub prune_after: Duration,
     /// Only report what would be repacked.
     pub dry_run: bool,
+    /// Only what was written since the last repack, into new packs; older objects stay where
+    /// they are (a full repack later stores their older versions as deltas).
+    pub incremental: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -59,6 +62,50 @@ impl RepackReport {
         ));
         out
     }
+}
+
+/// For an incremental repack: the objects of `new` in order, walking only the commits among them
+/// (newest first, with their parents' trees to pair versions); objects of `new` they do not
+/// reach follow without a base. A tree that is not new has no new objects below it.
+pub async fn plan_new(
+    meta: &dyn MetaStore,
+    blobs: &dyn BlobStore,
+    repos: &[String],
+    new: &HashSet<ObjectId>,
+) -> anyhow::Result<(Vec<RepackItem>, usize)> {
+    let mut walk = Walk {
+        only: Some(new.clone()),
+        ..Walk::default()
+    };
+    let mut changesets = 0;
+    for repo in repos {
+        let mut records: Vec<_> = scion_query::all_records(meta, repo, 4096)
+            .await?
+            .into_iter()
+            .filter(|r| new.contains(&r.id))
+            .collect();
+        records.sort_by(|a, b| b.generation.cmp(&a.generation).then(a.id.cmp(&b.id)));
+        for rec in &records {
+            changesets += 1;
+            walk.emit(rec.id);
+            let mut parents = Vec::new();
+            for p in &rec.parents {
+                if let Some(r) = meta.get_changeset(repo, p).await? {
+                    parents.push(r.root_tree);
+                }
+            }
+            walk.trees(blobs, rec.root_tree, parents.first().copied()).await?;
+            for root in parents.iter().skip(1) {
+                walk.trees(blobs, rec.root_tree, Some(*root)).await?;
+            }
+        }
+    }
+    let mut rest: Vec<ObjectId> = new.iter().filter(|id| !walk.emitted.contains(id)).copied().collect();
+    rest.sort();
+    for id in rest {
+        walk.emit(id);
+    }
+    Ok((walk.items, changesets))
 }
 
 /// The objects to repack, in order: each repository's commits newest first, each object with the
@@ -100,11 +147,13 @@ struct Walk {
     /// Tree pairs compared already. A tree reached again (a merge has the same tree as its
     /// branch's last commit) is still compared with each new parent version.
     compared: HashSet<(ObjectId, Option<ObjectId>)>,
+    /// Incremental: only these objects are emitted, and trees outside them are not entered.
+    only: Option<HashSet<ObjectId>>,
 }
 
 impl Walk {
     fn emit(&mut self, id: ObjectId) -> bool {
-        if !self.emitted.insert(id) {
+        if self.only.as_ref().is_some_and(|o| !o.contains(&id)) || !self.emitted.insert(id) {
             return false;
         }
         self.items.push(RepackItem {
@@ -133,6 +182,10 @@ impl Walk {
             }
             if let Some(o) = old {
                 self.pair(o, new);
+            }
+            // Below a tree that is not new, nothing is
+            if self.only.as_ref().is_some_and(|o| !o.contains(&new)) {
+                continue;
             }
             if !self.emit(new) && old.is_none() {
                 continue;
@@ -180,7 +233,14 @@ pub async fn repack(
     } else {
         opts.repos.clone()
     };
-    let (items, changesets) = plan(meta.as_ref(), objects, &repos).await?;
+    let started = std::time::SystemTime::now();
+    let last = objects.last_repack().await?;
+    let (items, changesets) = if opts.incremental {
+        let new: HashSet<ObjectId> = objects.new_objects(last.as_ref()).await?.into_iter().collect();
+        plan_new(meta.as_ref(), objects, &repos, &new).await?
+    } else {
+        plan(meta.as_ref(), objects, &repos).await?
+    };
     let mut report = RepackReport {
         repos: repos.len(),
         changesets,
@@ -193,9 +253,22 @@ pub async fn repack(
     }
     report.repack = objects.repack(&items).await?;
     report.prune = objects.prune(opts.prune_after).await?;
-    meta.compact_after_repack().await?;
-    // What the automatic repack measures new writes from
-    objects.mark_repacked().await?;
+    if !opts.incremental {
+        meta.compact_after_repack().await?;
+    }
+    // What the next repack measures new writes from
+    let full = if opts.incremental {
+        last.and_then(|m| m.full)
+    } else {
+        Some(started)
+    };
+    objects
+        .mark_repacked(&scion_store_blob::RepackMarker {
+            started,
+            full,
+            packs: report.repack.written.iter().copied().collect(),
+        })
+        .await?;
     Ok(report)
 }
 
@@ -276,32 +349,26 @@ mod tests {
         assert_eq!(base[&main.root_tree], Some(merge.root_tree));
     }
 
-    /// Many versions of a few files, committed into a packed local store, then repacked.
-    #[tokio::test]
-    async fn repack_end_to_end_keeps_every_version_readable() {
+    /// Commits versions `ns` of a few files on top of `parent`, each a 300-line file with line n
+    /// changed.
+    async fn add_versions(
+        store: &scion_store::MemStore,
+        blobs: &Arc<dyn BlobStore>,
+        writer: &scion_land::ChangesetWriter,
+        parent: &mut Vec<ObjectId>,
+        versions: &mut Vec<(ObjectId, bytes::Bytes)>,
+        ns: std::ops::Range<u8>,
+    ) {
         use bytes::Bytes;
         use scion_object::{Changeset, FileChange, Signature};
-        use scion_store::{IndexedObject, MemStore};
-        let dir = tempfile::tempdir().expect("tempdir");
-        let store = Arc::new(MemStore::new());
-        let meta: Arc<dyn MetaStore> = store.clone();
-        let objects = Arc::new(
-            ObjectBlobStore::local(dir.path())
-                .expect("open")
-                .with_packs(meta.clone()),
-        );
-        let blobs: Arc<dyn BlobStore> = objects.clone();
-        store.create_repo("r").await.expect("repo");
-        let writer = scion_land::ChangesetWriter::new(meta.clone(), blobs.clone());
+        use scion_store::IndexedObject;
         let sig = Signature {
             name: "Ada".into(),
             email: "ada@example.com".into(),
             time_ms: 1,
             tz_offset_minutes: 0,
         };
-        let mut parent = Vec::new();
-        let mut versions = Vec::new();
-        for n in 0..30u8 {
+        for n in ns {
             let body: String = (0..300)
                 .map(|i| format!("line {i} {}\n", if i == usize::from(n) { n } else { 0 }))
                 .collect();
@@ -331,8 +398,28 @@ mod tests {
                 Default::default(),
             )
             .expect("changeset");
-            parent = vec![writer.create("r", &cs).await.expect("create").id];
+            *parent = vec![writer.create("r", &cs).await.expect("create").id];
         }
+    }
+
+    /// Many versions of a few files, committed into a packed local store, then repacked.
+    #[tokio::test]
+    async fn repack_end_to_end_keeps_every_version_readable() {
+        use scion_store::MemStore;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Arc::new(MemStore::new());
+        let meta: Arc<dyn MetaStore> = store.clone();
+        let objects = Arc::new(
+            ObjectBlobStore::local(dir.path())
+                .expect("open")
+                .with_packs(meta.clone()),
+        );
+        let blobs: Arc<dyn BlobStore> = objects.clone();
+        store.create_repo("r").await.expect("repo");
+        let writer = scion_land::ChangesetWriter::new(meta.clone(), blobs.clone());
+        let mut parent = Vec::new();
+        let mut versions = Vec::new();
+        add_versions(&store, &blobs, &writer, &mut parent, &mut versions, 0..30).await;
         store
             .cas_ref("r", "main", scion_store::RefExpect::Absent, parent[0])
             .await
@@ -341,6 +428,7 @@ mod tests {
             repos: vec![],
             prune_after: Duration::ZERO,
             dry_run: false,
+            incremental: false,
         };
         assert_eq!(objects.last_repack().await.expect("marker"), None);
         let report = repack(&meta, &objects, &opts).await.expect("repack");
@@ -370,6 +458,48 @@ mod tests {
         .await
         .expect("fsck");
         assert!(check.ok(), "{:?}", check.lines());
+        // Incremental: only what was written since, in new packs; its own packs do not count again
+        let first = objects.last_repack().await.expect("marker").expect("written");
+        assert_eq!(objects.written_since(Some(&first)).await.expect("since"), 0);
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        add_versions(&store, &blobs, &writer, &mut parent, &mut versions, 30..40).await;
+        store
+            .cas_ref("r", "main", scion_store::RefExpect::Version(1), parent[0])
+            .await
+            .expect("ref");
+        assert!(objects.written_since(Some(&first)).await.expect("since") > 0);
+        let inc = RepackOptions {
+            incremental: true,
+            ..opts.clone()
+        };
+        let report = repack(&meta, &objects, &inc).await.expect("incremental");
+        // 10 commits, their files, and 3 trees each
+        assert_eq!((report.changesets, report.objects), (10, 50), "{report:?}");
+        assert!(report.repack.deltas >= 5, "versions among the new ones: {report:?}");
+        let second = objects.last_repack().await.expect("marker").expect("written");
+        assert_eq!(second.full, first.full, "the last full repack stays the first");
+        assert!(second.started > first.started);
+        assert_eq!(objects.written_since(Some(&second)).await.expect("since"), 0);
+        let fresh = ObjectBlobStore::local(dir.path())
+            .expect("open")
+            .with_packs(meta.clone());
+        for (id, data) in &versions {
+            assert_eq!(fresh.get(id).await.expect("read").as_ref(), Some(data));
+        }
+        let check = crate::fsck::fsck(
+            &meta,
+            &(Arc::new(fresh) as Arc<dyn BlobStore>),
+            &crate::fsck::FsckOptions {
+                repos: vec![],
+                verify: true,
+            },
+        )
+        .await
+        .expect("fsck");
+        assert!(check.ok(), "{:?}", check.lines());
+        // Nothing new: nothing to do
+        let report = repack(&meta, &objects, &inc).await.expect("incremental");
+        assert_eq!(report.objects, 0);
         // Unknown repository
         let missing = RepackOptions {
             repos: vec!["nope".into()],

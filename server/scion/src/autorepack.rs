@@ -1,6 +1,9 @@
 //! Repacking on its own (`scion server`): now and then the server checks how much was written to
 //! the object store since the last repack, and repacks when it is a lot (after a large import), or
 //! when a day (`--repack-every`) has passed and anything was written. One node repacks at a time.
+//! A repack folds in only what was written since the last one, its cost following the writes;
+//! once a week (`--repack-full-every`) it is a full one, which also stores older versions as
+//! deltas.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -24,11 +27,19 @@ pub struct Schedule {
     pub after_bytes: u64,
     /// Repack when this long has passed since the last one and anything was written; zero: never.
     pub every: Duration,
+    /// A repack is a full one when this long has passed since the last full one; zero: always.
+    pub full_every: Duration,
 }
 
 impl Schedule {
     pub fn enabled(&self) -> bool {
         self.after_bytes > 0 || !self.every.is_zero()
+    }
+
+    /// Whether a due repack should be a full one, given when the last full one started.
+    pub fn full(&self, last_full: Option<SystemTime>, now: SystemTime) -> bool {
+        self.full_every.is_zero()
+            || last_full.is_none_or(|t| now.duration_since(t).unwrap_or_default() >= self.full_every)
     }
 
     /// Why a repack is due, given when the last one was and what was written since.
@@ -86,22 +97,25 @@ pub async fn check(
     holder: &str,
 ) -> anyhow::Result<bool> {
     let last = objects.last_repack().await?;
-    let written = objects.written_since(last).await?;
-    let Some(reason) = schedule.due(last, written, SystemTime::now()) else {
+    let written = objects.written_since(last.as_ref()).await?;
+    let now = SystemTime::now();
+    let Some(reason) = schedule.due(last.as_ref().map(|m| m.started), written, now) else {
         return Ok(false);
     };
+    let full = schedule.full(last.as_ref().and_then(|m| m.full), now);
     let ttl = i64::try_from(LEASE_TTL.as_millis()).unwrap_or(i64::MAX);
     let lease = meta.acquire_lease(LEASE_SCOPE, holder, ttl, now_ms()).await?;
     if lease.holder != holder {
         tracing::debug!(holder = %lease.holder, "another node is repacking");
         return Ok(false);
     }
-    tracing::info!(%reason, "repacking");
+    tracing::info!(%reason, kind = if full { "full" } else { "incremental" }, "repacking");
     let started = std::time::Instant::now();
     let opts = RepackOptions {
         repos: Vec::new(),
         prune_after: Duration::from_secs(3600),
         dry_run: false,
+        incremental: !full,
     };
     // Renew the lease while the repack runs
     let renew = async {
@@ -154,6 +168,7 @@ mod tests {
             check: Duration::from_millis(50),
             after_bytes: 1,
             every: Duration::ZERO,
+            full_every: Duration::ZERO,
         };
         spawn(meta, objects.clone(), s);
         for _ in 0..100 {
@@ -174,10 +189,13 @@ mod tests {
             .with_packs(meta.clone());
         let put = |data: &'static [u8]| objects.put(ObjectId::of_blob(data), Bytes::from_static(data));
         put(b"one").await.expect("put");
+        // Times in object storage may be whole seconds: write before the second the repack starts
+        tokio::time::sleep(Duration::from_millis(1100)).await;
         let s = Schedule {
             check: H,
             after_bytes: 1,
             every: Duration::ZERO,
+            full_every: Duration::ZERO,
         };
         assert!(check(&meta, &objects, &s, "me").await.expect("check"), "never repacked");
         assert!(objects.last_repack().await.expect("marker").is_some());
@@ -204,6 +222,7 @@ mod tests {
             check: H,
             after_bytes: 256 << 20,
             every: 24 * H,
+            full_every: Duration::ZERO,
         };
         let now = SystemTime::now();
         assert!(s.enabled());
@@ -224,9 +243,18 @@ mod tests {
         let off = Schedule {
             after_bytes: 0,
             every: Duration::ZERO,
+            full_every: Duration::ZERO,
             ..s
         };
         assert!(!off.enabled());
         assert_eq!(off.due(None, u64::MAX, now), None);
+        let weekly = Schedule {
+            full_every: 7 * 24 * H,
+            ..s
+        };
+        assert!(weekly.full(None, now), "never a full one");
+        assert!(!weekly.full(Some(now - 24 * H), now));
+        assert!(weekly.full(Some(now - 8 * 24 * H), now));
+        assert!(s.full(Some(now), now), "zero: always full");
     }
 }

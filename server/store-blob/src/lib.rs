@@ -135,6 +135,79 @@ pub struct RepackStats {
     pub packs: usize,
     /// Bytes of the new packs.
     pub bytes: u64,
+    /// The new packs' names.
+    pub written: Vec<[u8; 32]>,
+}
+
+/// What a repack leaves behind for the next one (`repack/last`): when it started, when the last
+/// full one did, and the packs it wrote, which later repacks need not fold in again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepackMarker {
+    pub started: std::time::SystemTime,
+    /// When the last full repack (not incremental) started.
+    pub full: Option<std::time::SystemTime>,
+    pub packs: std::collections::HashSet<[u8; 32]>,
+}
+
+impl RepackMarker {
+    /// Whether a file last modified at `t` came before the repack this marker records began (so
+    /// that repack saw it). Times in object storage are often whole seconds: the second the
+    /// repack started counts as after.
+    fn covers_before(&self, t: std::time::SystemTime) -> bool {
+        let secs = |t: std::time::SystemTime| t.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        secs(t) >= secs(self.started)
+    }
+
+    fn encode(&self) -> String {
+        let secs = |t: std::time::SystemTime| t.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let mut out = format!("started {}\n", secs(self.started));
+        if let Some(f) = self.full {
+            out.push_str(&format!("full {}\n", secs(f)));
+        }
+        let mut packs: Vec<String> = self.packs.iter().map(hex::encode).collect();
+        packs.sort();
+        for p in packs {
+            out.push_str(&format!("pack {p}\n"));
+        }
+        out
+    }
+
+    /// The marker's text; one that cannot be read (as the plain timestamps of earlier servers,
+    /// which only made full repacks) counts as a full repack when the marker was written.
+    fn parse(body: &[u8], written: std::time::SystemTime) -> Self {
+        let at = |v: &str| {
+            v.parse()
+                .ok()
+                .map(|s| std::time::UNIX_EPOCH + std::time::Duration::from_secs(s))
+        };
+        let mut m = Self {
+            started: written,
+            full: None,
+            packs: Default::default(),
+        };
+        let mut started = false;
+        for line in String::from_utf8_lossy(body).lines() {
+            match line.split_once(' ') {
+                Some(("started", v)) => {
+                    if let Some(t) = at(v) {
+                        m.started = t;
+                        started = true;
+                    }
+                }
+                Some(("full", v)) => m.full = at(v),
+                Some(("pack", v)) => {
+                    if let Ok(n) = <[u8; 32]>::try_from(hex::decode(v).unwrap_or_default()) {
+                        m.packs.insert(n);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !started {
+            m.full = Some(written);
+        }
+        m
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -736,8 +809,8 @@ impl ObjectBlobStore {
     }
 
     /// Stores a pack, then records where its objects are (bytes before index).
-    /// Returns the pack's size.
-    async fn write_pack(&self, packs: &Packs, builder: pack::PackBuilder) -> Result<u64> {
+    /// Returns the pack's size and name.
+    async fn write_pack(&self, packs: &Packs, builder: pack::PackBuilder) -> Result<(u64, [u8; 32])> {
         let (bytes, name, placed) = builder.finish();
         let size = bytes.len() as u64;
         self.store
@@ -747,7 +820,7 @@ impl ObjectBlobStore {
         packs.index.put_pack_locations(&name, &placed).await?;
         // Objects just written are likely read soon (rebase at land, clients fetching)
         self.remember_pack(packs, &name, &placed, Some(bytes));
-        Ok(size)
+        Ok((size, name))
     }
 
     /// Rewrites `items`, in order, into new packs, storing each as a delta against its base when
@@ -822,12 +895,16 @@ impl ObjectBlobStore {
             stats.packed += 1;
             if builder.data_len() >= REPACK_TARGET {
                 let full = std::mem::replace(&mut builder, pack::PackBuilder::new());
-                stats.bytes += self.write_pack(packs, full).await?;
+                let (bytes, name) = self.write_pack(packs, full).await?;
+                stats.bytes += bytes;
+                stats.written.push(name);
                 stats.packs += 1;
             }
         }
         if !builder.is_empty() {
-            stats.bytes += self.write_pack(packs, builder).await?;
+            let (bytes, name) = self.write_pack(packs, builder).await?;
+            stats.bytes += bytes;
+            stats.written.push(name);
             stats.packs += 1;
         }
         Ok(stats)
@@ -908,40 +985,69 @@ impl ObjectBlobStore {
         self.packs.is_some()
     }
 
-    /// When the last repack finished ([`ObjectBlobStore::mark_repacked`]); None before the first.
-    pub async fn last_repack(&self) -> Result<Option<std::time::SystemTime>> {
-        match self.store.head(&self.repack_marker()).await {
-            Ok(m) => Ok(Some(m.last_modified.into())),
-            Err(object_store::Error::NotFound { .. }) => Ok(None),
-            Err(e) => Err(backend("read repack marker", e)),
-        }
+    /// What the last repack left ([`ObjectBlobStore::mark_repacked`]); None before the first.
+    pub async fn last_repack(&self) -> Result<Option<RepackMarker>> {
+        let got = match self.store.get(&self.repack_marker()).await {
+            Ok(g) => g,
+            Err(object_store::Error::NotFound { .. }) => return Ok(None),
+            Err(e) => return Err(backend("read repack marker", e)),
+        };
+        let written = std::time::SystemTime::from(got.meta.last_modified);
+        let body = got.bytes().await.map_err(|e| backend("read repack marker", e))?;
+        Ok(Some(RepackMarker::parse(&body, written)))
     }
 
-    /// Records that a repack finished now.
-    pub async fn mark_repacked(&self) -> Result<()> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs())
-            .to_string();
+    /// Records what a repack that started at `marker.started` left.
+    pub async fn mark_repacked(&self, marker: &RepackMarker) -> Result<()> {
         self.store
-            .put(&self.repack_marker(), PutPayload::from(now.into_bytes()))
+            .put(&self.repack_marker(), PutPayload::from(marker.encode().into_bytes()))
             .await
             .map(drop)
             .map_err(|e| backend("write repack marker", e))
     }
 
-    /// Bytes of packs and loose objects written after `since` (all of them for None): what a
-    /// repack would have to fold in.
-    pub async fn written_since(&self, since: Option<std::time::SystemTime>) -> Result<u64> {
-        let mut total = 0;
-        for dir in ["packs/", "objects/"] {
+    /// Packs and loose objects written since the last repack started (all of them for None),
+    /// leaving out the packs it wrote: what the next repack would fold in.
+    /// Each with whether it is a pack (else a loose object).
+    async fn written_after(&self, marker: Option<&RepackMarker>) -> Result<Vec<(bool, object_store::ObjectMeta)>> {
+        let mut out = Vec::new();
+        for (dir, pack) in [("packs/", true), ("objects/", false)] {
             for m in self.list(&format!("{}{dir}", self.prefix)).await? {
-                if since.is_none_or(|t| std::time::SystemTime::from(m.last_modified) > t) {
-                    total += m.size;
+                let theirs = pack
+                    && pack_name(m.location.as_ref()).is_some_and(|n| marker.is_some_and(|k| k.packs.contains(&n)));
+                if !theirs && marker.is_none_or(|k| k.covers_before(m.last_modified.into())) {
+                    out.push((pack, m));
                 }
             }
         }
-        Ok(total)
+        Ok(out)
+    }
+
+    /// Bytes of what was written since the last repack ([`ObjectBlobStore::new_objects`]'s files).
+    pub async fn written_since(&self, marker: Option<&RepackMarker>) -> Result<u64> {
+        Ok(self.written_after(marker).await?.iter().map(|(_, m)| m.size).sum())
+    }
+
+    /// The objects written since the last repack, for an incremental one: those of the packs and
+    /// loose objects [`ObjectBlobStore::written_since`] counts.
+    pub async fn new_objects(&self, marker: Option<&RepackMarker>) -> Result<Vec<ObjectId>> {
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for (pack, m) in self.written_after(marker).await? {
+            let key = m.location.as_ref();
+            if let Some(name) = pack_name(key).filter(|_| pack) {
+                for e in self.read_trailer(&name).await?.unwrap_or_default() {
+                    if seen.insert(e.id) {
+                        out.push(e.id);
+                    }
+                }
+            } else if let Some(id) = loose_id(key).filter(|_| !pack) {
+                if seen.insert(id) {
+                    out.push(id);
+                }
+            }
+        }
+        Ok(out)
     }
 
     fn repack_marker(&self) -> Path {
@@ -1219,6 +1325,29 @@ impl BlobStore for ObjectBlobStore {
 mod tests {
     use super::*;
     use scion_store::testsuite;
+
+    #[test]
+    fn repack_marker_round_trips_and_reads_old_ones() {
+        let at = |s| std::time::UNIX_EPOCH + std::time::Duration::from_secs(s);
+        let m = RepackMarker {
+            started: at(100),
+            full: Some(at(50)),
+            packs: [[1u8; 32], [2u8; 32]].into_iter().collect(),
+        };
+        assert_eq!(RepackMarker::parse(m.encode().as_bytes(), at(999)), m);
+        let incremental_first = RepackMarker {
+            full: None,
+            ..m.clone()
+        };
+        assert_eq!(
+            RepackMarker::parse(incremental_first.encode().as_bytes(), at(999)),
+            incremental_first
+        );
+        // Earlier servers wrote only a timestamp, after full repacks
+        let old = RepackMarker::parse(b"1700000000", at(200));
+        assert_eq!((old.started, old.full, old.packs.len()), (at(200), Some(at(200)), 0));
+        assert!(m.covers_before(at(100)) && m.covers_before(at(101)) && !m.covers_before(at(99)));
+    }
 
     #[test]
     fn object_key_layout() {

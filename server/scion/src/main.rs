@@ -134,6 +134,9 @@ enum AdminCmd {
         /// Only count what would be repacked.
         #[arg(long)]
         dry_run: bool,
+        /// Only what was written since the last repack, into new packs (older objects stay as they are).
+        #[arg(long)]
+        incremental: bool,
         #[command(flatten)]
         storage: StorageArgs,
     },
@@ -260,6 +263,11 @@ struct RepackArgs {
     #[arg(long, value_name = "DURATION", default_value = "24h", value_parser = parse_duration,
         env = "SCION_REPACK_EVERY")]
     repack_every: std::time::Duration,
+    /// How often a due repack is a full one (older versions stored as deltas, metadata compacted)
+    /// rather than an incremental one (what was written since the last); 0s: always full.
+    #[arg(long, value_name = "DURATION", default_value = "7d", value_parser = parse_duration,
+        env = "SCION_REPACK_FULL_EVERY")]
+    repack_full_every: std::time::Duration,
     /// How often to check whether a repack is due.
     #[arg(long, value_name = "DURATION", default_value = "15m", value_parser = parse_duration,
         env = "SCION_REPACK_CHECK_INTERVAL")]
@@ -272,6 +280,7 @@ impl RepackArgs {
             check: self.repack_check_interval.max(std::time::Duration::from_secs(1)),
             after_bytes: self.repack_after,
             every: self.repack_every,
+            full_every: self.repack_full_every,
         }
     }
 }
@@ -893,6 +902,7 @@ async fn admin_ops(cmd: AdminCmd, env: impl Fn(&str) -> Option<String>) -> anyho
             repos,
             prune_after,
             dry_run,
+            incremental,
             storage,
         } => {
             let (meta_spec, blob_spec) = storage.specs()?;
@@ -902,6 +912,7 @@ async fn admin_ops(cmd: AdminCmd, env: impl Fn(&str) -> Option<String>) -> anyho
                 repos,
                 prune_after,
                 dry_run,
+                incremental,
             };
             (repack::repack(&meta, &objects, &opts).await?.lines(dry_run), true)
         }
