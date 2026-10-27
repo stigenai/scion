@@ -57,3 +57,15 @@ scn op restore 12      # before operation 12
 ```
 
 Going back makes the working tree that commit's files plus the local changes it had, and the state (branch, pending commits, a conflict in progress) what it was. Undo is itself logged. What a land put on the server stays there; `scn revert` undoes it on the branch.
+
+## Marking an agent's commits
+
+`SCION_TRAILERS` adds git trailers to every commit `scn` makes in that environment, the MCP server's included, and `scn commit --trailer` (or the commit tool's `trailers`) adds them one commit at a time. Give each agent run its own, and its commits can be found, reviewed or reverted together later:
+
+```sh
+export SCION_TRAILERS='Agent: claude; Agent-Session: 2026-10-27-a'
+scn log --grep 'Agent-Session: 2026-10-27-a' --oneline
+scn log --author 'bot@agents' -n 50
+```
+
+`--grep` and `--author` filter on the server, so they work on the branch's whole history without a checkout; the MCP log tool takes `grep` and `author` too.

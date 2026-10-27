@@ -469,33 +469,30 @@ fn repo_path(ctx: &Ctx, path: Option<&str>) -> Result<Option<String>, CliError> 
     }
 }
 
+/// `scn log`: `query.path` is relative to the current directory, as in git; `--follow`,
+/// `--grep` and `--author` are the query's.
 pub async fn log(
     ctx: &Ctx,
     revision: Option<&str>,
-    path: Option<&str>,
-    follow: bool,
+    mut query: scion_client::LogQuery,
     limit: usize,
     oneline: bool,
 ) -> Result<LogOut, CliError> {
-    let path = repo_path(ctx, path)?;
-    let path = path.as_deref();
-    if follow && path.is_none() {
+    let path = repo_path(ctx, Some(&query.path).filter(|p| !p.is_empty()).map(String::as_str))?;
+    if query.follow && path.is_none() {
         return Err(CliError::Usage("--follow needs one file path".into()));
     }
+    query.path = path.clone().unwrap_or_default();
     let (client, default_rev) = query_client(ctx).await?;
     let revision = ctx.expand_rev(&revision.map_or(default_rev, str::to_owned))?;
     let mut entries = Vec::new();
     let mut token: Option<String> = None;
-    // With --follow, the name the file has in the commits still to come
-    let mut current = path.map(str::to_owned);
     while entries.len() < limit {
         let want = u32::try_from(limit - entries.len()).unwrap_or(u32::MAX).min(1000);
-        let page = match (&current, follow) {
-            (Some(p), true) => client.log_follow(&revision, p, want, token.as_deref()).await?,
-            _ => client.log(&revision, path, want, token.as_deref()).await?,
-        };
+        let page = client.log_query(&revision, &query, want, token.as_deref()).await?;
+        // With --follow, the name the file has in the commits still to come
         if let Some(old) = page.renamed_from {
-            current = Some(old);
+            query.path = old;
         }
         entries.extend(page.entries.into_iter().map(log_line));
         match page.next_page_token {
@@ -507,7 +504,7 @@ pub async fn log(
     Ok(LogOut {
         schema: "scion.cli.log/v1",
         revision,
-        path: path.map(str::to_owned),
+        path,
         entries,
         oneline,
     })

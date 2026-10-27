@@ -3290,6 +3290,7 @@ dependencies = [
  "jsonwebtoken",
  "memchr",
  "moka",
+ "regex",
  "reqwest",
  "scion-auth",
  "scion-client",

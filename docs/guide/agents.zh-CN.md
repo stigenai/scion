@@ -57,3 +57,15 @@ scn op restore 12      # 回到第 12 个操作之前
 ```
 
 回去之后，工作区是当时那个提交的文件加上当时的本地改动，状态（分支、待合入的提交、进行中的冲突）也和当时一样。撤销本身也会被记录。land 已经放到服务端的内容会留在那里，要在分支上撤销请用 `scn revert`。
+
+## 标记 agent 的提交
+
+`SCION_TRAILERS` 会给这个环境里 `scn` 生成的每个提交加上 git trailer，包括 MCP server 生成的；`scn commit --trailer`（或 commit 工具的 `trailers`）则只加到一个提交上。给每次 agent 运行设一个自己的标记，之后就能一起找出、审阅或撤销它的提交：
+
+```sh
+export SCION_TRAILERS='Agent: claude; Agent-Session: 2026-10-27-a'
+scn log --grep 'Agent-Session: 2026-10-27-a' --oneline
+scn log --author 'bot@agents' -n 50
+```
+
+`--grep` 和 `--author` 在服务端过滤，所以不需要检出就能查分支的全部历史；MCP 的 log 工具也接受 `grep` 和 `author`。

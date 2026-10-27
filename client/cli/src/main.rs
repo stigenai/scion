@@ -212,6 +212,10 @@ enum Command {
         /// `user.name` / `user.email`.
         #[arg(long, env = "SCION_AUTHOR")]
         author: Option<String>,
+        /// Add a git trailer to the message, KEY: VALUE or KEY=VALUE (repeatable); SCION_TRAILERS
+        /// adds its own (`;`-separated) to every commit, as an agent's session.
+        #[arg(long, value_name = "TRAILER")]
+        trailer: Vec<String>,
         /// Commit only the changes at or under these paths (files or directories); the others stay
         /// local changes. Without paths, every local change.
         #[arg(value_name = "PATH")]
@@ -554,6 +558,16 @@ enum Command {
         /// Follow the file across renames, like git (one file path).
         #[arg(long)]
         follow: bool,
+        /// Only commits whose message matches this regular expression, as `git log --grep` (an
+        /// agent's trailer, say: --grep 'Agent-Session: 42').
+        #[arg(long, value_name = "PATTERN")]
+        grep: Option<String>,
+        /// Only commits whose author (`Name <email>`) matches this regular expression.
+        #[arg(long, value_name = "PATTERN")]
+        author: Option<String>,
+        /// --grep and --author ignore case.
+        #[arg(short = 'i', long = "regexp-ignore-case")]
+        ignore_case: bool,
         /// git's `--pretty=oneline` / `--format=oneline`; other formats are not supported.
         #[arg(long, alias = "format", value_name = "FORMAT", value_parser = ["oneline", "medium"])]
         pretty: Option<String>,
@@ -1484,20 +1498,36 @@ async fn run(cli: Cli) -> ExitCode {
             json,
         ),
         Command::Commit {
-            message,
-            amend: true,
-            author,
+            ref message,
+            ref trailer,
             ..
-        } => emit(
-            commands::amend(&ctx, paragraphs(&message).as_deref(), author.as_deref()).await,
+        } if !trailer.is_empty() && message.is_empty() => fail(
+            &CliError::Usage("--trailer goes with -m: it adds to the message given".into()),
             json,
         ),
         Command::Commit {
-            message, author, paths, ..
-        } => emit(
-            commands::commit_paths(&ctx, paragraphs(&message).as_deref(), author.as_deref(), &paths).await,
-            json,
-        ),
+            message,
+            amend: true,
+            author,
+            trailer,
+            ..
+        } => {
+            let message = arg!(message_with_trailers(&message, &trailer));
+            emit(commands::amend(&ctx, message.as_deref(), author.as_deref()).await, json)
+        }
+        Command::Commit {
+            message,
+            author,
+            paths,
+            trailer,
+            ..
+        } => {
+            let message = arg!(message_with_trailers(&message, &trailer));
+            emit(
+                commands::commit_paths(&ctx, message.as_deref(), author.as_deref(), &paths).await,
+                json,
+            )
+        }
         Command::Uncommit => emit(commands::uncommit(&ctx).await, json),
         Command::Switch {
             reference,
@@ -1823,6 +1853,9 @@ async fn run(cli: Cli) -> ExitCode {
             max_count,
             oneline,
             follow,
+            grep,
+            author,
+            ignore_case,
             pretty,
             paths,
         } => match one_path(path, paths) {
@@ -1830,8 +1863,13 @@ async fn run(cli: Cli) -> ExitCode {
                 history::log(
                     &ctx,
                     revision.as_deref(),
-                    path.as_deref(),
-                    follow,
+                    scion_client::LogQuery {
+                        path: path.unwrap_or_default(),
+                        follow,
+                        grep: grep.unwrap_or_default(),
+                        author: author.unwrap_or_default(),
+                        ignore_case,
+                    },
                     max_count,
                     oneline || pretty.as_deref() == Some("oneline"),
                 )
@@ -2031,6 +2069,13 @@ async fn run(cli: Cli) -> ExitCode {
     };
     oplog::finish(op);
     code
+}
+
+/// The message of `-m`s with the trailers of `--trailer` and SCION_TRAILERS; None without -m.
+fn message_with_trailers(message: &[String], trailers: &[String]) -> Result<Option<String>, CliError> {
+    let Some(m) = paragraphs(message) else { return Ok(None) };
+    let all: Vec<String> = trailers.iter().cloned().chain(commands::env_trailers()).collect();
+    commands::with_trailers(&m, &all).map(Some)
 }
 
 /// Whether `cmd` can change the working copy, so the operation log keeps what it was first.

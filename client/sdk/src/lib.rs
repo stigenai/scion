@@ -30,7 +30,7 @@ pub use client::{Auth, Client, ClientBuilder, ReadEndpoints, RedactedObject, Red
 pub use error::{ConflictPath, Error, MergeConflict, Result};
 pub use history::{
     ArchiveFormat, BlameCommitInfo, BlameInfo, FileChangeInfo, GrepFound, GrepLine, GrepQuery, LastCommitsPage,
-    LogItem, LogPage, Revision, TreeStatsInfo,
+    LogItem, LogPage, LogQuery, Revision, TreeStatsInfo,
 };
 pub use identity::{DeviceLogin, DeviceLoginPoll, Identity};
 pub use info::{Limits, ProtocolVersion, ReadEndpoint, Role, ServerInfo};

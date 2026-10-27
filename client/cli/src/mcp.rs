@@ -134,6 +134,9 @@ fn tools() -> Vec<Value> {
                 "path": path,
                 "max_count": {"type": "integer", "description": "Default 20"},
                 "follow": {"type": "boolean"},
+                "grep": {"type": "string", "description": "Only commits whose message matches this regular expression (a trailer such as Agent-Session: ID)"},
+                "author": {"type": "string", "description": "Only commits whose author (Name <email>) matches this regular expression"},
+                "ignore_case": {"type": "boolean"},
             }),
             &[],
         ),
@@ -175,6 +178,7 @@ fn tools() -> Vec<Value> {
                     },
                     "required": ["path", "old", "new"],
                 }},
+                "trailers": {"type": "object", "additionalProperties": {"type": "string"}, "description": "git trailers to add to the message, as {\"Agent-Session\": \"42\"}; SCION_TRAILERS adds its own"},
                 "base": revision,
                 "land": {"type": "boolean", "description": "Land it on branch (default false)"},
                 "branch": {"type": "string", "description": "The branch to land on; default the current one"},
@@ -277,7 +281,14 @@ async fn call(ctx: &Ctx, name: &str, args: &Value) -> Result<Value, CliError> {
             let max = args.get("max_count").and_then(Value::as_u64).unwrap_or(20);
             let follow = args.get("follow").and_then(Value::as_bool).unwrap_or(false);
             let max = usize::try_from(max).unwrap_or(usize::MAX);
-            to_json(crate::history::log(ctx, rev, arg(args, "path"), follow, max, false).await?)
+            let query = scion_client::LogQuery {
+                path: arg(args, "path").unwrap_or_default().to_owned(),
+                follow,
+                grep: arg(args, "grep").unwrap_or_default().to_owned(),
+                author: arg(args, "author").unwrap_or_default().to_owned(),
+                ignore_case: args.get("ignore_case").and_then(Value::as_bool).unwrap_or(false),
+            };
+            to_json(crate::history::log(ctx, rev, query, max, false).await?)
         }
         "blame" => to_json(crate::history::blame(ctx, &spec(rev, required(args, "path")?), &[]).await?),
         "diff" => {
@@ -346,6 +357,12 @@ async fn commit(ctx: &Ctx, args: &Value) -> Result<Value, CliError> {
         Err(e) if e.is_not_found() && arg(args, "base").is_none() => None,
         Err(e) => return Err(e.into()),
     };
+    // Trailers from SCION_TRAILERS, and the call's
+    let mut trailers = crate::commands::env_trailers();
+    for t in args.get("trailers").and_then(Value::as_object).into_iter().flatten() {
+        trailers.push(format!("{}: {}", t.0, t.1.as_str().unwrap_or_default()));
+    }
+    let message = crate::commands::with_trailers(message, &trailers)?;
     let mut b = client.changeset(parent).message(message);
     if let Some((name, email)) = crate::commands::own_author() {
         b = b.author(name, email);

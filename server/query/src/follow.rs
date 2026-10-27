@@ -242,6 +242,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn log_keeps_the_commits_whose_message_and_author_match() {
+        let mut r = Repo::new().await;
+        let c1 = r.commit(&[], &[("a", Some("1"))]).await;
+        let c2 = r.commit(&[c1], &[("b", Some("2"))]).await;
+        let c3 = r.commit(&[c2], &[("a", Some("3"))]).await;
+        let run = |grep: &str, author: &str, path: Option<&'static str>| {
+            let filter = crate::LogFilter {
+                grep: (!grep.is_empty()).then(|| regex::Regex::new(grep).expect("re")),
+                author: (!author.is_empty()).then(|| regex::Regex::new(author).expect("re")),
+            };
+            let store = &r.store;
+            async move {
+                ids(
+                    &crate::log_matching(store, store, REPO, &[c3], path, false, &filter, 100, 1000)
+                        .await
+                        .expect("log"),
+                )
+            }
+        };
+        assert_eq!(run("", "", None).await, [c3, c2, c1]);
+        assert_eq!(run("^c[13]$", "", None).await, [c3, c1]);
+        assert_eq!(run("", "^a <a@x>$", None).await, [c3, c2, c1]);
+        assert_eq!(run("", "nobody", None).await, Vec::<ObjectId>::new());
+        assert_eq!(run("c[23]", "", Some("a")).await, [c3]);
+    }
+
+    #[tokio::test]
     async fn follows_an_identical_rename_with_and_without_the_index() {
         renamed_history(true).await;
         renamed_history(false).await;

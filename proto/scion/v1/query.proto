@@ -85,6 +85,12 @@ message LogRequest {
   // merges). A page ends at the commit that renamed or copied it there, with `renamed_from` set;
   // ask for the next page with that path.
   bool follow = 6;
+  // Only commits whose message, and whose author (`Name <email>`), match these regular
+  // expressions (Rust syntax), as `git log --grep` and `--author`; `ignore_case` for both.
+  // Pages then hold the matching commits among those they covered, so they may be short.
+  string grep = 7;
+  string author = 8;
+  bool ignore_case = 9;
 }
 
 message LogEntry {

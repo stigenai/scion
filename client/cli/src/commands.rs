@@ -1508,6 +1508,49 @@ fn resolve_author(author: Option<&str>) -> Result<Option<(String, String)>, CliE
 
 /// `message` may be omitted only when finishing a sync or merge that stopped on conflicts (it
 /// then defaults to that commit's message).
+/// Trailers from `SCION_TRAILERS`, for every commit an agent makes (`Agent-Session: …`): `Key:
+/// Value` entries, one per line or separated by `;`.
+pub fn env_trailers() -> Vec<String> {
+    std::env::var("SCION_TRAILERS")
+        .unwrap_or_default()
+        .split(['\n', ';'])
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// `message` with git trailers at its end, as `git commit --trailer`: after a blank line, unless
+/// it already ends in trailers, and without repeating one it has. A trailer is `Key: Value` or
+/// `Key=Value`.
+pub fn with_trailers(message: &str, trailers: &[String]) -> Result<String, CliError> {
+    let is_trailer = |l: &str| {
+        l.split_once(": ")
+            .is_some_and(|(k, _)| !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+    };
+    let mut out = message.trim_end().to_owned();
+    let last = out.rsplit("\n\n").next().unwrap_or_default().to_owned();
+    let mut ends_in_trailers = !out.is_empty() && out.contains("\n\n") && last.lines().all(is_trailer);
+    for t in trailers {
+        let t = match t.split_once(": ").or_else(|| t.split_once('=')) {
+            Some((k, v)) => format!("{}: {}", k.trim(), v.trim()),
+            None => return Err(CliError::Usage(format!("trailer {t:?} is not KEY: VALUE or KEY=VALUE"))),
+        };
+        if !is_trailer(&t) {
+            return Err(CliError::Usage(format!(
+                "trailer {t:?}: the key takes letters, digits and -"
+            )));
+        }
+        if out.lines().any(|l| l == t) {
+            continue;
+        }
+        out.push_str(if ends_in_trailers { "\n" } else { "\n\n" });
+        out.push_str(&t);
+        ends_in_trailers = true;
+    }
+    Ok(out)
+}
+
 pub async fn commit(ctx: &Ctx, message: Option<&str>, author: Option<&str>) -> Result<CommitOut, CliError> {
     commit_paths(ctx, message, author, &[]).await
 }
@@ -2043,6 +2086,30 @@ pub async fn ls(ctx: &Ctx, spec: Option<&str>) -> Result<LsOut, CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trailers_go_at_the_end_once() {
+        let t = |m: &str, ts: &[&str]| with_trailers(m, &ts.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>());
+        assert_eq!(t("fix it", &["Agent: claude"]).expect("one"), "fix it\n\nAgent: claude");
+        assert_eq!(
+            t("fix it\n\nbody\n", &["Agent=claude", "Agent-Session: 42"]).expect("two"),
+            "fix it\n\nbody\n\nAgent: claude\nAgent-Session: 42"
+        );
+        assert_eq!(
+            t("fix\n\nSigned-off-by: A <a@x>", &["Agent: b"]).expect("after trailers"),
+            "fix\n\nSigned-off-by: A <a@x>\nAgent: b"
+        );
+        assert_eq!(
+            t("fix\n\nAgent: b", &["Agent: b"]).expect("not twice"),
+            "fix\n\nAgent: b"
+        );
+        assert_eq!(
+            t("a: b", &["Agent: x"]).expect("a subject like a trailer"),
+            "a: b\n\nAgent: x"
+        );
+        assert!(t("fix", &["no separator"]).is_err());
+        assert!(t("fix", &["bad key: v"]).is_err());
+    }
 
     #[test]
     fn wc_relative_paths() {

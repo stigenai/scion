@@ -104,6 +104,19 @@ pub struct Revision {
     pub parents: Vec<ObjectId>,
 }
 
+/// What [`Client::log_query`] asks for; empty fields ask for nothing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LogQuery {
+    /// Only commits that changed this path.
+    pub path: String,
+    /// Follow the file in `path` across renames.
+    pub follow: bool,
+    /// Regular expressions the message, and the author (`Name <email>`), must match.
+    pub grep: String,
+    pub author: String,
+    pub ignore_case: bool,
+}
+
 /// What [`Client::grep`] looks for.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GrepQuery {
@@ -220,8 +233,11 @@ impl Client {
         page_size: u32,
         page_token: Option<&str>,
     ) -> Result<LogPage> {
-        self.log_page(revision, path.unwrap_or_default(), false, page_size, page_token)
-            .await
+        let q = LogQuery {
+            path: path.unwrap_or_default().to_owned(),
+            ..LogQuery::default()
+        };
+        self.log_query(revision, &q, page_size, page_token).await
     }
 
     /// [`Client::log`] of one file that follows it across renames, like `git log --follow`. A
@@ -233,24 +249,33 @@ impl Client {
         page_size: u32,
         page_token: Option<&str>,
     ) -> Result<LogPage> {
-        self.log_page(revision, path, true, page_size, page_token).await
+        let q = LogQuery {
+            path: path.to_owned(),
+            follow: true,
+            ..LogQuery::default()
+        };
+        self.log_query(revision, &q, page_size, page_token).await
     }
 
-    async fn log_page(
+    /// [`Client::log`] with everything a log can be asked: a path (followed across renames with
+    /// `follow`), and the commits whose message or author match (`git log --grep`, `--author`).
+    pub async fn log_query(
         &self,
         revision: &str,
-        path: &str,
-        follow: bool,
+        q: &LogQuery,
         page_size: u32,
         page_token: Option<&str>,
     ) -> Result<LogPage> {
         let req = LogRequest {
             repo: self.repo()?,
             revision: revision.to_owned(),
-            path: path.to_owned(),
+            path: q.path.clone(),
             page_size,
             page_token: page_token.unwrap_or_default().to_owned(),
-            follow,
+            follow: q.follow,
+            grep: q.grep.clone(),
+            author: q.author.clone(),
+            ignore_case: q.ignore_case,
         };
         let resp = self.query().log(self.request(req)?).await?.into_inner();
         Ok(LogPage {

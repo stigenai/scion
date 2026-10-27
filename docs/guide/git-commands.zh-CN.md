@@ -13,6 +13,7 @@
 | `git config user.name NAME`、`git config --list`、`--unset` | 相同 | 只有 `user.name` 和 `user.email`；设置按用户保存（接受 `--global`） |
 | `git commit -m MSG`、`-am MSG` | `scn commit -m MSG`、`-am MSG` | 提交所有本地改动（接受 `-a`，但没有作用）；多个 `-m` 成为多段说明 |
 | `git commit -m MSG PATH...` | `scn commit -m MSG PATH...` | 只提交这些路径（及其下）的改动，其余仍是本地改动 |
+| `git commit --trailer KEY=VALUE` | 相同 | 另有 `SCION_TRAILERS`，加到每个提交上 |
 | `git commit --amend` | `scn commit --amend` | |
 | `git restore [-s REV] PATH`、`git checkout REV -- PATH` | `scn restore [-s REV] PATH` | `--source` 从 REV 取文件，成为本地改动 |
 | `git clean -n`、`-f`、`-fd`、`-fdx` [PATH...] | 相同 | 删除未跟踪的文件；`-x` 连被忽略的文件一起删；嵌套的仓库不动 |
@@ -24,7 +25,7 @@
 | `git cherry-pick REV`、`-x`、`-m N`、`--abort` | 相同 | 一次一个提交；保留原提交说明和作者 |
 | `git branch [-v] [-a]`、`git branch NAME [REV]`、`git branch -d NAME`、`--show-current` | 相同 | 分支都在服务端，所以 `-a` 列出的是同一批 |
 | `git tag [-l] [-n]`、`git tag NAME [REV]`、`git tag -a NAME -m MSG [REV]`、`git tag -d NAME` | 相同 | 轻量标签和附注标签（不支持 `-s`） |
-| `git log [REV] [-n N \| -N] [--oneline] [-- PATH]` | 相同 | |
+| `git log [REV] [-n N \| -N] [--oneline] [--grep P] [--author P] [-i] [-- PATH]` | 相同 | 在服务端过滤 |
 | `git show [REV] [-- PATH]` | 相同 | |
 | `git diff [--cached]`、`git diff A B`、`A..B`、`A...B` | 相同 | `--name-only`、`--name-status`、`--stat`、`-- PATH`；没有暂存区，`--cached` / `--staged` 显示同样的本地改动 |
 | `git blame [-L N,M] PATH` | `scn blame [-L N,M] PATH` | 指定版本用 `scn blame REV:PATH` |

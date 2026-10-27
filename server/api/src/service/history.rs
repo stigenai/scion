@@ -99,14 +99,29 @@ pub(crate) async fn log(meta: &dyn MetaStore, blobs: &dyn BlobStore, req: LogReq
         0 => DEFAULT_PAGE_SIZE,
         n => n.min(MAX_PAGE_SIZE),
     } as usize;
-    let page = if req.follow {
-        if req.path.is_empty() {
-            return Err(Status::invalid_argument("follow needs a path"));
-        }
-        scion_query::log_follow(meta, blobs, &req.repo, &start, &req.path, limit, MAX_SCAN).await
-    } else {
-        scion_query::log(meta, blobs, &req.repo, &start, Some(req.path.as_str()), limit, MAX_SCAN).await
+    if req.follow && req.path.is_empty() {
+        return Err(Status::invalid_argument("follow needs a path"));
     }
+    let pattern = |p: &str| -> Result<Option<regex::Regex>, Status> {
+        if p.is_empty() {
+            return Ok(None);
+        }
+        regex::RegexBuilder::new(p)
+            .case_insensitive(req.ignore_case)
+            .size_limit(1 << 20)
+            .build()
+            .map(Some)
+            .map_err(|e| Status::invalid_argument(format!("bad pattern {p:?}: {e}")))
+    };
+    let filter = scion_query::LogFilter {
+        grep: pattern(&req.grep)?,
+        author: pattern(&req.author)?,
+    };
+    let path = Some(req.path.as_str()).filter(|p| !p.is_empty());
+    let page = scion_query::log_matching(
+        meta, blobs, &req.repo, &start, path, req.follow, &filter, limit, MAX_SCAN,
+    )
+    .await
     .map_err(from_query)?;
     Ok(LogResponse {
         entries: page.entries.into_iter().map(log_entry).collect(),
@@ -478,7 +493,7 @@ mod tests {
             path: path.into(),
             page_size,
             page_token: token.into(),
-            follow: false,
+            ..LogRequest::default()
         }
     }
 

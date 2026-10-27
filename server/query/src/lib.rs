@@ -353,6 +353,44 @@ pub async fn log(
     log_with(meta, blobs, repo, start, path, false, limit, max_scan, PATH_CANDIDATES).await
 }
 
+/// What a log keeps besides the path: commits whose message, and whose author (`Name <email>`),
+/// match these regular expressions, as `git log --grep` and `--author`.
+#[derive(Debug, Clone, Default)]
+pub struct LogFilter {
+    pub grep: Option<regex::Regex>,
+    pub author: Option<regex::Regex>,
+}
+
+impl LogFilter {
+    fn keeps(&self, e: &LogEntry) -> bool {
+        let a = &e.changeset.author;
+        self.grep.as_ref().is_none_or(|g| g.is_match(&e.changeset.message))
+            && self
+                .author
+                .as_ref()
+                .is_none_or(|r| r.is_match(&format!("{} <{}>", a.name, a.email)))
+    }
+}
+
+/// [`log`] keeping only the commits `filter` keeps (and following a file's renames with
+/// `follow`). Pages may have fewer entries than `limit`, or none, and still go on.
+#[allow(clippy::too_many_arguments)]
+pub async fn log_matching(
+    meta: &dyn MetaStore,
+    blobs: &dyn BlobStore,
+    repo: &str,
+    start: &[ObjectId],
+    path: Option<&str>,
+    follow: bool,
+    filter: &LogFilter,
+    limit: usize,
+    max_scan: usize,
+) -> Result<LogPage> {
+    let mut page = log_with(meta, blobs, repo, start, path, follow, limit, max_scan, PATH_CANDIDATES).await?;
+    page.entries.retain(|e| filter.keeps(e));
+    Ok(page)
+}
+
 /// [`log`] of a file that also follows it across renames, like `git log --follow`: a page ends
 /// at the commit that renamed the file there, with [`LogPage::renamed_from`] set to the old path
 /// for the next page. One path is followed at a time, across all branches, as in git.
