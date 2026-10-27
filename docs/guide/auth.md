@@ -359,6 +359,6 @@ scn whoami
 scn logout
 ```
 
-- **Where credentials go:** per server address; in the Keychain on macOS, and in `~/.config/scion/credentials.json` (mode 0600) elsewhere. `SCION_CREDENTIALS_FILE` names another file.
+- **Where credentials go:** per server address. Signed macOS builds (the released ones) keep them in the Keychain; other builds, and other platforms, in `~/.config/scion/credentials.json` (mode 0600). macOS asks whether a program may read a Keychain item each time it is a different unsigned binary, so a locally built `scn` would ask after every build, and an agent with no screen would wait for the answer; a signed `scn` is trusted across versions. `SCION_CREDENTIALS=file` or `keychain` chooses, and `SCION_CREDENTIALS_FILE` names another file. A Keychain that does not answer within 3 seconds is skipped, with a note to use `SCION_TOKEN`.
 - **CI:** set `SCION_TOKEN` (a PAT or an external token), which takes precedence over saved credentials.
 - **TLS:** `https://` servers are checked against the Mozilla root certificates built into `scn`. `SCION_TLS_CA_FILE=PATH` adds a private CA (PEM); `SCION_TLS_ROOTS=native` also trusts the operating system's store, which on macOS can add many seconds to every connection.

@@ -6,6 +6,8 @@
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=build.rs");
+    // Builds that are signed say so (scripts/sign-macos.sh signs them): credentials go to the keychain
+    println!("cargo:rerun-if-env-changed=SCION_SIGNED");
     if std::env::var("CARGO_CFG_TARGET_OS")? != "macos" {
         return Ok(());
     }

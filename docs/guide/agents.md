@@ -4,6 +4,18 @@ English | [简体中文](agents.zh-CN.md)
 
 Scion is built for agents that change code: many of them at once, each short-lived, often needing only part of a repository. This page is about the tools for them.
 
+## Credentials for agents
+
+An agent cannot answer a dialog, so give it a token in the environment rather than the saved login:
+
+```sh
+# A token of its own, for one day (an admin makes it on the server)
+scion admin token create --subject agent-1 --ttl 1d --description "agent run 42"
+export SCION_TOKEN=scn_pat_…
+```
+
+`SCION_TOKEN` comes before any saved credentials, so `scn` never reads the Keychain then. On macOS, released `scn` builds are signed and keep a person's login in the Keychain; a locally built (unsigned) `scn` keeps it in `~/.config/scion/credentials.json` instead, since macOS would ask about the Keychain again after every build. CI signs `scn` for every commit on main too (the `signed-macos` job's artifact, `gh run download -n scion-main-aarch64-apple-darwin`).
+
 ## MCP: the repository without a checkout
 
 `scn mcp` serves a repository to an agent over the [Model Context Protocol](https://modelcontextprotocol.io) on standard input and output. The agent reads, searches and walks history at any revision on the server, and makes commits there from file contents, without cloning or a working tree.

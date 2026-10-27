@@ -4,6 +4,18 @@
 
 Scion 是为修改代码的 agent 设计的：它们往往同时有很多个，每个存在的时间都不长，通常也只需要仓库的一部分。这一页介绍面向 agent 的工具。
 
+## agent 的凭据
+
+agent 没法回应弹窗，所以应该通过环境变量给它一个令牌，而不是用保存的登录信息：
+
+```sh
+# 给它一个自己的令牌，有效期一天（由管理员在服务端创建）
+scion admin token create --subject agent-1 --ttl 1d --description "agent run 42"
+export SCION_TOKEN=scn_pat_…
+```
+
+`SCION_TOKEN` 优先于任何保存的凭据，所以这时 `scn` 不会去读钥匙串。在 macOS 上，正式发布的 `scn` 是签名的，会把用户的登录信息存进钥匙串；本地编译（未签名）的 `scn` 则存进 `~/.config/scion/credentials.json`，因为每次编译后 macOS 都会重新询问钥匙串权限。CI 也会给 main 上的每个提交签名一份 `scn`（`signed-macos` 这个 job 的产物，可以用 `gh run download -n scion-main-aarch64-apple-darwin` 下载）。
+
 ## MCP：不用检出就能用仓库
 
 `scn mcp` 通过标准输入输出，用 [Model Context Protocol](https://modelcontextprotocol.io) 把一个仓库提供给 agent。agent 可以在服务端读取任意版本、搜索、查看历史，也可以直接用文件内容在服务端生成提交，不需要 clone，也不需要工作区。

@@ -25,6 +25,44 @@ jobs:
       # 依赖方向：客户端不得依赖服务端，服务端内部只能依赖下层
       - run: cargo xtask layers
 
+  # Signed macOS builds of each commit on main, for machines that run main's scn (agents, the
+  # test server): the keychain trusts a signed scn across versions, while each unsigned build is
+  # a new program it asks about again. Uses the release environment's Apple secrets.
+  signed-macos:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: macos-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: signed-macos
+      - run: cargo build --release --locked -p scion -p scion-cli
+        env:
+          SCION_SIGNED: "1"
+      - name: Import the Apple signing certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+        run: bash scripts/ci-import-apple-certificate.sh
+      - name: Sign
+        env:
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID || '3S93B6Z434' }}
+        run: bash scripts/sign-macos.sh target/release/scion target/release/scn
+      - run: target/release/scn --version && target/release/scion --version
+      - name: Package
+        run: |
+          name="scion-main-${GITHUB_SHA::7}-aarch64-apple-darwin"
+          mkdir -p "dist/$name" && cp target/release/scn target/release/scion "dist/$name/"
+          COPYFILE_DISABLE=1 tar -C dist -czf "dist/$name.tar.gz" "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scion-main-aarch64-apple-darwin
+          path: dist/*.tar.gz
+          retention-days: 30
+
   # The installer is POSIX sh, run as `curl … | sh` on Linux and macOS
   install-script:
     runs-on: ubuntu-latest

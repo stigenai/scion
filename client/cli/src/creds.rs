@@ -1,8 +1,12 @@
 //! 登录凭据的保存（客户端设计文档 §3）：按服务端地址保存长期凭据（刷新令牌或 PAT）。
 //!
-//! macOS 上存进系统钥匙串；其它平台（以及钥匙串不可用时）存进权限为 0600 的文件
-//! `$XDG_CONFIG_HOME/scion/credentials.json`（默认 `~/.config/scion/credentials.json`）。
-//! `SCION_CREDENTIALS_FILE` 指定文件路径时总是使用文件。
+//! Signed macOS builds (the released ones) keep them in the system keychain; elsewhere, and in
+//! builds that are not signed, they go to the file `$XDG_CONFIG_HOME/scion/credentials.json`
+//! (default `~/.config/scion/credentials.json`, mode 0600). macOS asks again whether a program
+//! may read a keychain item each time it is a different unsigned binary, so every local build
+//! would ask, and without a screen to answer on it would wait for ever. `SCION_CREDENTIALS=file`
+//! or `keychain` chooses; `SCION_CREDENTIALS_FILE` names the file (and always uses it). A
+//! keychain that does not answer within [`KEYCHAIN_WAIT`] counts as unavailable.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -10,6 +14,16 @@ use std::path::PathBuf;
 /// 钥匙串条目的服务名。
 #[cfg(target_os = "macos")]
 const KEYRING_SERVICE: &str = "scion";
+
+/// Whether this build is signed (set by the builds that sign it).
+const SIGNED: bool = match option_env!("SCION_SIGNED") {
+    Some(v) => !v.is_empty(),
+    None => false,
+};
+
+/// How long to wait for the keychain, which may be waiting on a dialog nobody can see.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub const KEYCHAIN_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Backend {
@@ -27,10 +41,38 @@ pub fn backend(env: impl Fn(&str) -> Option<String>) -> Backend {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env("HOME").unwrap_or_else(|| ".".into())).join(".config"));
     let file = config.join("scion").join("credentials.json");
-    if cfg!(target_os = "macos") {
+    let keychain = match env("SCION_CREDENTIALS").as_deref() {
+        Some("file") => false,
+        Some("keychain") => true,
+        _ => SIGNED,
+    };
+    if cfg!(target_os = "macos") && keychain {
         Backend::Keyring(file)
     } else {
         Backend::File(file)
+    }
+}
+
+/// `op` on another thread, given up after `wait`: the keychain blocks while it asks the user.
+/// Says so once on standard error when it gives up.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn within<T: Send + 'static>(wait: std::time::Duration, op: impl FnOnce() -> Option<T> + Send + 'static) -> Option<T> {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(op());
+    });
+    match rx.recv_timeout(wait) {
+        Ok(v) => v,
+        Err(_) => {
+            if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                eprintln!(
+                    "scn: the system keychain did not answer (it may be asking on a screen); \
+                     set SCION_TOKEN, or SCION_CREDENTIALS=file to keep credentials in a file"
+                );
+            }
+            None
+        }
     }
 }
 
@@ -76,9 +118,11 @@ fn keyring_entry(endpoint: &str) -> Option<keyring::Entry> {
 pub fn load(b: &Backend, endpoint: &str) -> Option<String> {
     match b {
         #[cfg(target_os = "macos")]
-        Backend::Keyring(file) => keyring_entry(endpoint)
-            .and_then(|e| e.get_password().ok())
-            .or_else(|| read_file(file).ok()?.remove(&key(endpoint))),
+        Backend::Keyring(file) => {
+            let e = endpoint.to_owned();
+            within(KEYCHAIN_WAIT, move || keyring_entry(&e)?.get_password().ok())
+                .or_else(|| read_file(file).ok()?.remove(&key(endpoint)))
+        }
         #[cfg(not(target_os = "macos"))]
         Backend::Keyring(file) => read_file(file).ok()?.remove(&key(endpoint)),
         Backend::File(file) => read_file(file).ok()?.remove(&key(endpoint)),
@@ -90,8 +134,11 @@ pub fn store(b: &Backend, endpoint: &str, secret: &str) -> std::io::Result<Strin
     let file = match b {
         Backend::Keyring(file) => {
             #[cfg(target_os = "macos")]
-            if keyring_entry(endpoint).is_some_and(|e| e.set_password(secret).is_ok()) {
-                return Ok("the system keychain".into());
+            {
+                let (e, s) = (endpoint.to_owned(), secret.to_owned());
+                if within(KEYCHAIN_WAIT, move || keyring_entry(&e)?.set_password(&s).ok()).is_some() {
+                    return Ok("the system keychain".into());
+                }
             }
             file
         }
@@ -108,7 +155,10 @@ pub fn remove(b: &Backend, endpoint: &str) -> std::io::Result<bool> {
     let (file, mut found) = match b {
         Backend::Keyring(file) => {
             #[cfg(target_os = "macos")]
-            let found = keyring_entry(endpoint).is_some_and(|e| e.delete_credential().is_ok());
+            let found = {
+                let e = endpoint.to_owned();
+                within(KEYCHAIN_WAIT, move || keyring_entry(&e)?.delete_credential().ok()).is_some()
+            };
             #[cfg(not(target_os = "macos"))]
             let found = false;
             (file, found)
@@ -141,11 +191,45 @@ mod tests {
             Backend::Keyring(f) | Backend::File(f) => f.clone(),
         };
         assert_eq!(file, PathBuf::from("/home/a/.config/scion/credentials.json"));
-        assert_eq!(cfg!(target_os = "macos"), matches!(default, Backend::Keyring(_)));
+        // The keychain only for signed builds on macOS, unless asked
+        assert_eq!(
+            cfg!(target_os = "macos") && SIGNED,
+            matches!(default, Backend::Keyring(_))
+        );
+        let asked = backend(env(&[("HOME", "/h"), ("SCION_CREDENTIALS", "keychain")]));
+        assert_eq!(cfg!(target_os = "macos"), matches!(asked, Backend::Keyring(_)));
+        assert!(matches!(
+            backend(env(&[("HOME", "/h"), ("SCION_CREDENTIALS", "file")])),
+            Backend::File(_)
+        ));
         let xdg = backend(env(&[("XDG_CONFIG_HOME", "/x"), ("SCION_CREDENTIALS_FILE", "")]));
         assert!(
             matches!(xdg, Backend::Keyring(f) | Backend::File(f) if f == std::path::Path::new("/x/scion/credentials.json"))
         );
+    }
+
+    /// The keychain paths, against keyring's in-memory mock (whose entries keep nothing between
+    /// them, so a read after a write finds nothing and falls back to the file).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn keychain_paths_with_a_mock_keychain() {
+        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
+        let dir = tempfile::tempdir().expect("tempdir");
+        let b = Backend::Keyring(dir.path().join("credentials.json"));
+        assert_eq!(store(&b, "http://k", "s").expect("store"), "the system keychain");
+        assert_eq!(load(&b, "http://k"), None);
+        assert!(!remove(&b, "http://k").expect("remove"));
+    }
+
+    #[test]
+    fn a_keychain_that_does_not_answer_is_given_up() {
+        let quick = std::time::Duration::from_millis(50);
+        assert_eq!(within(quick, || Some(1)), Some(1));
+        let slow = within(quick, || {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            Some(2)
+        });
+        assert_eq!(slow, None);
     }
 
     #[test]

@@ -359,6 +359,6 @@ scn whoami
 scn logout
 ```
 
-- **凭据存放**：按服务端地址保存。macOS 存进钥匙串，其它平台存进 `~/.config/scion/credentials.json`（权限 0600）。`SCION_CREDENTIALS_FILE` 可以指定文件。
+- **凭据存放**：按服务端地址保存。签名的 macOS 版本（正式发布的版本）存进钥匙串；其它构建和其它平台存进 `~/.config/scion/credentials.json`（权限 0600）。macOS 对每个不同的未签名二进制都会重新询问能否读取钥匙串条目，所以本地编译的 `scn` 每编译一次就会问一次，没有屏幕的 agent 会一直等待回答；签名的 `scn` 换了版本也会被继续信任。`SCION_CREDENTIALS=file` 或 `keychain` 可以指定使用哪种，`SCION_CREDENTIALS_FILE` 可以指定文件。钥匙串 3 秒内没有回应时会跳过，并提示改用 `SCION_TOKEN`。
 - **CI**：设置 `SCION_TOKEN`（PAT 或外部令牌），优先于保存的凭据。
 - **TLS**：`https://` 服务端的证书按 `scn` 内置的 Mozilla 根证书校验。`SCION_TLS_CA_FILE=PATH` 加入私有 CA（PEM）；`SCION_TLS_ROOTS=native` 同时信任操作系统的证书库，在 macOS 上可能让每次连接多花好几秒。

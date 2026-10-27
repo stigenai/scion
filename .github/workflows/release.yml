@@ -66,6 +66,9 @@ jobs:
         with:
           key: release-${{ matrix.target }}
       - run: cargo build --release --locked --target ${{ matrix.target }} -p scion -p scion-cli
+        env:
+          # The macOS builds are signed below: scn then keeps credentials in the keychain
+          SCION_SIGNED: ${{ runner.os == 'macOS' && '1' || '' }}
       # macOS: sign with OpenCSG's Developer ID (the certificate csglite uses), so that macOS lets
       # scn and scion ask for local network access. Secrets: APPLE_CERTIFICATE (the .p12, base64)
       # and APPLE_CERTIFICATE_PASSWORD; variables APPLE_SIGNING_IDENTITY and APPLE_TEAM_ID optional
