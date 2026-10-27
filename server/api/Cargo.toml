@@ -27,6 +27,7 @@ http-body = "1"
 scion-land.workspace = true
 scion-merge.workspace = true
 hex.workspace = true
+memchr = "2"
 tokio.workspace = true
 tokio-stream.workspace = true
 tonic.workspace = true

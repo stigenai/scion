@@ -233,6 +233,7 @@ impl Client {
             message: String::new(),
             puts: Vec::new(),
             deletes: Vec::new(),
+            edits: BTreeMap::new(),
             extensions: BTreeMap::new(),
         }
     }
@@ -465,10 +466,33 @@ pub struct ChangesetBuilder<'a> {
     message: String,
     puts: Vec<(String, EntryMode, Bytes)>,
     deletes: Vec<String>,
+    /// Replacements per path, applied by the server to the first parent's file.
+    edits: BTreeMap<String, Vec<v1::TextReplacement>>,
     extensions: BTreeMap<String, Bytes>,
 }
 
 impl ChangesetBuilder<'_> {
+    /// Replaces `old`, which must appear exactly once, with `new` in the file at `path` as the
+    /// first parent has it. The server applies it, so the file is neither downloaded nor
+    /// uploaded; several edits of one path apply in order.
+    pub fn edit(self, path: impl Into<String>, old: impl Into<Bytes>, new: impl Into<Bytes>) -> Self {
+        self.edit_with(path, old, new, false)
+    }
+
+    /// [`ChangesetBuilder::edit`] of every occurrence of `old` (at least one).
+    pub fn edit_all(self, path: impl Into<String>, old: impl Into<Bytes>, new: impl Into<Bytes>) -> Self {
+        self.edit_with(path, old, new, true)
+    }
+
+    fn edit_with(mut self, path: impl Into<String>, old: impl Into<Bytes>, new: impl Into<Bytes>, all: bool) -> Self {
+        self.edits.entry(path.into()).or_default().push(v1::TextReplacement {
+            old: old.into(),
+            new: new.into(),
+            all,
+        });
+        self
+    }
+
     /// 写入普通文件。
     pub fn put(self, path: impl Into<String>, content: impl Into<Bytes>) -> Self {
         self.put_with_mode(path, EntryMode::File, content)
@@ -552,6 +576,12 @@ impl ChangesetBuilder<'_> {
         delta.extend(self.deletes.iter().map(|p| v1::FileChange {
             path: p.clone(),
             op: Some(file_change::Op::Delete(v1::DeleteFile {})),
+        }));
+        delta.extend(self.edits.iter().map(|(p, r)| v1::FileChange {
+            path: p.clone(),
+            op: Some(file_change::Op::Edit(v1::EditFile {
+                replacements: r.clone(),
+            })),
         }));
         ChangesetSpec {
             parents: self.parents.iter().map(bytes_of).collect(),

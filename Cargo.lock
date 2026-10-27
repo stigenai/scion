@@ -3288,6 +3288,7 @@ dependencies = [
  "http",
  "http-body",
  "jsonwebtoken",
+ "memchr",
  "moka",
  "reqwest",
  "scion-auth",

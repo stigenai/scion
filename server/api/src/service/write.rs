@@ -64,6 +64,70 @@ impl WriteSvc {
         Ok(())
     }
 
+    /// Makes the edits in `spec` (replacements in files of its first parent) puts of the new
+    /// contents, which it stores in the repository. Reading those files needs read access.
+    async fn resolve_edits(
+        &self,
+        p: &scion_auth::Principal,
+        repo: &str,
+        spec: &mut ChangesetSpec,
+    ) -> Result<(), Status> {
+        if !spec
+            .delta
+            .iter()
+            .any(|c| matches!(c.op, Some(file_change::Op::Edit(_))))
+        {
+            return Ok(());
+        }
+        let parent = spec
+            .parents
+            .first()
+            .ok_or_else(|| Status::invalid_argument("an edit needs a parent commit to edit files of"))?;
+        let parent = parse_id(parent)?;
+        let root = self
+            .meta
+            .get_changeset(repo, &parent)
+            .await
+            .map_err(status::from_store)?
+            .ok_or_else(|| Status::not_found(format!("changeset {parent} not found")))?
+            .root_tree;
+        let trees = scion_tree::BlobTreeSource(self.writer.blobs().clone());
+        let mut new = Vec::new();
+        for c in &mut spec.delta {
+            let Some(file_change::Op::Edit(e)) = &c.op else {
+                continue;
+            };
+            authorize(&self.guard, p, AuthRequest::repo(repo, Action::Read).with_path(&c.path)).await?;
+            let entry = scion_tree::lookup(&trees, root, &c.path)
+                .await
+                .map_err(status::from_tree)?
+                .filter(|e| matches!(e.mode, EntryMode::File | EntryMode::Executable))
+                .ok_or_else(|| Status::failed_precondition(format!("{}: not a file in the parent commit", c.path)))?;
+            if entry.size > MAX_EDITED {
+                return Err(Status::failed_precondition(format!(
+                    "{}: larger than {MAX_EDITED} bytes; upload the new content instead",
+                    c.path
+                )));
+            }
+            let data = self
+                .writer
+                .blobs()
+                .get(&entry.id)
+                .await
+                .map_err(status::from_store)?
+                .ok_or_else(|| Status::failed_precondition(format!("{}: its content is missing", c.path)))?;
+            let edited = Bytes::from(edit_text(&data, &e.replacements, &c.path)?);
+            let id = ObjectId::of_blob(&edited);
+            c.op = Some(file_change::Op::Put(v1::PutFile {
+                mode: crate::service::query::proto_mode(entry.mode).into(),
+                id: Bytes::copy_from_slice(&id.to_bytes()),
+                size: edited.len() as u64,
+            }));
+            new.push((id, edited));
+        }
+        self.writer.store(repo, &new).await.map_err(status::from_land)
+    }
+
     /// 按仓库限制写入速率（上传与创建提交各算一次）。
     pub fn with_rate_limit(mut self, limiter: Arc<RateLimiter>) -> Self {
         self.limiter = Some(limiter);
@@ -221,6 +285,53 @@ impl UploadAssembler {
     }
 }
 
+/// Largest file an edit can change on the server.
+const MAX_EDITED: u64 = 64 << 20;
+
+/// `data` with `replacements` applied in order; each must match exactly once unless `all`.
+fn edit_text(data: &[u8], replacements: &[v1::TextReplacement], path: &str) -> Result<Vec<u8>, Status> {
+    let mut out = data.to_vec();
+    for (i, r) in replacements.iter().enumerate() {
+        let n = i + 1;
+        if r.old.is_empty() {
+            return Err(Status::invalid_argument(format!(
+                "{path}: replacement {n} has nothing to replace"
+            )));
+        }
+        let at: Vec<usize> = memchr::memmem::find_iter(&out, &r.old[..]).collect();
+        // Overlapping matches count once, as the replacement goes left to right
+        let mut starts = Vec::new();
+        for a in at {
+            if starts.last().is_none_or(|l: &usize| a >= l + r.old.len()) {
+                starts.push(a);
+            }
+        }
+        match (starts.len(), r.all) {
+            (0, _) => {
+                return Err(Status::failed_precondition(format!(
+                    "{path}: replacement {n}: the text to replace is not in the file"
+                )));
+            }
+            (1, _) | (_, true) => {}
+            (k, false) => {
+                return Err(Status::failed_precondition(format!(
+                    "{path}: replacement {n}: the text to replace appears {k} times; include more around it, or replace all"
+                )));
+            }
+        }
+        let mut next = Vec::with_capacity(out.len());
+        let mut from = 0;
+        for s in starts {
+            next.extend_from_slice(&out[from..s]);
+            next.extend_from_slice(&r.new);
+            from = s + r.old.len();
+        }
+        next.extend_from_slice(&out[from..]);
+        out = next;
+    }
+    Ok(out)
+}
+
 fn entry_mode(m: i32) -> Result<EntryMode, Status> {
     match v1::EntryMode::try_from(m) {
         Ok(v1::EntryMode::File) => Ok(EntryMode::File),
@@ -265,6 +376,9 @@ pub(crate) fn spec_to_changeset(spec: ChangesetSpec, max_changes: u32) -> Result
         delta.push(match c.op {
             Some(file_change::Op::Put(p)) => FileChange::put(c.path, entry_mode(p.mode)?, parse_id(&p.id)?, p.size),
             Some(file_change::Op::Delete(_)) => FileChange::delete(c.path),
+            Some(file_change::Op::Edit(_)) => {
+                return Err(status::invalid_changeset(&c.path, "an edit was not applied"));
+            }
             None => return Err(status::invalid_changeset(&c.path, "file change has no operation")),
         });
     }
@@ -325,9 +439,10 @@ impl WriteService for WriteSvc {
     ) -> Result<Response<CreateChangesetResponse>, Status> {
         let p = principal(&request);
         let req = request.into_inner();
-        let spec = req
+        let mut spec = req
             .changeset
             .ok_or_else(|| Status::invalid_argument("changeset is required"))?;
+        self.resolve_edits(&p, &req.repo, &mut spec).await?;
         let cs = spec_to_changeset(spec, self.config.limits.max_changes_per_changeset)?;
         self.authorize_paths(&p, &req.repo, &cs).await?;
         // git sha 会被当作这个提交的身份（按 sha 解析版本、事件中的 git_sha），只有导入者可以声明：
@@ -363,6 +478,31 @@ impl WriteService for WriteSvc {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn edits_replace_text_once_or_everywhere() {
+        let r = |old: &str, new: &str, all: bool| v1::TextReplacement {
+            old: Bytes::copy_from_slice(old.as_bytes()),
+            new: Bytes::copy_from_slice(new.as_bytes()),
+            all,
+        };
+        let edit = |data: &str, reps: &[v1::TextReplacement]| {
+            edit_text(data.as_bytes(), reps, "f").map(|v| String::from_utf8(v).expect("utf8"))
+        };
+        assert_eq!(edit("a b c", &[r("b", "B", false)]).expect("once"), "a B c");
+        assert_eq!(edit("x x x", &[r("x", "y", true)]).expect("all"), "y y y");
+        assert_eq!(edit("aaa", &[r("aa", "b", true)]).expect("overlapping"), "ba");
+        assert_eq!(
+            edit("one two", &[r("one", "1", false), r("1 two", "12", false)]).expect("in order"),
+            "12"
+        );
+        let code = |res: Result<String, Status>| res.expect_err("refused").code();
+        assert_eq!(code(edit("abc", &[r("z", "y", false)])), Code::FailedPrecondition);
+        assert_eq!(code(edit("abc", &[r("z", "y", true)])), Code::FailedPrecondition);
+        let twice = edit("x x", &[r("x", "y", false)]).expect_err("ambiguous");
+        assert!(twice.message().contains("appears 2 times"), "{twice:?}");
+        assert_eq!(code(edit("abc", &[r("", "y", false)])), Code::InvalidArgument);
+    }
 
     #[tokio::test]
     async fn git_sha_extension_needs_admin() {

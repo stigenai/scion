@@ -24,9 +24,11 @@ claude mcp add scion -- scn mcp --repo http://scion.example.com:7080/org/app
 | `blame` | 每一行最后被改动的提交 |
 | `diff` | 两个版本之间的改动，附带补丁 |
 | `show` | 一个提交的说明、作者和改动 |
-| `commit` | 在某个版本之上，用完整的文件内容和要删除的路径生成提交；加 `land` 时同时合入分支 |
+| `commit` | 在某个版本之上，用完整的文件内容、要删除的路径和 `edits` 生成提交；加 `land` 时同时合入分支 |
+| `edit_file` | 把一个文件里的 `old_string` 替换成 `new_string` 并提交（默认同时合入，`land` 为 false 时不合入） |
 | `land` | 把一个提交合入分支 |
 
+- **编辑由服务端完成。** `edit_file` 和 `commit` 的 `edits` 在基础提交里的那个文件上做文本替换：agent 只需要发送要改的文字，不用发送整个文件，本地也不需要有这个文件。不加 `replace_all` 时 `old_string` 必须恰好出现一次，否则调用失败，并说明它出现了几次。SDK 里对应的是 `ChangesetBuilder::edit`。
 - **版本**可以是分支名、标签名、提交 id、git SHA 和 `HEAD~N`；不给时就是当前分支。
 - **结果**就是同一条 `scn` 命令加 `--json` 时输出的 JSON；调用失败时返回 `scn` 的错误 JSON（`reason`、`retryable`、`hint`），并标记 `isError`。
 - **多个 agent 同时工作。** 每个提交都记录它基于哪个提交（`base`，默认是生成提交时分支的最新提交）。合入时，服务端把它 rebase 到其他 agent 在这期间合入的内容之上，agent 不需要拉取任何东西。两个 agent 改了同样的行时，后合入的一方会被拒绝并收到冲突信息，它读取新的最新提交后再试一次即可。

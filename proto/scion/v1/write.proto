@@ -46,11 +46,27 @@ message PutFile {
 
 message DeleteFile {}
 
+// Replacing text in a file as the first parent has it, so a client changes a file without
+// downloading or uploading all of it. The server applies the replacements in order and stores
+// the result as a put of the new content. It needs read access to the file, besides write.
+message EditFile {
+  repeated TextReplacement replacements = 1;
+}
+
+message TextReplacement {
+  // Not empty. Without `all` it must appear exactly once in the file at that point.
+  bytes old = 1;
+  bytes new = 2;
+  // Replace every occurrence (at least one).
+  bool all = 3;
+}
+
 message FileChange {
   string path = 1;
   oneof op {
     PutFile put = 2;
     DeleteFile delete = 3;
+    EditFile edit = 4;
   }
 }
 

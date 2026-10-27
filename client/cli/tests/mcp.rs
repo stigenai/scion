@@ -122,6 +122,7 @@ async fn an_agent_reads_and_commits_without_a_checkout() {
             "diff",
             "show",
             "commit",
+            "edit_file",
             "land"
         ]
     );
@@ -267,4 +268,123 @@ async fn agents_land_at_the_same_time() {
     assert_eq!(log["entries"].as_array().map(Vec::len), Some(13));
     let (ls, _) = result(&replies[1]);
     assert_eq!(ls["entries"].as_array().map(Vec::len), Some(5), "agent0..3 and seed");
+}
+
+/// Edits applied on the server: no file is read or sent whole, and agents editing different
+/// parts of one file at once both land.
+#[tokio::test(flavor = "multi_thread")]
+async fn agents_edit_files_on_the_server() {
+    let url = server("app").await;
+    let repo = format!("{url}/app");
+    let lines: String = (0..20).map(|i| format!("line {i}\n")).collect();
+    let r = repo.clone();
+    let replies = tokio::task::spawn_blocking(move || {
+        session(
+            &["--repo", &r],
+            "Agent <a@x>",
+            &[
+                // Nothing to edit in an empty repository
+                call(
+                    1,
+                    "edit_file",
+                    json!({"path": "f.txt", "old_string": "a", "new_string": "b"}),
+                ),
+                call(
+                    2,
+                    "commit",
+                    json!({"message": "seed", "land": true, "files": [
+                        {"path": "f.txt", "content": lines}, {"path": "g.txt", "content": "x = 1\nx = 1\n"},
+                    ]}),
+                ),
+                call(
+                    3,
+                    "edit_file",
+                    json!({"path": "f.txt", "old_string": "line 3\n", "new_string": "line three\n"}),
+                ),
+                call(
+                    4,
+                    "commit",
+                    json!({"message": "two files", "land": true, "edits": [
+                        {"path": "g.txt", "old": "x = 1", "new": "x = 2", "all": true},
+                        {"path": "f.txt", "old": "line 19\n", "new": ""},
+                    ]}),
+                ),
+                call(
+                    5,
+                    "edit_file",
+                    json!({"path": "g.txt", "old_string": "x = 2", "new_string": "y"}),
+                ),
+                call(
+                    6,
+                    "edit_file",
+                    json!({"path": "f.txt", "old_string": "nowhere", "new_string": "y"}),
+                ),
+                call(
+                    7,
+                    "edit_file",
+                    json!({"path": "nope.txt", "old_string": "a", "new_string": "b"}),
+                ),
+                call(8, "read_file", json!({"path": "f.txt"})),
+                call(9, "read_file", json!({"path": "g.txt"})),
+            ],
+        )
+    })
+    .await
+    .expect("session");
+    let (v, err) = result(&replies[0]);
+    assert!(err && v.to_string().contains("parent"), "{v}");
+    for i in [1, 2, 3] {
+        let (v, err) = result(&replies[i]);
+        assert!(!err, "{i}: {v}");
+    }
+    for (i, want) in [(4, "appears 2 times"), (5, "not in the file"), (6, "not a file")] {
+        let (v, err) = result(&replies[i]);
+        assert!(err && v.to_string().contains(want), "{i}: {v}");
+    }
+    let (f, _) = result(&replies[7]);
+    let content = f["content"].as_str().expect("content");
+    assert!(
+        content.contains("line three\n") && !content.contains("line 19"),
+        "{content}"
+    );
+    let (g, _) = result(&replies[8]);
+    assert_eq!(g["content"], "x = 2\nx = 2\n");
+
+    // Two agents edit far apart lines of one file from the same base, at once: both land
+    let agents: Vec<_> = [(1, "line 1\n", "first\n"), (2, "line 17\n", "seventeenth\n")]
+        .into_iter()
+        .map(|(n, old, new)| {
+            let repo = repo.clone();
+            tokio::task::spawn_blocking(move || {
+                session(
+                    &["--repo", &repo],
+                    &format!("Agent {n} <a{n}@x>"),
+                    &[call(
+                        1,
+                        "edit_file",
+                        json!({"path": "f.txt", "old_string": old, "new_string": new}),
+                    )],
+                )
+            })
+        })
+        .collect();
+    for a in agents {
+        let (v, err) = result(&a.await.expect("agent")[0]);
+        assert!(!err, "{v}");
+    }
+    let replies = tokio::task::spawn_blocking(move || {
+        session(
+            &["--repo", &repo],
+            "Reader <r@x>",
+            &[call(1, "read_file", json!({"path": "f.txt"}))],
+        )
+    })
+    .await
+    .expect("read");
+    let (f, _) = result(&replies[0]);
+    let content = f["content"].as_str().expect("content");
+    assert!(
+        content.contains("first\n") && content.contains("seventeenth\n") && content.contains("line three\n"),
+        "{content}"
+    );
 }

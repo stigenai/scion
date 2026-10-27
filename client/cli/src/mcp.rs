@@ -167,11 +167,36 @@ fn tools() -> Vec<Value> {
                     "required": ["path", "content"],
                 }},
                 "delete": {"type": "array", "items": {"type": "string"}, "description": "Paths to delete"},
+                "edits": {"type": "array", "description": "Text replacements in files of base, applied on the server", "items": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"}, "old": {"type": "string"}, "new": {"type": "string"},
+                        "all": {"type": "boolean", "description": "Every occurrence; otherwise old must appear exactly once"},
+                    },
+                    "required": ["path", "old", "new"],
+                }},
                 "base": revision,
                 "land": {"type": "boolean", "description": "Land it on branch (default false)"},
                 "branch": {"type": "string", "description": "The branch to land on; default the current one"},
             }),
             &["message"],
+        ),
+        tool(
+            "edit_file",
+            "Replace old_string with new_string in a file and commit it, without reading or sending the \
+             whole file: the server applies the edit to the file at base (the branch by default). \
+             old_string must appear exactly once unless replace_all. Lands it unless land is false.",
+            json!({
+                "path": path,
+                "old_string": {"type": "string"},
+                "new_string": {"type": "string"},
+                "replace_all": {"type": "boolean"},
+                "message": {"type": "string", "description": "Default: Edit PATH"},
+                "base": revision,
+                "land": {"type": "boolean", "description": "Default true"},
+                "branch": {"type": "string"},
+            }),
+            &["path", "old_string", "new_string"],
         ),
         tool(
             "land",
@@ -264,6 +289,25 @@ async fn call(ctx: &Ctx, name: &str, args: &Value) -> Result<Value, CliError> {
         }
         "show" => to_json(crate::history::show(ctx, rev, arg(args, "path"), false).await?),
         "commit" => commit(ctx, args).await?,
+        "edit_file" => {
+            let path = required(args, "path")?;
+            let mut c = json!({
+                "message": arg(args, "message").map_or_else(|| format!("Edit {path}"), str::to_owned),
+                "edits": [{
+                    "path": path,
+                    "old": args.get("old_string").and_then(Value::as_str).unwrap_or_default(),
+                    "new": args.get("new_string").and_then(Value::as_str).unwrap_or_default(),
+                    "all": args.get("replace_all").and_then(Value::as_bool).unwrap_or(false),
+                }],
+                "land": args.get("land").and_then(Value::as_bool).unwrap_or(true),
+            });
+            for k in ["base", "branch"] {
+                if let Some(v) = arg(args, k) {
+                    c[k] = json!(v);
+                }
+            }
+            commit(ctx, &c).await?
+        }
         "land" => {
             let (client, _) = query_client(ctx).await?;
             let id = required(args, "changeset")?;
@@ -315,8 +359,21 @@ async fn commit(ctx: &Ctx, args: &Value) -> Result<Value, CliError> {
         b = b.delete(p.to_owned());
         changed += 1;
     }
+    for e in args.get("edits").and_then(Value::as_array).into_iter().flatten() {
+        let field = |k: &str| e.get(k).and_then(Value::as_str);
+        let (Some(path), Some(old), Some(new)) = (field("path"), field("old"), field("new")) else {
+            return Err(CliError::Usage("each edit needs a path, old and new".into()));
+        };
+        let (path, old, new) = (path.to_owned(), old.as_bytes().to_vec(), new.as_bytes().to_vec());
+        b = if e.get("all").and_then(Value::as_bool).unwrap_or(false) {
+            b.edit_all(path, old, new)
+        } else {
+            b.edit(path, old, new)
+        };
+        changed += 1;
+    }
     if changed == 0 {
-        return Err(CliError::Usage("nothing to commit: give files or delete".into()));
+        return Err(CliError::Usage("nothing to commit: give files, edits or delete".into()));
     }
     let created = b.create().await?;
     let mut out = json!({
