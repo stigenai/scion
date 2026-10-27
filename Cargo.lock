@@ -3252,7 +3252,7 @@ dependencies = [
 
 [[package]]
 name = "scion"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3278,7 +3278,7 @@ dependencies = [
 
 [[package]]
 name = "scion-api"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "async-nats",
  "async-trait",
@@ -3317,7 +3317,7 @@ dependencies = [
 
 [[package]]
 name = "scion-auth"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -3339,7 +3339,7 @@ dependencies = [
 
 [[package]]
 name = "scion-cache"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "blake3",
  "bytes",
@@ -3365,7 +3365,7 @@ dependencies = [
 
 [[package]]
 name = "scion-cli"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "bytes",
  "clap",
@@ -3392,7 +3392,7 @@ dependencies = [
 
 [[package]]
 name = "scion-client"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "bytes",
  "hex",
@@ -3414,7 +3414,7 @@ dependencies = [
 
 [[package]]
 name = "scion-daemon"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "axum",
  "bytes",
@@ -3440,14 +3440,14 @@ dependencies = [
 
 [[package]]
 name = "scion-flight"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "tokio",
 ]
 
 [[package]]
 name = "scion-git"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3473,7 +3473,7 @@ dependencies = [
 
 [[package]]
 name = "scion-gitimport"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "bytes",
  "hex",
@@ -3488,7 +3488,7 @@ dependencies = [
 
 [[package]]
 name = "scion-land"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3507,7 +3507,7 @@ dependencies = [
 
 [[package]]
 name = "scion-merge"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3521,7 +3521,7 @@ dependencies = [
 
 [[package]]
 name = "scion-object"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "blake3",
  "hex",
@@ -3533,7 +3533,7 @@ dependencies = [
 
 [[package]]
 name = "scion-obs"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "axum",
  "bytes",
@@ -3555,7 +3555,7 @@ dependencies = [
 
 [[package]]
 name = "scion-proto"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "prost",
  "protox",
@@ -3566,7 +3566,7 @@ dependencies = [
 
 [[package]]
 name = "scion-query"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3590,7 +3590,7 @@ dependencies = [
 
 [[package]]
 name = "scion-store"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3604,7 +3604,7 @@ dependencies = [
 
 [[package]]
 name = "scion-store-blob"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "async-trait",
  "blake3",
@@ -3623,7 +3623,7 @@ dependencies = [
 
 [[package]]
 name = "scion-store-sql"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "async-trait",
  "scion-object",
@@ -3636,7 +3636,7 @@ dependencies = [
 
 [[package]]
 name = "scion-tree"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3649,7 +3649,7 @@ dependencies = [
 
 [[package]]
 name = "scion-wc"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "bytes",
  "diffy",
@@ -5345,7 +5345,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "cargo_metadata",
