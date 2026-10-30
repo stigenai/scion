@@ -22,7 +22,7 @@ use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
-use crate::auth::{authorize, authorize_any, principal};
+use crate::auth::{authorize, authorize_any, principal, request_bearer, to_status};
 use crate::service::support::{check_repo, parse_id, resolve_revision};
 use crate::status;
 use crate::watch::{RefHub, RefUpdate};
@@ -224,8 +224,12 @@ impl Filter {
 }
 
 /// 订阅者的发送循环：通道里的变化逐批发送（同时到达的合并成一条响应），落后太多时重新取快照。
+///
+/// 每批发送前重新认证并检查读权限：令牌被吊销、过期或策略不再允许读时，流以该错误结束，不再发送事件。
 async fn pump(
     hub: Arc<RefHub>,
+    guard: Arc<Guard>,
+    bearer: Option<String>,
     repo: String,
     mut filter: Filter,
     mut rx: broadcast::Receiver<RefUpdate>,
@@ -261,14 +265,24 @@ async fn pump(
                 Err(_) => None,
             };
         }
-        if !events.is_empty()
-            && out
-                .send(Ok(WatchRefsResponse {
-                    events,
-                    snapshot: false,
-                }))
-                .await
-                .is_err()
+        if events.is_empty() {
+            continue;
+        }
+        let allowed = match guard.authenticate(bearer.as_deref()).await {
+            Ok(p) => authorize_any(&guard, &p, &repo, Action::Read).await,
+            Err(e) => Err(to_status(e)),
+        };
+        if let Err(e) = allowed {
+            let _ = out.send(Err(e)).await;
+            return;
+        }
+        if out
+            .send(Ok(WatchRefsResponse {
+                events,
+                snapshot: false,
+            }))
+            .await
+            .is_err()
         {
             return;
         }
@@ -463,6 +477,7 @@ impl RefService for RefSvc {
 
     async fn watch_refs(&self, request: Request<WatchRefsRequest>) -> Result<Response<Self::WatchRefsStream>, Status> {
         let p = principal(&request);
+        let bearer = request_bearer(&request);
         let req = request.into_inner();
         authorize_any(&self.guard, &p, &req.repo, Action::Read).await?;
         check_repo(self.meta.as_ref(), &req.repo).await?;
@@ -476,7 +491,15 @@ impl RefService for RefSvc {
         let events = filter.take_all(&snap);
         let (tx, out) = mpsc::channel(16);
         let _ = tx.send(Ok(WatchRefsResponse { events, snapshot: true })).await;
-        tokio::spawn(pump(self.hub.clone(), req.repo, filter, rx, tx));
+        tokio::spawn(pump(
+            self.hub.clone(),
+            self.guard.clone(),
+            bearer,
+            req.repo,
+            filter,
+            rx,
+            tx,
+        ));
         Ok(Response::new(Box::pin(ReceiverStream::new(out))))
     }
 }
@@ -974,7 +997,7 @@ mod tests {
             refs: HashSet::new(),
             sent: HashMap::new(),
         };
-        let task = tokio::spawn(pump(h, REPO.into(), filter, brx, tx));
+        let task = tokio::spawn(pump(h, Guard::disabled(), None, REPO.into(), filter, brx, tx));
         let resp = out.recv().await.expect("resp").expect("ok");
         // 快照里的 main，加上通道里剩下的 x 的最新版本
         let got: Vec<_> = resp.events.iter().map(|e| (e.name.as_str(), e.version)).collect();
@@ -993,7 +1016,7 @@ mod tests {
             refs: HashSet::new(),
             sent: HashMap::new(),
         };
-        pump(closing, REPO.into(), filter, brx, tx).await;
+        pump(closing, Guard::disabled(), None, REPO.into(), filter, brx, tx).await;
         assert!(out.recv().await.is_none());
         drop(btx);
 
@@ -1005,7 +1028,16 @@ mod tests {
             refs: HashSet::new(),
             sent: HashMap::new(),
         };
-        pump(hub(store.clone()), REPO.into(), filter, brx, tx).await;
+        pump(
+            hub(store.clone()),
+            Guard::disabled(),
+            None,
+            REPO.into(),
+            filter,
+            brx,
+            tx,
+        )
+        .await;
         drop(btx);
 
         // 重新取快照失败：把错误发给客户端
@@ -1017,7 +1049,7 @@ mod tests {
             refs: HashSet::new(),
             sent: HashMap::new(),
         };
-        pump(hub(store), "missing".into(), filter, brx, tx).await;
+        pump(hub(store), Guard::disabled(), None, "missing".into(), filter, brx, tx).await;
         assert_eq!(
             out.recv().await.expect("err").map(|_| ()).map_err(|s| s.code()),
             Err(Code::NotFound)

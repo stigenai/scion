@@ -84,9 +84,17 @@ fn public(path: &str) -> bool {
 }
 
 fn bearer(headers: &http::HeaderMap) -> Option<String> {
-    let v = headers.get(http::header::AUTHORIZATION)?.to_str().ok()?;
+    bearer_value(headers.get(http::header::AUTHORIZATION)?.to_str().ok()?)
+}
+
+fn bearer_value(v: &str) -> Option<String> {
     let (scheme, token) = v.split_once(' ')?;
     scheme.eq_ignore_ascii_case("bearer").then(|| token.trim().to_owned())
+}
+
+/// 请求的 bearer 令牌（与 [`AuthLayer`] 取的相同），长连接用它重新认证。
+pub fn request_bearer<T>(req: &tonic::Request<T>) -> Option<String> {
+    bearer_value(req.metadata().get("authorization")?.to_str().ok()?)
 }
 
 #[derive(Clone)]
