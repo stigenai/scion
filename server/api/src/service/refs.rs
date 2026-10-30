@@ -997,7 +997,7 @@ mod tests {
             refs: HashSet::new(),
             sent: HashMap::new(),
         };
-        let task = tokio::spawn(pump(h, REPO.into(), filter, brx, tx));
+        let task = tokio::spawn(pump(h, Guard::disabled(), None, REPO.into(), filter, brx, tx));
         let resp = out.recv().await.expect("resp").expect("ok");
         // 快照里的 main，加上通道里剩下的 x 的最新版本
         let got: Vec<_> = resp.events.iter().map(|e| (e.name.as_str(), e.version)).collect();
@@ -1016,7 +1016,7 @@ mod tests {
             refs: HashSet::new(),
             sent: HashMap::new(),
         };
-        pump(closing, REPO.into(), filter, brx, tx).await;
+        pump(closing, Guard::disabled(), None, REPO.into(), filter, brx, tx).await;
         assert!(out.recv().await.is_none());
         drop(btx);
 
@@ -1028,7 +1028,16 @@ mod tests {
             refs: HashSet::new(),
             sent: HashMap::new(),
         };
-        pump(hub(store.clone()), REPO.into(), filter, brx, tx).await;
+        pump(
+            hub(store.clone()),
+            Guard::disabled(),
+            None,
+            REPO.into(),
+            filter,
+            brx,
+            tx,
+        )
+        .await;
         drop(btx);
 
         // 重新取快照失败：把错误发给客户端
@@ -1040,7 +1049,7 @@ mod tests {
             refs: HashSet::new(),
             sent: HashMap::new(),
         };
-        pump(hub(store), "missing".into(), filter, brx, tx).await;
+        pump(hub(store), Guard::disabled(), None, "missing".into(), filter, brx, tx).await;
         assert_eq!(
             out.recv().await.expect("err").map(|_| ()).map_err(|s| s.code()),
             Err(Code::NotFound)

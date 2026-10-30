@@ -88,9 +88,6 @@ impl Stats {
 type Outcome = Result<Bytes, Status>;
 type FlightKey = (Arc<str>, ObjectId);
 
-/// 读权限确认结果的缓存时间。
-pub const ACCESS_TTL: std::time::Duration = std::time::Duration::from_secs(60);
-
 /// 两次向上游同步 redaction 的最长间隔，即 redact 之后缓存层最多还返回该对象这么久。
 pub const REDACTION_TTL: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -190,8 +187,6 @@ pub struct CacheNode {
     /// 各仓库的 redaction 状态；锁同时让同一仓库的并发同步只做一次。
     redactions: moka::sync::Cache<Arc<str>, Arc<tokio::sync::Mutex<RepoRedactions>>>,
     redaction_ttl: std::time::Duration,
-    /// 已确认可以读取整个仓库的 (令牌哈希, 仓库)，[`ACCESS_TTL`] 后重新确认（吊销或改策略最多延迟这么久）。
-    access: moka::sync::Cache<([u8; 32], Arc<str>), ()>,
     ring: Ring,
     /// 本节点在 ring 中的地址；不在 ring 中（单节点）时为 `None`。
     me: Option<String>,
@@ -230,10 +225,6 @@ impl CacheNode {
                 .time_to_live(REPO_STATE_TTL)
                 .build(),
             redaction_ttl: REDACTION_TTL,
-            access: moka::sync::Cache::builder()
-                .max_capacity(1_000_000)
-                .time_to_live(ACCESS_TTL)
-                .build(),
             ring,
             me,
             peers,
@@ -296,13 +287,9 @@ impl CacheNode {
     }
 
     /// 确认调用者能读取整个仓库（按 id 读对象无法按路径限制，与 L3 的要求相同）。缓存不解析令牌，
-    /// 用调用者自己的令牌向上游确认，结果按 (令牌, 仓库) 缓存。
+    /// 每次读取都用调用者自己的令牌向上游确认，结果不缓存：令牌被吊销或策略改变后，下一次读取就被拒绝，
+    /// 命中缓存也一样。缓存的只有对象字节。
     async fn check_access(&self, repo: &Arc<str>, ctx: &RequestCtx) -> Result<(), Status> {
-        let token = ctx.authorization.as_ref().map_or(&[][..], |a| a.as_bytes());
-        let key = (*blake3::hash(token).as_bytes(), repo.clone());
-        if self.access.contains_key(&key) {
-            return Ok(());
-        }
         self.stats.access_checks.fetch_add(1, Ordering::Relaxed);
         if !self.upstream.can_read(repo, ctx).await? {
             return Err(if ctx.authorization.is_none() {
@@ -311,7 +298,6 @@ impl CacheNode {
                 permission_denied(repo)
             });
         }
-        self.access.insert(key, ());
         Ok(())
     }
 
@@ -776,7 +762,7 @@ mod tests {
         assert_eq!(err.code(), Code::Unavailable);
     }
 
-    /// 命中缓存前先确认调用者能读这个仓库（按令牌缓存）。
+    /// 命中缓存前先确认调用者能读这个仓库（每次读取都向上游确认）。
     #[tokio::test]
     async fn reads_require_repo_access() {
         let mut f = Fake::new("l3", &[A]);
@@ -786,7 +772,7 @@ mod tests {
         let anon = RequestCtx::default();
         n.get_many("open", &[id(A)], &anon, false).await.expect("readable");
         n.get_many("open", &[id(A)], &anon, false).await.expect("again");
-        assert_eq!(n.stats().access_checks, 1, "cached per (token, repo)");
+        assert_eq!(n.stats().access_checks, 2, "checked on every read, also on a hit");
         let err = n
             .get_many("secret", &[id(A)], &anon, false)
             .await
@@ -805,7 +791,7 @@ mod tests {
         assert_eq!(info.reason, "PERMISSION_DENIED");
         // 不同令牌分别确认
         n.get_many("open", &[id(A)], &alice, false).await.expect("ok");
-        assert_eq!(n.stats().access_checks, 4);
+        assert_eq!(n.stats().access_checks, 5);
         let invalid = RequestCtx {
             authorization: Some(tonic::metadata::MetadataValue::from_static("Bearer invalid")),
             ..RequestCtx::default()

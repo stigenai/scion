@@ -75,11 +75,7 @@ async fn start() -> Server {
     tokio::spawn(serve(listener, app, async {
         let _ = rx.await;
     }));
-    Server {
-        url,
-        guard,
-        _stop: tx,
-    }
+    Server { url, guard, _stop: tx }
 }
 
 fn with_token<T>(msg: T, token: &str) -> tonic::Request<T> {
@@ -142,7 +138,13 @@ async fn land_change(writer: &Client, n: usize) {
     writer.land("main", &cs.id).await.expect("land");
 }
 
-async fn open_watch(s: &Server, token: &str) -> (RefServiceClient<tonic::transport::Channel>, Streaming<WatchRefsResponse>) {
+async fn open_watch(
+    s: &Server,
+    token: &str,
+) -> (
+    RefServiceClient<tonic::transport::Channel>,
+    Streaming<WatchRefsResponse>,
+) {
     let mut refs = RefServiceClient::connect(s.url.clone()).await.expect("connect");
     let mut stream = refs
         .watch_refs(with_token(
