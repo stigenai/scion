@@ -35,11 +35,15 @@ RUN case "${TARGETARCH}" in \
          && rm -rf /var/lib/apt/lists/* && echo "${gcc}-gcc" > /cc; \
        else echo gcc > /cc; fi
 COPY . .
-# 依赖与编译结果放在 BuildKit 缓存里，改代码后重新构建只编译变化的 crate
+# 依赖与编译结果放在 BuildKit 缓存里，第三方依赖不用重新编译
+# Cargo compares source mtimes, and a normalized source snapshot has mtime 0, so a cached workspace
+# crate would look fresh. Clean the workspace crates first. sharing=locked stops a second build
+# from using the cache while this one cleans it.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/src/target,id=scion-target-${TARGETARCH} \
+    --mount=type=cache,target=/src/target,id=scion-target-${TARGETARCH},sharing=locked \
     t=$(cat /target) && cc=$(cat /cc) && T=$(echo "$t" | tr a-z- A-Z_) \
     && export "CC_$(echo "$t" | tr - _)=$cc" "CARGO_TARGET_${T}_LINKER=$cc" \
+    && cargo clean --workspace --profile "${CARGO_PROFILE}" --target "$t" \
     && cargo build --profile "${CARGO_PROFILE}" --locked --target "$t" -p scion -p scion-cli \
     && dir=$([ "${CARGO_PROFILE}" = dev ] && echo debug || echo "${CARGO_PROFILE}") \
     && mkdir -p /out \
