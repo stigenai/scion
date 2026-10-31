@@ -105,6 +105,12 @@ pub struct Gateway {
     push: Option<(Arc<dyn receive::PushBackend>, u64)>,
 }
 
+// Deliberately no Debug: the credential must never enter request logs or Principal.
+struct PushIdentity<'a> {
+    principal: &'a Principal,
+    credential: Option<&'a str>,
+}
+
 impl Gateway {
     pub fn new(meta: Arc<dyn MetaStore>, blobs: Arc<dyn BlobStore>, guard: Arc<Guard>, version: &str) -> Self {
         Self {
@@ -178,7 +184,12 @@ impl Gateway {
                 Ok(f) => f,
                 Err(r) => return *r,
             };
-            return self.receive_pack(&principal, &repo, &default, file).await;
+            let credential = credentials(&parts.headers);
+            let identity = PushIdentity {
+                principal: &principal,
+                credential: credential.as_deref(),
+            };
+            return self.receive_pack(&identity, &repo, &default, file).await;
         }
         let body = match read_body(&parts.headers, body, MAX_REQUEST).await {
             Ok(b) => b,
@@ -246,7 +257,13 @@ impl Gateway {
     }
 
     /// A push: unpacks, turns the new commits into Scion commits, updates each ref and reports.
-    async fn receive_pack(&self, p: &Principal, repo: &str, default: &str, body: std::fs::File) -> Response<Body> {
+    async fn receive_pack(
+        &self,
+        identity: &PushIdentity<'_>,
+        repo: &str,
+        default: &str,
+        body: std::fs::File,
+    ) -> Response<Body> {
         const RESULT: &str = "application/x-git-receive-pack-result";
         let Some((backend, max_file)) = &self.push else {
             return text(StatusCode::FORBIDDEN, "this server does not accept git pushes");
@@ -276,7 +293,7 @@ impl Gateway {
                 let mut conv = receive::Converter::new(self.meta.as_ref(), self.blobs.as_ref(), repo, pack);
                 let mut results = Vec::with_capacity(req.commands.len());
                 for c in &req.commands {
-                    let r = self.apply(p, repo, backend.as_ref(), &mut conv, c).await;
+                    let r = self.apply(identity, repo, backend.as_ref(), &mut conv, c).await;
                     if let Err(e) = &r {
                         tracing::info!(%repo, git_ref = %c.git_ref, error = %e, "git push refused");
                     }
@@ -292,7 +309,7 @@ impl Gateway {
                     .collect(),
             ),
         };
-        tracing::info!(%repo, subject = %p.subject, default, commands = results.len(), "git push");
+        tracing::info!(%repo, subject = %identity.principal.subject, default, commands = results.len(), "git push");
         let report = receive::report(unpack_status, &results);
         let body = if req.side_band {
             let mut out = BytesMut::new();
@@ -310,7 +327,7 @@ impl Gateway {
     /// One ref command: checks the old value, converts the new commits, updates the ref.
     async fn apply(
         &self,
-        p: &Principal,
+        identity: &PushIdentity<'_>,
         repo: &str,
         backend: &dyn receive::PushBackend,
         conv: &mut receive::Converter<'_>,
@@ -341,7 +358,8 @@ impl Gateway {
             let state = current.ok_or("no such ref")?;
             return backend
                 .update(
-                    p,
+                    identity.principal,
+                    identity.credential,
                     repo,
                     receive::RefUpdate::Delete {
                         name,
@@ -357,7 +375,10 @@ impl Gateway {
             Some((commit, raw)) => (commit, Some(raw)),
             None => (c.new, None),
         };
-        let new = conv.convert(p, backend, tip).await.map_err(|e| e.to_string())?;
+        let new = conv
+            .convert(identity.principal, backend, tip)
+            .await
+            .map_err(|e| e.to_string())?;
         let update = match current {
             None => receive::RefUpdate::Create { name, new, annotation },
             Some(state) => {
@@ -375,7 +396,9 @@ impl Gateway {
                 }
             }
         };
-        backend.update(p, repo, update).await
+        backend
+            .update(identity.principal, identity.credential, repo, update)
+            .await
     }
 
     async fn upload_pack(&self, repo: String, default: String, v2: bool, body: Bytes) -> Response<Body> {
@@ -1013,7 +1036,13 @@ mod tests {
         ) -> std::result::Result<scion_store::ChangesetRecord, String> {
             self.writer.create(repo, cs).await.map_err(|e| e.to_string())
         }
-        async fn update(&self, _: &Principal, _: &str, u: receive::RefUpdate) -> std::result::Result<(), String> {
+        async fn update(
+            &self,
+            _: &Principal,
+            _: Option<&str>,
+            _: &str,
+            u: receive::RefUpdate,
+        ) -> std::result::Result<(), String> {
             self.updates.lock().expect("lock").push(u);
             Ok(())
         }

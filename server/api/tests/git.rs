@@ -63,9 +63,12 @@ async fn fails(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&o.stderr).into_owned()
 }
 
-async fn start(config: ServerConfig, store: Arc<MemStore>) -> (String, tokio::sync::oneshot::Sender<()>) {
+async fn start(mut config: ServerConfig, store: Arc<MemStore>) -> (String, tokio::sync::oneshot::Sender<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let url = format!("http://{}", listener.local_addr().expect("addr"));
+    if let Some(cluster) = &mut config.cluster {
+        cluster.node = url.clone();
+    }
     let app = App {
         config: Arc::new(ServerConfig {
             warm_record_cache: false,
@@ -1068,4 +1071,107 @@ async fn partial_clones_fetch_files_later() {
     assert_eq!(missing(root.join("lim")).await, 2);
     let e = fails(root, &["clone", "-q", "--filter=tree:0", &format!("{url}/mono"), "t0"]).await;
     assert!(e.contains("not supported"), "{e}");
+}
+
+/// The HTTP gateway must carry the original credential into Land's cluster forwarding.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn authenticated_git_push_through_follower_reauthenticates_on_leader() {
+    assert!(have_git(), "this regression requires Git");
+    let store = Arc::new(MemStore::new());
+    store.create_repo("mono").await.expect("repo");
+    let auth = GuardConfig {
+        required: true,
+        auth: AuthConfig::parse("[token]\nissuer = \"https://scion.test\"\n").expect("auth"),
+        signing_key_pem: Some(scion_api::scion_auth::token::generate_signing_key()),
+    };
+    let guard = Guard::build(auth.clone(), store.clone(), Arc::new(|_: &str| None)).expect("guard");
+    guard
+        .set_policy("[[rule]]\nsubjects = [\"user:ada\"]\nrepos = [\"mono\"]\nactions = [\"land\"]\n")
+        .await
+        .expect("policy");
+    let token = guard
+        .create_token("pat", "ada", vec![], "cluster-git", None)
+        .await
+        .expect("token")
+        .0;
+    let config = || ServerConfig {
+        auth: auth.clone(),
+        cluster: Some(scion_land::ClusterConfig::new("assigned-on-bind")),
+        cluster_secret: Some("git-cluster-test-secret".into()),
+        ..ServerConfig::default()
+    };
+    let (leader, _a) = start(config(), store.clone()).await;
+    let (follower, _b) = start(config(), store.clone()).await;
+    let client = Client::builder()
+        .endpoint(&leader)
+        .repo("mono")
+        .auth(Auth::Bearer(token.clone()))
+        .build()
+        .await
+        .expect("client");
+    let base = client
+        .changeset(None)
+        .put("a.txt", "base\n")
+        .message("base")
+        .create()
+        .await
+        .expect("base");
+    client.land("main", &base.id).await.expect("leader land");
+    let directory = tempfile::tempdir().expect("tempdir");
+    let header = format!("http.extraHeader=Authorization: Bearer {token}");
+    ok(
+        directory.path(),
+        &["-c", &header, "clone", "-q", &format!("{follower}/mono"), "work"],
+    )
+    .await;
+    let work = directory.path().join("work");
+    for mode in ["bearer", "basic"] {
+        std::fs::write(work.join("a.txt"), mode).expect("write");
+        commit_all(&work, mode).await;
+        let before = store.get_ref("mono", "main").await.expect("ref").expect("main");
+        let missing = git(&work, &["push", "origin", "HEAD:main"]).await;
+        assert!(!missing.status.success(), "missing credential push accepted");
+        let invalid = git(
+            &work,
+            &[
+                "-c",
+                "http.extraHeader=Authorization: Bearer invalid",
+                "push",
+                "origin",
+                "HEAD:main",
+            ],
+        )
+        .await;
+        assert!(!invalid.status.success(), "invalid credential push accepted");
+        assert_eq!(
+            store.get_ref("mono", "main").await.expect("ref").expect("main").target,
+            before.target
+        );
+        let output = if mode == "bearer" {
+            git(&work, &["-c", &header, "push", "-q", "origin", "HEAD:main"]).await
+        } else {
+            let remote = format!("http://git:{token}@{}/mono", follower.trim_start_matches("http://"));
+            git(&work, &["push", "-q", &remote, "HEAD:main"]).await
+        };
+        assert!(
+            output.status.success(),
+            "authenticated {mode} push through follower failed: {}",
+            String::from_utf8_lossy(&output.stderr).replace(&token, "<redacted>")
+        );
+        assert_eq!(
+            client.read_file("main", "a.txt").await.expect("read").as_ref(),
+            mode.as_bytes()
+        );
+        assert_eq!(
+            client.git_sha("main").await.expect("sha").as_deref(),
+            Some(ok(&work, &["rev-parse", "HEAD"]).await.trim())
+        );
+        let leases = store.list_leases().await.expect("leases");
+        assert!(
+            leases
+                .iter()
+                .any(|(scope, lease)| scope == "land:4:mono:main" && lease.holder == leader),
+            "push must have forwarded; original leader still owns lease"
+        );
+    }
 }

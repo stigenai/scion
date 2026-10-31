@@ -58,7 +58,14 @@ pub trait PushBackend: Send + Sync {
     /// Creates a commit the gateway has built (it may carry `git.sha1` and `git.commit`).
     async fn create(&self, p: &Principal, repo: &str, cs: &Changeset) -> std::result::Result<ChangesetRecord, String>;
     /// Updates one ref; the error is the reason git prints after `ng`.
-    async fn update(&self, p: &Principal, repo: &str, u: RefUpdate) -> std::result::Result<(), String>;
+    /// The request credential is retained only for a leader to reauthenticate a forwarded land.
+    async fn update(
+        &self,
+        p: &Principal,
+        credential: Option<&str>,
+        repo: &str,
+        u: RefUpdate,
+    ) -> std::result::Result<(), String>;
 }
 
 pub const ZERO: [u8; 20] = [0; 20];

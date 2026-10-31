@@ -83,6 +83,16 @@ pub fn s3_config(bucket: &str, prefix: &str, env: impl Fn(&str) -> Option<String
             .unwrap_or_else(|| "us-east-1".into()),
         access_key_id: pick("SCION_S3_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"),
         secret_access_key: pick("SCION_S3_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY"),
+        session_token: env("SCION_S3_SESSION_TOKEN")
+            .or_else(|| {
+                // Explicit local credentials must not inherit an unrelated AWS session.
+                if env("SCION_S3_ACCESS_KEY_ID").is_none() && env("SCION_S3_SECRET_ACCESS_KEY").is_none() {
+                    env("AWS_SESSION_TOKEN")
+                } else {
+                    None
+                }
+            })
+            .filter(|v| !v.is_empty()),
         provider,
         // 未设置时按服务决定（只有 AWS 默认 virtual-hosted）
         virtual_hosted_style: env("SCION_S3_VIRTUAL_HOSTED")
@@ -201,6 +211,45 @@ mod tests {
     fn env_of(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
         let m: HashMap<String, String> = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
         move |k| m.get(k).cloned()
+    }
+
+    #[test]
+    fn s3_temporary_credentials_keep_session_token() {
+        let cfg = s3_config(
+            "b",
+            "",
+            env_of(&[
+                ("AWS_ACCESS_KEY_ID", "key"),
+                ("AWS_SECRET_ACCESS_KEY", "secret"),
+                ("AWS_SESSION_TOKEN", "session"),
+            ]),
+        )
+        .expect("config");
+        assert_eq!(cfg.session_token.as_deref(), Some("session"));
+        let cfg = s3_config(
+            "b",
+            "",
+            env_of(&[
+                ("AWS_SESSION_TOKEN", "aws-session"),
+                ("SCION_S3_SESSION_TOKEN", "override"),
+            ]),
+        )
+        .expect("config");
+        assert_eq!(cfg.session_token.as_deref(), Some("override"));
+        let cfg = s3_config(
+            "b",
+            "",
+            env_of(&[
+                ("SCION_S3_ACCESS_KEY_ID", "local"),
+                ("SCION_S3_SECRET_ACCESS_KEY", "local-secret"),
+                ("AWS_SESSION_TOKEN", "unrelated-session"),
+            ]),
+        )
+        .expect("config");
+        assert!(
+            cfg.session_token.is_none(),
+            "local keys must not inherit the AWS session token"
+        );
     }
 
     #[test]

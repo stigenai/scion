@@ -129,6 +129,8 @@ impl OrgCache {
 }
 
 pub struct Guard {
+    org_creation_admin_only: bool,
+    require_policy: bool,
     required: bool,
     chain: Vec<Decider>,
     meta: Option<Arc<dyn MetaStore>>,
@@ -190,6 +192,8 @@ impl Guard {
 
     fn unconfigured() -> Self {
         Self {
+            org_creation_admin_only: false,
+            require_policy: false,
             required: false,
             chain: vec![Decider::Policy, Decider::Grants],
             meta: None,
@@ -210,6 +214,9 @@ impl Guard {
         // only they need an HTTP client: building one needs the system's CA certificates, which a
         // minimal Linux may not have, and a server that calls nobody should still start there
         let a = &config.auth;
+        if !config.required && (a.authorization.require_policy || a.authorization.org_creation_admin_only) {
+            return Err("authorization.require_policy and org_creation_admin_only require authentication".into());
+        }
         let http = if a.issuers.is_empty()
             && a.introspection.is_none()
             && a.webhooks().next().is_none()
@@ -262,6 +269,8 @@ impl Guard {
         };
         Ok(Arc::new(Self {
             required: config.required,
+            org_creation_admin_only: config.auth.authorization.org_creation_admin_only,
+            require_policy: config.auth.authorization.require_policy,
             orgs,
             chain,
             meta: Some(meta),
@@ -286,6 +295,11 @@ impl Guard {
     /// Whether the chain includes `orgs` (and OrgService is available).
     pub fn orgs_enabled(&self) -> bool {
         self.orgs.is_some()
+    }
+
+    /// Whether organization creation is restricted to system administrators.
+    pub fn org_creation_admin_only(&self) -> bool {
+        self.org_creation_admin_only
     }
 
     /// 能否签发访问令牌。
@@ -491,6 +505,12 @@ impl Guard {
     /// 从未加载成功时保持拒绝一切。
     pub async fn reload_policy(&self) -> Result<usize, AuthError> {
         let Some(raw) = self.meta()?.get_setting(POLICY_KEY).await? else {
+            if self.require_policy {
+                self.install(PolicyState::Unloaded);
+                return Err(AuthError::Unavailable(
+                    "an explicit access policy is required before serving".into(),
+                ));
+            }
             self.install(PolicyState::Unset);
             return Ok(0);
         };
@@ -1088,6 +1108,52 @@ actions = ["admin"]
         .expect("guard");
         g.reload_policy().await.expect("load policy");
         g
+    }
+
+    #[tokio::test]
+    async fn required_policy_fails_closed_until_explicitly_initialized() {
+        let config = AuthConfig::parse("[authorization]\nrequire_policy = true").expect("config");
+        let store = Arc::new(MemStore::new());
+        assert!(
+            Guard::build(
+                GuardConfig {
+                    auth: config.clone(),
+                    ..GuardConfig::default()
+                },
+                store.clone(),
+                lookup()
+            )
+            .is_err(),
+            "must not silently disable authentication"
+        );
+        let g = Guard::build(
+            GuardConfig {
+                required: true,
+                auth: config,
+                signing_key_pem: None,
+            },
+            store,
+            lookup(),
+        )
+        .expect("guard");
+        assert!(
+            g.reload_policy().await.is_err(),
+            "absent policy must not enable defaults"
+        );
+        assert!(!g.policy_loaded());
+        let alice = Principal::user("alice", vec![]);
+        assert!(matches!(
+            g.check(&alice, &Request::repo("other/repo", Action::Read)).await,
+            Err(AuthError::Unavailable(_))
+        ));
+        g.set_policy("").await.expect("explicit deny-all policy");
+        assert_eq!(g.reload_policy().await.expect("load"), 0);
+        assert!(g.policy_loaded());
+        assert!(
+            !g.check(&alice, &Request::repo("other/repo", Action::Read))
+                .await
+                .expect("deny")
+        );
     }
 
     #[test]

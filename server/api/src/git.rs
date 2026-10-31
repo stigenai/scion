@@ -120,6 +120,7 @@ impl scion_git::receive::PushBackend for PushBackend {
     async fn update(
         &self,
         p: &scion_auth::Principal,
+        credential: Option<&str>,
         repo: &str,
         u: scion_git::receive::RefUpdate,
     ) -> Result<(), String> {
@@ -130,9 +131,8 @@ impl scion_git::receive::PushBackend for PushBackend {
         let id = |c: scion_object::ObjectId| Bytes::copy_from_slice(&c.to_bytes());
         let repo = repo.to_string();
         let result = match u {
-            RefUpdate::Land { name, new } => LandService::land(
-                self.land.as_ref(),
-                as_principal(
+            RefUpdate::Land { name, new } => {
+                let mut request = as_principal(
                     p,
                     LandRequest {
                         repo,
@@ -142,10 +142,15 @@ impl scion_git::receive::PushBackend for PushBackend {
                         fast_forward_only: true,
                         dry_run: false,
                     },
-                ),
-            )
-            .await
-            .map(drop),
+                );
+                if let Some(credential) = credential {
+                    let value = format!("Bearer {credential}")
+                        .parse()
+                        .map_err(|_| "invalid credential header".to_string())?;
+                    request.metadata_mut().insert("authorization", value);
+                }
+                LandService::land(self.land.as_ref(), request).await.map(drop)
+            }
             RefUpdate::Create { name, new, annotation } => {
                 // The message and tagger come from the tag object, which is kept as it is
                 let annotation = annotation.map(|raw| {

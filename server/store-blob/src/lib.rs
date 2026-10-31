@@ -52,6 +52,8 @@ pub struct S3Config {
     pub region: String,
     pub access_key_id: String,
     pub secret_access_key: String,
+    /// Session token for explicit temporary credentials; absent for local MinIO.
+    pub session_token: Option<String>,
     /// 服务种类；`Auto` 时在 [`ObjectBlobStore::check`] 中识别。
     pub provider: S3Provider,
     /// 是否使用 virtual-hosted 风格（`bucket.host`）。`None` 按服务决定：只有 AWS 默认使用，
@@ -72,12 +74,52 @@ impl std::fmt::Debug for S3Config {
             .field("provider", &self.provider)
             .field("access_key_id", &self.access_key_id)
             .field("secret_access_key", &"<redacted>")
+            .field("session_token", &self.session_token.as_ref().map(|_| "<redacted>"))
             .field("virtual_hosted_style", &self.virtual_hosted_style)
             .field("prefix", &self.prefix)
             .field("max_retries", &self.max_retries)
             .finish()
     }
 }
+
+// Explicit credentials are self-contained. Otherwise preserve object_store's refreshable
+// AWS provider chain, including web identity; never install empty static credentials.
+fn s3_credentials(cfg: &S3Config) -> Result<AmazonS3Builder> {
+    match (cfg.access_key_id.is_empty(), cfg.secret_access_key.is_empty()) {
+        (false, false) => {
+            let mut builder = AmazonS3Builder::new()
+                .with_access_key_id(&cfg.access_key_id)
+                .with_secret_access_key(&cfg.secret_access_key);
+            if let Some(token) = &cfg.session_token {
+                builder = builder.with_token(token);
+            }
+            Ok(builder)
+        }
+        (true, true) => {
+            if cfg.session_token.is_some() {
+                return Err(Error::Backend(
+                    "s3 session token requires access and secret keys".into(),
+                ));
+            }
+            let builder = AmazonS3Builder::from_env();
+            for key in [
+                object_store::aws::AmazonS3ConfigKey::AccessKeyId,
+                object_store::aws::AmazonS3ConfigKey::SecretAccessKey,
+            ] {
+                if builder.get_config_value(&key).is_some_and(|v| v.is_empty()) {
+                    return Err(Error::Backend(
+                        "empty AWS static credentials: unset them to use the provider chain".into(),
+                    ));
+                }
+            }
+            Ok(builder)
+        }
+        _ => Err(Error::Backend("s3 access and secret keys must both be set".into())),
+    }
+}
+
+#[cfg(test)]
+mod credential_tests;
 
 pub struct ObjectBlobStore {
     store: Arc<dyn ObjectStore>,
@@ -408,12 +450,10 @@ impl ObjectBlobStore {
         let virtual_hosted = cfg
             .virtual_hosted_style
             .unwrap_or_else(|| provider.default_virtual_hosted());
-        let mut b = AmazonS3Builder::new()
+        let mut b = s3_credentials(cfg)?
             .with_retry(retry)
             .with_bucket_name(&cfg.bucket)
             .with_region(&cfg.region)
-            .with_access_key_id(&cfg.access_key_id)
-            .with_secret_access_key(&cfg.secret_access_key)
             .with_virtual_hosted_style_request(virtual_hosted);
         if let Some(endpoint) = &cfg.endpoint {
             b = b
@@ -2454,6 +2494,7 @@ mod tests {
             region: "us-east-1".into(),
             access_key_id: std::env::var("SCION_TEST_S3_ACCESS_KEY").unwrap_or_default(),
             secret_access_key: std::env::var("SCION_TEST_S3_SECRET_KEY").unwrap_or_default(),
+            session_token: None,
             // 期望的服务种类（CI 中分别为 seaweedfs、minio）；未设置时自动识别
             provider: std::env::var("SCION_TEST_S3_PROVIDER")
                 .ok()

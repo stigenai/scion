@@ -31,11 +31,15 @@ struct Server {
 }
 
 async fn start(chain: &str) -> Server {
+    start_with_config(&format!("[authorization]\nchain = {chain}")).await
+}
+
+async fn start_with_config(config: &str) -> Server {
     let store = Arc::new(MemStore::new());
     store.create_repo("shared/old").await.expect("repo");
     let auth = GuardConfig {
         required: true,
-        auth: AuthConfig::parse(&format!("[authorization]\nchain = {chain}")).expect("auth config"),
+        auth: AuthConfig::parse(config).expect("auth config"),
         signing_key_pem: None,
     };
     let guard = Guard::build(auth.clone(), store.clone(), Arc::new(|_: &str| None)).expect("guard");
@@ -327,4 +331,76 @@ async fn without_orgs_in_the_chain_the_service_says_so() {
         .expect_err("not enabled");
     assert_eq!(err.code(), Code::FailedPrecondition);
     assert!(err.message().contains("[authorization] chain"), "{}", err.message());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn admin_only_creation_preserves_member_management() {
+    let s = start_with_config(
+        r#"
+[authorization]
+chain = ["policy", "orgs"]
+org_creation_admin_only = true
+"#,
+    )
+    .await;
+    let root = pat(&s, "root").await;
+    let alice = pat(&s, "alice").await;
+    let mut o = orgs(&s).await;
+    let create = || CreateOrgRequest {
+        name: "acme".into(),
+        visibility: "private".into(),
+    };
+    assert_eq!(code(o.create_org(create()).await), Code::Unauthenticated);
+    assert_eq!(
+        code(o.create_org(as_user(create(), &alice)).await),
+        Code::PermissionDenied
+    );
+    let org = o
+        .create_org(as_user(create(), &root))
+        .await
+        .expect("system admin creates")
+        .into_inner()
+        .org
+        .expect("org");
+    assert_eq!(org.created_by, "root");
+    o.put_member(as_user(
+        PutMemberRequest {
+            org: "acme".into(),
+            subject: "alice".into(),
+            role: "owner".into(),
+        },
+        &root,
+    ))
+    .await
+    .expect("assign owner");
+    o.put_member(as_user(
+        PutMemberRequest {
+            org: "acme".into(),
+            subject: "bob".into(),
+            role: "developer".into(),
+        },
+        &alice,
+    ))
+    .await
+    .expect("org owner still manages members");
+    assert_eq!(
+        code(
+            o.create_org(as_user(
+                CreateOrgRequest {
+                    name: "other".into(),
+                    visibility: "".into()
+                },
+                &alice
+            ))
+            .await
+        ),
+        Code::PermissionDenied,
+        "org owner is not a system admin"
+    );
+    let all = o
+        .list_orgs(as_user(ListOrgsRequest { mine: false }, &root))
+        .await
+        .expect("list")
+        .into_inner();
+    assert_eq!(all.orgs.len(), 1, "denied calls must not create organizations");
 }

@@ -255,6 +255,10 @@ impl RawNamedWebhook {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawAuthorization {
+    #[serde(default)]
+    org_creation_admin_only: bool,
+    #[serde(default)]
+    require_policy: bool,
     chain: Option<Vec<String>>,
     #[serde(default)]
     webhook: Vec<RawNamedWebhook>,
@@ -291,6 +295,10 @@ pub enum ChainEntry {
 /// `[authorization]`: the order of the deciders and the webhooks they can name.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AuthorizationConfig {
+    /// Require a system administrator to create organizations.
+    pub org_creation_admin_only: bool,
+    /// Refuse readiness and authorization until an explicit policy is stored.
+    pub require_policy: bool,
     /// None: today's order (policy, grants, then the webhook if any).
     pub chain: Option<Vec<ChainEntry>>,
     pub webhooks: Vec<WebhookConfig>,
@@ -454,7 +462,12 @@ fn authorization(raw: RawAuthorization, legacy: bool) -> Result<AuthorizationCon
             "authorization.webhook needs authorization.chain to say where the webhooks go".into(),
         ));
     }
-    Ok(AuthorizationConfig { chain, webhooks })
+    Ok(AuthorizationConfig {
+        chain,
+        webhooks,
+        org_creation_admin_only: raw.org_creation_admin_only,
+        require_policy: raw.require_policy,
+    })
 }
 
 fn client_auth(

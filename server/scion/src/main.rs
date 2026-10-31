@@ -1201,6 +1201,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn build_app_requires_policy_before_opening_listener() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let d = dir.path().to_str().expect("utf8");
+        let config = dir.path().join("auth.toml");
+        std::fs::write(
+            &config,
+            "[authorization]\nrequire_policy = true\norg_creation_admin_only = true\nchain = [\"policy\", \"orgs\"]",
+        )
+        .expect("config");
+        let flags = [
+            "--lite",
+            "--data-dir",
+            d,
+            "--auth-required",
+            "--auth-config",
+            config.to_str().expect("path"),
+        ];
+        let err = build_app(&args(&flags), no_env)
+            .await
+            .err()
+            .expect("uninitialized policy refused");
+        assert!(err.to_string().contains("explicit access policy"), "{err}");
+        // The admin bootstrap writes directly to metadata before any network listener starts.
+        let (app, _) = build_app(&args(&["--lite", "--data-dir", d]), no_env)
+            .await
+            .expect("bootstrap store");
+        app.meta
+            .put_setting(scion_api::scion_auth::POLICY_KEY, b"")
+            .await
+            .expect("deny-all policy");
+        drop(app);
+        build_app(&args(&flags), no_env)
+            .await
+            .expect("initialized policy accepted");
+    }
+
+    #[tokio::test]
     async fn build_app_refuses_an_unloadable_policy() {
         let dir = tempfile::tempdir().expect("tempdir");
         let d = dir.path().to_str().expect("utf8");

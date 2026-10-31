@@ -62,6 +62,7 @@ scion admin repack --meta postgres://… --blobs s3://scion-objects   # --dry-ru
 | `SCION_S3_ENDPOINT` | The service's address, such as `http://minio:9000`; empty for AWS S3 | none |
 | `SCION_S3_PROVIDER` | `auto`, `minio`, `seaweedfs`, `aws` or `generic` | `auto` |
 | `SCION_S3_ACCESS_KEY_ID` / `SCION_S3_SECRET_ACCESS_KEY` | Access keys; `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` when unset | none |
+| `SCION_S3_SESSION_TOKEN` | Session token for explicit temporary credentials; uses `AWS_SESSION_TOKEN` only with AWS keys | none |
 | `SCION_S3_REGION` | The region; `AWS_REGION` when unset | `us-east-1` |
 | `SCION_S3_VIRTUAL_HOSTED` | `true` for `bucket.host` style | by service; `true` only for AWS |
 | `SCION_S3_MAX_RETRIES` | Retries per request at most | 10 |
@@ -136,3 +137,13 @@ cargo test -p scion-store-blob -p scion
 ```
 
 `SCION_TEST_S3_PROVIDER` checks what was identified and may be left unset.
+
+### AWS web identity
+
+Without explicit access/secret keys, Scion uses the object-store AWS credential
+provider chain, including `AWS_WEB_IDENTITY_TOKEN_FILE`, `AWS_ROLE_ARN` and
+`AWS_ROLE_SESSION_NAME`. Projected identity tokens are reread when credentials
+expire. For IRSA, leave static key variables unset (empty or partial keys are
+rejected), mount the projected token and configure the role through the service
+account. Explicit access/secret keys continue to work for MinIO and other S3
+services. A session token is required when those explicit credentials are temporary.

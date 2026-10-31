@@ -239,7 +239,11 @@ chain = ["policy", "orgs", "personal", "grants"]
 - **Policies.** Members also get the group `org:ORG:ROLE`, so a policy can name it, for example `subjects = ["group:org:acme:owner"]`.
 - **Personal namespaces.** `personal` gives each signed-in user `user/SUBJECT/…`.
 - **Who manages what.**
-  - Any signed-in user can create an organization and becomes its owner. A system administrator is needed when repositories already exist under the name.
+  - By default, any signed-in user can create an organization and becomes its
+    owner. A system administrator is needed when repositories already exist under
+    the name. Set `org_creation_admin_only = true` under `[authorization]` to
+    require a system administrator for every creation; existing organization
+    owners still manage their members. This setting requires `--auth-required`.
   - Owners manage members and visibility; members can leave on their own.
   - The last owner cannot be removed or demoted, and an organization with repositories cannot be deleted.
 - **When changes apply.** Changes made through a server apply on it at once; other nodes see them within 30 seconds.
@@ -256,6 +260,14 @@ scn org ls [--mine]
 scn org info acme
 scn org rm acme
 ```
+
+For shared deployments, set `require_policy = true` under `[authorization]`
+and enable `--auth-required`. The server refuses to start or become ready until
+an explicit access policy has been stored with `scion admin policy set`.
+An explicitly empty policy contributes no grants; other configured deciders
+still apply. An absent policy is an error.
+Initialize the policy before exposing the server, and use the same settings on
+every replica. Both settings default to `false` for existing installations.
 
 Operators can manage organizations directly in the metadata database, with the same storage options as `scion server`:
 
@@ -345,7 +357,9 @@ starhub needs two internal endpoints, both thin wrappers over its existing logic
 ## Caches and the daemon
 
 The regional cache (`scion cache`) and the local daemon do not parse tokens.
-- **Read permission:** before returning objects (local hits included), they call `CheckAccess(repo, read)` on the server with the caller's own token, and cache the result per token and repository for 60 seconds. A revoked token or a changed policy takes effect in cache layers within 60 seconds.
+- **Regional cache read permission:** every object read (local hits included) calls `CheckAccess(repo, read)` on the server with the caller's own token. Permission results are not cached, so revocation or expiry is enforced on the next read. Object bytes remain cached.
+- **Daemon read permission:** the local daemon still caches permission results per token and repository for 60 seconds; its credential-revalidation behavior is separate from the regional cache.
+- **Active ref streams:** `WatchRefs` reauthenticates and checks read permission before each new event batch. If credentials expire, are revoked, or lose read access, the stream ends with an error before delivering that batch.
 - **The daemon offline:** when the server is unreachable (rather than refusing), identities confirmed within 24 hours still pass the read check. Reads also need redactions to be current, though ([redaction.md](redaction.md)): repositories last synced more than 10 seconds ago return `UNAVAILABLE`, so offline the local cache can mostly not be read.
 - **Warming:** when the server requires authentication, the regional cache warms up as the identity given by `--warm-token` (`SCION_CACHE_WARM_TOKEN`).
 

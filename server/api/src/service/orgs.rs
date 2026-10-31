@@ -150,6 +150,11 @@ impl OrgSvc {
 impl OrgService for OrgSvc {
     async fn create_org(&self, request: Request<CreateOrgRequest>) -> Result<Response<CreateOrgResponse>, Status> {
         let p = self.caller(&request)?;
+        if self.guard.org_creation_admin_only() && !self.is_admin(&p).await? {
+            return Err(Status::permission_denied(
+                "a system administrator must create organizations",
+            ));
+        }
         let req = request.into_inner();
         validate_org_name(&req.name).map_err(Status::invalid_argument)?;
         let visibility = visibility(&req.visibility)?;
