@@ -545,6 +545,18 @@ impl MetaStore for PgMetaStore {
         row.map(crate::common::token_from_row).transpose()
     }
 
+    async fn get_token_by_id(&self, id: &str) -> Result<Option<TokenRecord>> {
+        let row: Option<crate::common::TokenRow> = sqlx::query_as(
+            "SELECT id, hash, kind, subject, groups_text, description, created_at_ms, expires_at_ms \
+             FROM tokens WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| backend("get token by id", e))?;
+        row.map(crate::common::token_from_row).transpose()
+    }
+
     async fn list_tokens(&self, subject: Option<&str>) -> Result<Vec<TokenRecord>> {
         let rows: Vec<crate::common::TokenRow> = sqlx::query_as(
             "SELECT id, hash, kind, subject, groups_text, description, created_at_ms, expires_at_ms \

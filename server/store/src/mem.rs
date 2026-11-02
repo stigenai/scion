@@ -477,6 +477,10 @@ impl MetaStore for MemStore {
         Ok(self.read()?.tokens.iter().find(|t| &t.hash == hash).cloned())
     }
 
+    async fn get_token_by_id(&self, id: &str) -> Result<Option<TokenRecord>> {
+        Ok(self.read()?.tokens.iter().find(|t| t.id == id).cloned())
+    }
+
     async fn list_tokens(&self, subject: Option<&str>) -> Result<Vec<TokenRecord>> {
         let mut v: Vec<TokenRecord> = self
             .read()?

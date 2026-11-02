@@ -356,6 +356,11 @@ pub trait MetaStore: Send + Sync + 'static {
         Err(unsupported("tokens"))
     }
 
+    /// Looks a token up by its public id (the primary key). Used to bind access JWTs to their source token.
+    async fn get_token_by_id(&self, _id: &str) -> Result<Option<TokenRecord>> {
+        Err(unsupported("tokens"))
+    }
+
     /// 列出令牌（`subject` 为 `None` 时列出全部），按创建时间排序。
     async fn list_tokens(&self, _subject: Option<&str>) -> Result<Vec<TokenRecord>> {
         Err(unsupported("tokens"))

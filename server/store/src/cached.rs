@@ -228,6 +228,10 @@ impl MetaStore for CachedMeta {
         self.inner.get_token(hash).await
     }
 
+    async fn get_token_by_id(&self, id: &str) -> Result<Option<TokenRecord>> {
+        self.inner.get_token_by_id(id).await
+    }
+
     async fn list_tokens(&self, subject: Option<&str>) -> Result<Vec<TokenRecord>> {
         self.inner.list_tokens(subject).await
     }
