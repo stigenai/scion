@@ -1445,6 +1445,9 @@ actions = ["admin"]
         assert_eq!(g.exchange(&refresh).await.expect("refresh").2, "alice");
         let listed = g.list_tokens(Some("alice")).await.expect("list");
         assert_eq!((listed.len(), listed[0].kind.as_str()), (1, "refresh"));
+        // The access token is bound to the new refresh record.
+        assert!(g.revoke_token(&listed[0].id).await.expect("revoke"));
+        assert!(g.authenticate(Some(&access)).await.is_err());
     }
 
     #[tokio::test]
