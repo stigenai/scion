@@ -1109,6 +1109,8 @@ pub async fn tokens_and_settings<S: MetaStore + ?Sized>(s: &S) {
     assert!(s.put_token(&t1).await.is_err(), "duplicate id rejected");
     assert_eq!(s.get_token(&t1.hash).await.expect("get"), Some(t1.clone()));
     assert_eq!(s.get_token(&[0; 32]).await.expect("get"), None);
+    assert_eq!(s.get_token_by_id("t1").await.expect("by id"), Some(t1.clone()));
+    assert_eq!(s.get_token_by_id("nope").await.expect("by id"), None);
     assert_eq!(
         s.list_tokens(None).await.expect("list"),
         [t1.clone(), t2.clone(), t3.clone()]
@@ -1120,6 +1122,7 @@ pub async fn tokens_and_settings<S: MetaStore + ?Sized>(s: &S) {
     assert!(s.delete_token("t1").await.expect("delete"));
     assert!(!s.delete_token("t1").await.expect("delete again"));
     assert_eq!(s.get_token(&t1.hash).await.expect("get"), None);
+    assert_eq!(s.get_token_by_id("t1").await.expect("by id"), None);
     let no_groups = crate::TokenRecord {
         groups: vec![],
         ..token("t4", "carol", 40)

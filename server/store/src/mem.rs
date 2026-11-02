@@ -236,7 +236,7 @@ impl MetaStore for MemStore {
 
     async fn purge_repo(&self, repo: &str, _batch: usize) -> Result<bool> {
         let mut inner = self.write()?;
-        if !inner.repos.get(repo).is_some_and(|d| !d.live()) {
+        if inner.repos.get(repo).is_none_or(|d| d.live()) {
             return Err(Error::RepoNotFound(repo.to_owned()));
         }
         inner.repos.remove(repo);
@@ -475,6 +475,10 @@ impl MetaStore for MemStore {
 
     async fn get_token(&self, hash: &[u8; 32]) -> Result<Option<TokenRecord>> {
         Ok(self.read()?.tokens.iter().find(|t| &t.hash == hash).cloned())
+    }
+
+    async fn get_token_by_id(&self, id: &str) -> Result<Option<TokenRecord>> {
+        Ok(self.read()?.tokens.iter().find(|t| t.id == id).cloned())
     }
 
     async fn list_tokens(&self, subject: Option<&str>) -> Result<Vec<TokenRecord>> {

@@ -33,6 +33,17 @@ Requests carry a token in the metadata `authorization: Bearer <token>`. The serv
 
 Clients usually exchange a long-lived credential (a PAT, a refresh token, an external JWT) for an access token through `AuthService.ExchangeToken`, and exchange again 2 minutes before it expires (the SDK's `Auth::Exchange`, and `scn` by default). When the server has no signing key, clients send the credential itself.
 
+**Source binding.** An access token that the server exchanged from a PAT or a refresh token carries the claim `sid`. The value is the public id of that source token record. The server checks the record on every request:
+
+- If the record is gone (revoked), the request fails with `UNAUTHENTICATED`.
+- If the record has expired, the request fails with `UNAUTHENTICATED`. This check has no clock leeway.
+- If the record belongs to a different subject, the request fails with `UNAUTHENTICATED`.
+- If the metadata store cannot be read, the request fails with `UNAVAILABLE`. The server never allows the request.
+
+The access token `exp` is never later than the source `expires_at_ms`. The server rounds the source expiry down to a whole second. The check is one primary-key read of the `tokens` table for each request. The server keeps no cache for it, so the window is 0 seconds. All nodes that share the metadata database apply the check.
+
+Some access tokens have no `sid`: tokens exchanged from an external JWT or an introspected token, and tokens issued before the upgrade. These tokens keep the old rule: `exp` plus 30 seconds of leeway.
+
 Managing tokens:
 
 ```sh
