@@ -60,7 +60,12 @@ async fn cache_hit_refuses_exchanged_jwt_after_source_revoke_or_expiry() {
         let _ = rx.await;
     }));
     let writer = connect(&up_url, &eng).await;
-    let cs = writer.changeset(None).put("a.txt", "hello").create().await.expect("create");
+    let cs = writer
+        .changeset(None)
+        .put("a.txt", "hello")
+        .create()
+        .await
+        .expect("create");
     writer.land("main", &cs.id).await.expect("land");
 
     let cache_listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -103,11 +108,7 @@ async fn cache_hit_refuses_exchanged_jwt_after_source_revoke_or_expiry() {
         .create_token("pat", "dave", vec!["eng".into()], "", None)
         .await
         .expect("valid pat");
-    let (j_revoke, j_expire, j_ok) = (
-        exchange(p_revoke).await,
-        exchange(p_expire).await,
-        exchange(p_ok).await,
-    );
+    let (j_revoke, j_expire, j_ok) = (exchange(p_revoke).await, exchange(p_expire).await, exchange(p_ok).await);
 
     // Warm the cache, then prove each JWT reads a real hit.
     for j in [&j_revoke, &j_expire, &j_ok] {

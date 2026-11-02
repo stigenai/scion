@@ -1,6 +1,6 @@
 //! 令牌：服务端自签的短期 JWT（ES256），以及不透明令牌（PAT / service token / 刷新令牌）。
 //!
-//! - JWT claims：`iss`、`sub`、`groups`、`iat`、`exp`。签名私钥是 PKCS#8 PEM 格式的 P-256 密钥，
+//! - JWT claims：`iss`、`sub`、`groups`、`iat`、`exp`，以及可选的 `sid`（来源令牌记录的 id）。签名私钥是 PKCS#8 PEM 格式的 P-256 密钥，
 //!   集群中所有节点使用同一个（`scion admin jwt-keygen` 生成）。
 //! - 不透明令牌形如 `scn_pat_<43 个 base64url 字符>`，服务端只保存它的 SHA-256；公开标识是哈希的
 //!   前 12 个十六进制字符，用于列出和吊销。
@@ -41,6 +41,10 @@ pub struct Claims {
     pub groups: Vec<String>,
     pub iat: i64,
     pub exp: i64,
+    /// Id of the source token record (PAT or refresh token) this JWT was exchanged from.
+    /// The JWT is valid only while that record exists and has not expired.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sid: Option<String>,
 }
 
 /// JWKS 中的一个公钥。
@@ -116,13 +120,26 @@ impl Issuer {
     }
 
     /// 签发访问令牌，返回令牌与过期时间（Unix 毫秒）。
-    pub fn issue(&self, subject: &str, groups: &[String], now_secs: i64) -> (String, i64) {
+    /// `source` is the id and expiry (Unix ms) of the opaque token this JWT is exchanged from.
+    /// It sets `sid`, and `exp` is cut to the whole second at or before the source expiry.
+    pub fn issue(
+        &self,
+        subject: &str,
+        groups: &[String],
+        now_secs: i64,
+        source: Option<(&str, Option<i64>)>,
+    ) -> (String, i64) {
+        let mut exp = now_secs + self.ttl_secs;
+        if let Some((_, Some(src_ms))) = source {
+            exp = exp.min(src_ms.div_euclid(1000));
+        }
         let claims = Claims {
             iss: self.issuer.clone(),
             sub: subject.to_owned(),
             groups: groups.to_vec(),
             iat: now_secs,
-            exp: now_secs + self.ttl_secs,
+            exp,
+            sid: source.map(|(id, _)| id.to_owned()),
         };
         let mut header = Header::new(Algorithm::ES256);
         header.kid = Some(self.kid.clone());
@@ -182,13 +199,13 @@ mod tests {
     fn issue_and_verify_round_trip() {
         let i = issuer();
         let now = 1_700_000_000;
-        let (t, exp) = i.issue("alice", &["eng".into()], now);
+        let (t, exp) = i.issue("alice", &["eng".into()], now, None);
         assert_eq!(exp, (now + 900) * 1000);
         let real_now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock")
             .as_secs() as i64;
-        let (fresh, _) = i.issue("alice", &["eng".into()], real_now);
+        let (fresh, _) = i.issue("alice", &["eng".into()], real_now, None);
         let c = i.verify(&fresh).expect("valid");
         assert_eq!(
             (c.sub.as_str(), c.groups.as_slice(), c.iss.as_str()),
@@ -204,6 +221,29 @@ mod tests {
     }
 
     #[test]
+    fn source_binding_sets_sid_and_clamps_exp() {
+        let i = issuer();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs() as i64;
+        // Source ends in 60 s 500 ms: exp is cut to the whole second before it.
+        let src_ms = (now + 60) * 1000 + 500;
+        let (t, exp) = i.issue("alice", &[], now, Some(("abc", Some(src_ms))));
+        assert_eq!(exp, (now + 60) * 1000);
+        assert_eq!(i.verify(&t).expect("valid").sid.as_deref(), Some("abc"));
+        // A source that outlives the default lifetime does not extend it.
+        let (_, exp) = i.issue("alice", &[], now, Some(("abc", Some(src_ms + 3_600_000))));
+        assert_eq!(exp, (now + 900) * 1000);
+        // A source without an expiry keeps the default lifetime.
+        let (_, exp) = i.issue("alice", &[], now, Some(("abc", None)));
+        assert_eq!(exp, (now + 900) * 1000);
+        // A JWT without a source has no sid.
+        let (t, _) = i.issue("alice", &[], now, None);
+        assert_eq!(i.verify(&t).expect("valid").sid, None);
+    }
+
+    #[test]
     fn other_keys_and_issuers_are_rejected() {
         let a = issuer();
         let b = issuer();
@@ -212,10 +252,10 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock")
             .as_secs() as i64;
-        let (t, _) = b.issue("mallory", &[], now);
+        let (t, _) = b.issue("mallory", &[], now, None);
         assert!(a.verify(&t).is_err(), "signed by another key");
         let other_iss = Issuer::from_pem(&generate_signing_key(), "https://elsewhere", 60).expect("issuer");
-        let (t, _) = other_iss.issue("x", &[], now);
+        let (t, _) = other_iss.issue("x", &[], now, None);
         assert!(a.verify(&t).is_err());
         assert!(a.verify("not.a.jwt").is_err());
         assert_eq!(peek("garbage"), None);

@@ -455,7 +455,7 @@ fn check_groups(groups: &BTreeMap<String, Vec<String>>) -> Result<(), PolicyErro
         }
         if let Some(m) = members
             .iter()
-            .find(|m| !(m.strip_prefix("user:").or_else(|| m.strip_prefix("group:"))).is_some_and(|n| !n.is_empty()))
+            .find(|m| (m.strip_prefix("user:").or_else(|| m.strip_prefix("group:"))).is_none_or(|n| n.is_empty()))
         {
             return Err(bad(format!(
                 "{name}: unknown member {m:?}; use user:NAME or group:NAME"

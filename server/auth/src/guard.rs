@@ -320,6 +320,15 @@ impl Guard {
     // ---------- 认证 ----------
 
     async fn opaque(&self, token: &str, allow_refresh: bool) -> Result<Principal, AuthError> {
+        Ok(self.opaque_record(token, allow_refresh).await?.0)
+    }
+
+    /// Like [`Self::opaque`], and also returns the token record id and expiry that bind an exchanged JWT.
+    async fn opaque_record(
+        &self,
+        token: &str,
+        allow_refresh: bool,
+    ) -> Result<(Principal, String, Option<i64>), AuthError> {
         let rec = self
             .meta()?
             .get_token(&hash_opaque(token))
@@ -335,7 +344,7 @@ impl Guard {
         }
         let mut p = Principal::user(rec.subject, rec.groups);
         p.expires_at_ms = rec.expires_at_ms;
-        Ok(p)
+        Ok((p, rec.id, rec.expires_at_ms))
     }
 
     async fn jwt(&self, token: &str, allow_own: bool) -> Result<Principal, AuthError> {
@@ -346,8 +355,27 @@ impl Guard {
                     return Err(AuthError::Invalid("access tokens cannot be exchanged".into()));
                 }
                 let c = own.verify(token).map_err(VerifyError::from)?;
+                let mut expires_at_ms = c.exp * 1000;
+                if let Some(sid) = &c.sid {
+                    // Fail closed: a missing or expired source record, or a store error, refuses the JWT.
+                    // One primary-key read per request; there is no cache, so the window is 0 s.
+                    let rec = self
+                        .meta()?
+                        .get_token_by_id(sid)
+                        .await?
+                        .ok_or_else(|| AuthError::Invalid("source token revoked".into()))?;
+                    if rec.subject != c.sub {
+                        return Err(AuthError::Invalid("source token does not match the subject".into()));
+                    }
+                    if let Some(src) = rec.expires_at_ms {
+                        if src <= now_ms() {
+                            return Err(AuthError::Expired);
+                        }
+                        expires_at_ms = expires_at_ms.min(src);
+                    }
+                }
                 let mut p = Principal::user(c.sub, c.groups);
-                p.expires_at_ms = Some(c.exp * 1000);
+                p.expires_at_ms = Some(expires_at_ms);
                 return Ok(p);
             }
         }
@@ -386,11 +414,11 @@ impl Guard {
 
     // ---------- 令牌 ----------
 
-    fn issue(&self, p: &Principal) -> Result<(String, i64), AuthError> {
+    fn issue(&self, p: &Principal, source: Option<(&str, Option<i64>)>) -> Result<(String, i64), AuthError> {
         let issuer = self.issuer.as_ref().ok_or_else(|| {
             AuthError::Unavailable("this server does not issue access tokens (no signing key)".into())
         })?;
-        Ok(issuer.issue(&p.subject, &p.groups, now_ms() / 1000))
+        Ok(issuer.issue(&p.subject, &p.groups, now_ms() / 1000, source))
     }
 
     /// 用长期凭据换取访问令牌：(令牌, 过期时间, 身份)。
@@ -399,14 +427,17 @@ impl Guard {
         if t.is_empty() {
             return Err(AuthError::BadRequest("subject_token is required".into()));
         }
+        let mut source = None;
         let p = if t.starts_with(OPAQUE_PREFIX) {
-            self.opaque(t, true).await?
+            let (p, id, exp) = self.opaque_record(t, true).await?;
+            source = Some((id, exp));
+            p
         } else if t.split('.').count() == 3 {
             self.jwt(t, false).await?
         } else {
             self.introspect(t).await?
         };
-        let (token, exp) = self.issue(&p)?;
+        let (token, exp) = self.issue(&p, source.as_ref().map(|(id, e)| (id.as_str(), *e)))?;
         Ok((token, exp, p.subject))
     }
 
@@ -478,10 +509,10 @@ impl Guard {
         let DevicePoll::Complete(p) = &poll else {
             return Ok((poll, None));
         };
-        let (refresh, _) = self
+        let (refresh, refresh_rec) = self
             .create_token("refresh", &p.subject, p.groups.clone(), "scn login", Some(REFRESH_TTL))
             .await?;
-        let (access, exp) = self.issue(p)?;
+        let (access, exp) = self.issue(p, Some((&refresh_rec.id, refresh_rec.expires_at_ms)))?;
         Ok((poll, Some((refresh, access, exp))))
     }
 
@@ -1189,6 +1220,37 @@ actions = ["admin"]
     }
 
     #[tokio::test]
+    async fn exchanged_jwt_is_bound_to_its_source_record() {
+        let meta: Arc<dyn MetaStore> = Arc::new(MemStore::new());
+        let g = Guard::build(
+            GuardConfig {
+                required: true,
+                auth: AuthConfig::default(),
+                signing_key_pem: Some(crate::token::generate_signing_key()),
+            },
+            meta,
+            lookup(),
+        )
+        .expect("guard");
+        let (pat, rec) = g.create_token("pat", "alice", vec![], "", None).await.expect("pat");
+        let (jwt, _, _) = g.exchange(&pat).await.expect("exchange");
+        assert_eq!(g.authenticate(Some(&jwt)).await.expect("bound").subject, "alice");
+        // A JWT for another subject that names alice's record is refused.
+        let (forged, _) = g
+            .issue(&Principal::user("mallory", vec![]), Some((&rec.id, None)))
+            .expect("issue");
+        assert!(matches!(
+            g.authenticate(Some(&forged)).await,
+            Err(AuthError::Invalid(_))
+        ));
+        // A JWT without a source stays valid (external exchange, or issued before the upgrade).
+        let (plain, _) = g.issue(&Principal::user("bob", vec![]), None).expect("issue");
+        assert_eq!(g.authenticate(Some(&plain)).await.expect("plain").subject, "bob");
+        assert!(g.revoke_token(&rec.id).await.expect("revoke"));
+        assert!(matches!(g.authenticate(Some(&jwt)).await, Err(AuthError::Invalid(_))));
+    }
+
+    #[tokio::test]
     async fn deny_all_guard_rejects_everyone() {
         let g = Guard::deny_all();
         assert!(g.required());
@@ -1214,7 +1276,7 @@ actions = ["admin"]
         .expect("guard");
         assert!(!g.policy_loaded());
         // 自签令牌不查库也能验证，但策略没加载成功时不能退回默认放行
-        let (token, _) = g.issue(&Principal::user("alice", vec![])).expect("issue");
+        let (token, _) = g.issue(&Principal::user("alice", vec![]), None).expect("issue");
         let alice = g.authenticate(Some(&token)).await.expect("jwt");
         let unavailable = |r: Result<bool, AuthError>| matches!(r, Err(AuthError::Unavailable(_)));
         assert!(unavailable(g.check(&alice, &Request::repo("x", Action::Read)).await));
@@ -1263,7 +1325,7 @@ actions = ["admin"]
         assert!(!fresh.is_admin(&alice).await.expect("ok"));
         // 默认策略：admins 组可以管理
         let (token, _) = fresh
-            .issue(&Principal::user("root", vec!["admins".into()]))
+            .issue(&Principal::user("root", vec!["admins".into()]), None)
             .expect("issue");
         let root = fresh.authenticate(Some(&token)).await.expect("jwt");
         assert!(fresh.is_admin(&root).await.expect("ok"));

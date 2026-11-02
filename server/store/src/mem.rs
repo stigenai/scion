@@ -236,7 +236,7 @@ impl MetaStore for MemStore {
 
     async fn purge_repo(&self, repo: &str, _batch: usize) -> Result<bool> {
         let mut inner = self.write()?;
-        if !inner.repos.get(repo).is_some_and(|d| !d.live()) {
+        if inner.repos.get(repo).is_none_or(|d| d.live()) {
             return Err(Error::RepoNotFound(repo.to_owned()));
         }
         inner.repos.remove(repo);
