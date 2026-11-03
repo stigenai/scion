@@ -217,8 +217,11 @@ impl Upstream for GrpcUpstream {
         ctx.apply(&mut req);
         match AuthServiceClient::new(self.channel.clone()).check_access(req).await {
             Ok(r) => Ok(r.into_inner().allowed),
-            // 没有 AuthService 的旧服务端：没有访问控制
-            Err(s) if s.code() == Code::Unimplemented => Ok(true),
+            // 没有 AuthService 的上游无法确认调用者有权读取：拒绝（fail closed）。
+            Err(s) if s.code() == Code::Unimplemented => {
+                tracing::warn!(upstream = %self.name, "upstream has no AuthService; cache denies the read");
+                Ok(false)
+            }
             Err(s) => Err(s),
         }
     }
