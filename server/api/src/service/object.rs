@@ -18,6 +18,7 @@ use crate::auth::{authorize, authorize_any, principal};
 use crate::config::ServerConfig;
 use crate::service::support::{check_repo, parse_id};
 use crate::status;
+use crate::streams::{self, StreamLimits};
 use scion_auth::{Action, Guard, Request as AuthRequest};
 
 /// `ListRedactedObjects` 默认与最大的每页条数。
@@ -31,6 +32,7 @@ pub struct ObjectSvc {
     meta: Arc<dyn MetaStore>,
     blobs: Arc<dyn BlobStore>,
     guard: Arc<Guard>,
+    streams: StreamLimits,
 }
 
 impl ObjectSvc {
@@ -40,7 +42,13 @@ impl ObjectSvc {
             meta,
             blobs,
             guard: Guard::disabled(),
+            streams: StreamLimits::default(),
         }
+    }
+
+    pub fn with_stream_limits(mut self, streams: StreamLimits) -> Self {
+        self.streams = streams;
+        self
     }
 
     pub fn with_guard(mut self, guard: Arc<Guard>) -> Self {
@@ -100,10 +108,12 @@ impl ObjectService for ObjectSvc {
         request: Request<GetObjectsRequest>,
     ) -> Result<Response<Self::GetObjectsStream>, Status> {
         let p = principal(&request);
+        let caller = streams::caller(&request);
         let req = request.into_inner();
         // 按 id 读对象无法按路径限制：需要整个仓库的读权限
         authorize(&self.guard, &p, AuthRequest::repo(&req.repo, Action::Read)).await?;
         check_repo(self.meta.as_ref(), &req.repo).await?;
+        let ticket = self.streams.open(&caller)?;
         self.check_batch(req.wants.len())?;
         negotiate_encoding(&req.accept_encodings)?;
 
@@ -168,7 +178,7 @@ impl ObjectService for ObjectSvc {
                 .flat_map(move |(id, data, offset)| chunk_object(id, data, offset as usize, chunk))
                 .map(Ok),
         );
-        Ok(Response::new(Box::pin(stream)))
+        Ok(Response::new(Box::pin(self.streams.bound(ticket, stream))))
     }
 
     async fn has_objects(&self, request: Request<HasObjectsRequest>) -> Result<Response<HasObjectsResponse>, Status> {

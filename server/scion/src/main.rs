@@ -218,6 +218,13 @@ struct ServerArgs {
     /// Limit on requests in flight per caller.
     #[arg(long, value_name = "N", env = "SCION_TENANT_CONCURRENCY")]
     tenant_concurrency: Option<usize>,
+    /// Limit on open server streams per caller; the next one gets RESOURCE_EXHAUSTED.
+    #[arg(long, value_name = "N", env = "SCION_TENANT_STREAMS")]
+    tenant_streams: Option<usize>,
+    /// The longest a server stream (WatchRefs, ReadFile, Archive and so on) stays open; it then ends with UNAVAILABLE and clients reconnect. 0s sets no limit.
+    #[arg(long, value_name = "DURATION", default_value = "1h", value_parser = parse_duration,
+        env = "SCION_MAX_STREAM_LIFETIME")]
+    max_stream_lifetime: std::time::Duration,
     /// Limit on request time (the smaller of this and the client's deadline; DEADLINE_EXCEEDED when exceeded); 0s uses only the client's deadline.
     #[arg(long, value_name = "DURATION", default_value = "60s", value_parser = parse_duration,
         env = "SCION_MAX_REQUEST_TIMEOUT")]
@@ -664,6 +671,8 @@ async fn build_app_with_objects(
             tenant_rate: args.tenant_rate,
             cluster_secret: args.cluster_secret.clone().filter(|s| !s.is_empty()),
             max_concurrent_per_tenant: args.tenant_concurrency,
+            max_stream_lifetime: Some(args.max_stream_lifetime).filter(|d| !d.is_zero()),
+            max_streams_per_tenant: args.tenant_streams,
             max_request_timeout: Some(args.max_request_timeout).filter(|d| !d.is_zero()),
             read_endpoints: args.read_endpoints.clone(),
             auth,
@@ -1346,6 +1355,11 @@ mod tests {
         assert_eq!(app.config.tenant_rate, None);
         assert_eq!(app.config.max_concurrent_per_tenant, None);
         assert_eq!(app.config.max_request_timeout, Some(std::time::Duration::from_secs(60)));
+        assert_eq!(
+            app.config.max_stream_lifetime,
+            Some(std::time::Duration::from_secs(3600))
+        );
+        assert_eq!(app.config.max_streams_per_tenant, None);
         let (app, _) = build_app(
             &args(&[
                 "--tenant-rate",
@@ -1354,6 +1368,10 @@ mod tests {
                 "8",
                 "--max-request-timeout",
                 "0s",
+                "--tenant-streams",
+                "3",
+                "--max-stream-lifetime",
+                "90s",
             ]),
             no_env,
         )
@@ -1368,6 +1386,8 @@ mod tests {
         );
         assert_eq!(app.config.max_concurrent_per_tenant, Some(8));
         assert_eq!(app.config.max_request_timeout, None, "0s means client deadlines only");
+        assert_eq!(app.config.max_streams_per_tenant, Some(3));
+        assert_eq!(app.config.max_stream_lifetime, Some(std::time::Duration::from_secs(90)));
         assert_eq!(app.config.cluster_secret, None);
         assert_eq!(app.config.repo_delete_grace, std::time::Duration::from_secs(24 * 3600));
         assert_eq!(

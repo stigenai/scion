@@ -23,6 +23,7 @@ use crate::config::ServerConfig;
 use crate::service::history;
 use crate::service::support::resolve_revision;
 use crate::status;
+use crate::streams::{self, StreamLimits};
 use scion_auth::{Action, Guard, Principal, Request as AuthRequest};
 
 pub type ReadFileStream = Pin<Box<dyn Stream<Item = Result<ReadFileResponse, Status>> + Send>>;
@@ -55,6 +56,7 @@ pub struct QuerySvc {
     meta: Arc<dyn MetaStore>,
     blobs: Arc<dyn BlobStore>,
     guard: Arc<Guard>,
+    streams: StreamLimits,
 }
 
 pub(crate) fn proto_mode(m: EntryMode) -> v1::EntryMode {
@@ -125,7 +127,13 @@ impl QuerySvc {
             meta,
             blobs,
             guard: Guard::disabled(),
+            streams: StreamLimits::default(),
         }
+    }
+
+    pub fn with_stream_limits(mut self, streams: StreamLimits) -> Self {
+        self.streams = streams;
+        self
     }
 
     pub fn with_guard(mut self, guard: Arc<Guard>) -> Self {
@@ -218,12 +226,14 @@ impl QueryService for QuerySvc {
 
     async fn read_file(&self, request: Request<ReadFileRequest>) -> Result<Response<Self::ReadFileStream>, Status> {
         let p = principal(&request);
+        let caller = streams::caller(&request);
         let req = request.into_inner();
         check_path(&req.path)?;
         if req.path.is_empty() {
             return Err(Status::failed_precondition("path is required"));
         }
         self.authorize_read(&p, &req.repo, &req.path).await?;
+        let ticket = self.streams.open(&caller)?;
         let (entry, data) = QuerySvc::read_file(self, &req.repo, &req.revision, &req.path).await?;
         if req.offset > data.len() as u64 {
             return Err(Status::out_of_range(format!(
@@ -236,7 +246,8 @@ impl QueryService for QuerySvc {
             .unwrap_or(usize::MAX)
             .max(1);
         let parts = chunk_file(&entry, data, req.offset as usize, chunk);
-        Ok(Response::new(Box::pin(tokio_stream::iter(parts.into_iter().map(Ok)))))
+        let stream = tokio_stream::iter(parts.into_iter().map(Ok));
+        Ok(Response::new(Box::pin(self.streams.bound(ticket, stream))))
     }
 
     async fn list_dir(&self, request: Request<ListDirRequest>) -> Result<Response<ListDirResponse>, Status> {
@@ -310,8 +321,10 @@ impl QueryService for QuerySvc {
 
     async fn diff(&self, request: Request<DiffRequest>) -> Result<Response<Self::DiffStream>, Status> {
         let p = principal(&request);
+        let caller = streams::caller(&request);
         let req = request.into_inner();
         self.authorize_read(&p, &req.repo, &req.path).await?;
+        let ticket = self.streams.open(&caller)?;
         let repo = req.repo.clone();
         let mut resp = history::diff(self.meta.as_ref(), self.blobs.clone(), req).await?;
         if !self.reads_everything(&p, &repo).await? {
@@ -325,7 +338,8 @@ impl QueryService for QuerySvc {
             resp.files = kept;
         }
         let batches = history::diff_batches(resp, history::DIFF_BATCH);
-        Ok(Response::new(Box::pin(tokio_stream::iter(batches.into_iter().map(Ok)))))
+        let stream = tokio_stream::iter(batches.into_iter().map(Ok));
+        Ok(Response::new(Box::pin(self.streams.bound(ticket, stream))))
     }
 
     async fn resolve_revision(
@@ -361,6 +375,7 @@ impl QueryService for QuerySvc {
 
     async fn grep(&self, request: Request<GrepRequest>) -> Result<Response<Self::GrepStream>, Status> {
         let p = principal(&request);
+        let caller = streams::caller(&request);
         let req = request.into_inner();
         let max = match req.max_matches {
             0 => DEFAULT_GREP_MATCHES,
@@ -377,6 +392,7 @@ impl QueryService for QuerySvc {
             check_path(path)?;
             self.authorize_subtree(&p, &req.repo, path).await?;
         }
+        let ticket = self.streams.open(&caller)?;
         let rec = resolve_revision(self.meta.as_ref(), &req.repo, &req.revision).await?;
         let src = self.source();
         let mut starts = Vec::with_capacity(paths.len());
@@ -429,15 +445,18 @@ impl QueryService for QuerySvc {
             last.files_searched = found.searched;
             last.files_skipped = found.skipped;
         }
-        Ok(Response::new(Box::pin(tokio_stream::iter(batches.into_iter().map(Ok)))))
+        let stream = tokio_stream::iter(batches.into_iter().map(Ok));
+        Ok(Response::new(Box::pin(self.streams.bound(ticket, stream))))
     }
 
     async fn archive(&self, request: Request<ArchiveRequest>) -> Result<Response<Self::ArchiveStream>, Status> {
         let p = principal(&request);
+        let caller = streams::caller(&request);
         let req = request.into_inner();
         check_path(&req.path)?;
         check_prefix(&req.prefix)?;
         self.authorize_subtree(&p, &req.repo, &req.path).await?;
+        let ticket = self.streams.open(&caller)?;
         let format = match v1::ArchiveFormat::try_from(req.format) {
             Ok(v1::ArchiveFormat::Unspecified | v1::ArchiveFormat::TarGz) => scion_query::ArchiveFormat::TarGz,
             Ok(v1::ArchiveFormat::Zip) => scion_query::ArchiveFormat::Zip,
@@ -482,7 +501,8 @@ impl QueryService for QuerySvc {
                 }
             }
         });
-        Ok(Response::new(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx))))
+        let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+        Ok(Response::new(Box::pin(self.streams.bound(ticket, stream))))
     }
 
     async fn list_last_commits(

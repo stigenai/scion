@@ -1,5 +1,6 @@
 //! Scion 服务端的 gRPC 服务实现与启动入口。
 
+mod age;
 pub mod auth;
 pub mod config;
 pub mod events;
@@ -9,6 +10,7 @@ pub mod prehook;
 pub mod redaction;
 mod service;
 pub mod status;
+pub mod streams;
 pub mod watch;
 
 use std::future::Future;
@@ -241,9 +243,12 @@ pub async fn serve(
     let max_msg = usize::try_from(app.config.limits.max_chunk_bytes)
         .unwrap_or(usize::MAX)
         .saturating_add(64 * 1024);
+    let streams = streams::StreamLimits::new(app.config.max_stream_lifetime, app.config.max_streams_per_tenant);
     let info = ServerInfoServiceServer::new(ServerInfoSvc::new(app.config.clone()).with_guard(guard.clone()));
     let objects = ObjectServiceServer::new(
-        ObjectSvc::new(app.config.clone(), app.meta.clone(), app.blobs.clone()).with_guard(guard.clone()),
+        ObjectSvc::new(app.config.clone(), app.meta.clone(), app.blobs.clone())
+            .with_guard(guard.clone())
+            .with_stream_limits(streams.clone()),
     )
     .max_encoding_message_size(max_msg);
     // 上传的分块可能和读取分块一样大
@@ -297,12 +302,15 @@ pub async fn serve(
         RefSvc::new(app.meta.clone(), hub)
             .with_blobs(app.blobs.clone())
             .with_guard(guard.clone())
+            .with_stream_limits(streams.clone())
             .with_pre_land(pre_land)
             .with_recheck(app.config.stream_recheck_interval),
     );
     let refs = RefServiceServer::from_arc(ref_svc.clone());
     let query = QueryServiceServer::new(
-        QuerySvc::new(app.config.clone(), app.meta.clone(), app.blobs.clone()).with_guard(guard.clone()),
+        QuerySvc::new(app.config.clone(), app.meta.clone(), app.blobs.clone())
+            .with_guard(guard.clone())
+            .with_stream_limits(streams.clone()),
     )
     .max_encoding_message_size(max_msg);
     let auth_svc = AuthServiceServer::new(AuthSvc::new(guard.clone()));
@@ -339,7 +347,22 @@ pub async fn serve(
         )
     });
     // 从外到内：git → 追踪 → 指标 → 全局过载丢弃 → 认证 → 按租户限流 → deadline → 各服务（§5.3）
-    let result = tonic::transport::Server::builder()
+    let builder = tonic::transport::Server::builder();
+    // hyper does not poll a response body while a chunk waits for HTTP/2 send capacity, so a
+    // client that stops reading outlives the timer in `streams::Bounded`. `age::Aged` closes
+    // each connection at the lifetime plus a grace: the longer of the request timeout and 30s
+    // (at most the lifetime). With `--max-request-timeout 0s` the grace is 30s, so a unary call
+    // can then be cut off. No GOAWAY is sent:
+    // tonic 0.14.5 `max_connection_age` without a grace panics after the graceful shutdown
+    // (transport/server/mod.rs:891), and with a grace it only closes the connection.
+    let hard_age = app
+        .config
+        .max_stream_lifetime
+        .map(|l| age::hard_age(l, app.config.max_request_timeout));
+    let incoming = tokio_stream::StreamExt::map(TcpListenerStream::new(listener), move |io| {
+        io.map(|io| age::Aged::new(io, hard_age))
+    });
+    let result = builder
         .accept_http1(app.config.git)
         .layer(git::GitLayer::new(gateway))
         .layer(scion_obs::trace::TraceLayer)
@@ -365,7 +388,7 @@ pub async fn serve(
         .add_service(repo_svc)
         .add_service(org_svc)
         .add_service(event_svc)
-        .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async move {
+        .serve_with_incoming_shutdown(incoming, async move {
             shutdown.await;
             // 结束 WatchRefs 的长连接，否则优雅停机会一直等它们
             hub_for_shutdown.close();

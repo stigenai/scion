@@ -678,9 +678,39 @@ where
         )));
     }
     if out.len() > limit {
+        scion_obs::metrics().reject(scion_obs::reason::DECOMPRESSED_SIZE);
         return Err(Box::new(text(StatusCode::PAYLOAD_TOO_LARGE, "request body too large")));
     }
     Ok(Bytes::from(out))
+}
+
+/// A writer that fails with `FileTooLarge` once more than `left` more bytes arrive.
+struct Capped<W> {
+    inner: W,
+    left: usize,
+}
+
+impl<W: std::io::Write> std::io::Write for Capped<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if buf.len() > self.left {
+            return Err(std::io::ErrorKind::FileTooLarge.into());
+        }
+        let n = self.inner.write(buf)?;
+        self.left -= n;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+fn write_failed(e: &std::io::Error) -> Response<Body> {
+    if e.kind() == std::io::ErrorKind::FileTooLarge {
+        scion_obs::metrics().reject(scion_obs::reason::DECOMPRESSED_SIZE);
+        return text(StatusCode::PAYLOAD_TOO_LARGE, "the push is too large");
+    }
+    text(StatusCode::BAD_REQUEST, &format!("request body: {e}"))
 }
 
 /// Writes a push's body to a temporary file, gunzipped when git compressed it, and returns
@@ -701,10 +731,15 @@ where
         .get(header::CONTENT_ENCODING)
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.eq_ignore_ascii_case("gzip"));
+    // The cap counts the bytes written to disk, so a small gzip body cannot inflate past `limit`.
+    let sink = Capped {
+        inner: file.try_clone().map_err(io)?,
+        left: limit,
+    };
     let mut out: Box<dyn Write + Send> = if gzip {
-        Box::new(flate2::write::GzDecoder::new(file.try_clone().map_err(io)?))
+        Box::new(flate2::write::GzDecoder::new(sink))
     } else {
-        Box::new(file.try_clone().map_err(io)?)
+        Box::new(sink)
     };
     let mut body = std::pin::pin!(body);
     let mut total = 0usize;
@@ -719,11 +754,11 @@ where
             return Err(Box::new(text(StatusCode::PAYLOAD_TOO_LARGE, "the push is too large")));
         }
         if let Err(e) = out.write_all(&data) {
-            return Err(Box::new(text(StatusCode::BAD_REQUEST, &format!("request body: {e}"))));
+            return Err(Box::new(write_failed(&e)));
         }
     }
     if let Err(e) = out.flush() {
-        return Err(Box::new(text(StatusCode::BAD_REQUEST, &format!("request body: {e}"))));
+        return Err(Box::new(write_failed(&e)));
     }
     drop(out);
     let mut file = file;
@@ -775,6 +810,65 @@ mod tests {
             h.insert(*k, v.parse().expect("value"));
         }
         h
+    }
+
+    fn gzip(data: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        e.write_all(data).expect("write");
+        e.finish().expect("finish")
+    }
+
+    fn decompressed_hits() -> u64 {
+        scion_obs::metrics()
+            .encode()
+            .lines()
+            .find_map(|l| l.strip_prefix("scion_rejected_requests_total{reason=\"decompressed_size\"} "))
+            .map_or(0, |v| v.trim().parse().expect("counter"))
+    }
+
+    #[tokio::test]
+    async fn spool_counts_inflated_bytes() {
+        use std::io::Read;
+        let limit = 64 << 10;
+        let gz = headers(&[("content-encoding", "gzip")]);
+        let bomb = Full::new(Bytes::from(gzip(&vec![0u8; 1 << 20])));
+        let before = decompressed_hits();
+        let r = spool_body(&gz, bomb, limit).await.expect_err("bomb refused");
+        assert_eq!(r.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(decompressed_hits(), before + 1);
+
+        let one_over = Full::new(Bytes::from(gzip(&vec![7u8; limit + 1])));
+        let r = spool_body(&gz, one_over, limit).await.expect_err("one byte over");
+        assert_eq!(r.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+        let edge = vec![7u8; limit];
+        let mut f = spool_body(&gz, Full::new(Bytes::from(gzip(&edge))), limit)
+            .await
+            .expect("exact gzip");
+        let mut got = Vec::new();
+        f.read_to_end(&mut got).expect("read");
+        assert_eq!(got, edge);
+        let plain = HeaderMap::new();
+        spool_body(&plain, Full::new(Bytes::from(edge)), limit)
+            .await
+            .expect("exact plain");
+        assert_eq!(decompressed_hits(), before + 2);
+
+        // The other inflate site shares the counter, so it is tested here: the counter is global.
+        let bomb = Full::new(Bytes::from(gzip(&vec![0u8; limit + 1])));
+        let r = read_body(&gz, bomb, limit).await.expect_err("bomb refused");
+        assert_eq!(r.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(decompressed_hits(), before + 3);
+        let at_limit = Full::new(Bytes::from(gzip(&vec![7u8; limit])));
+        read_body(&gz, at_limit, limit).await.expect("exact gzip");
+        assert_eq!(decompressed_hits(), before + 3);
+
+        // A body shorter than a gzip header is not an error to the decoder, so use a longer one.
+        let bad = Full::new(Bytes::from_static(b"this is not a gzip body"));
+        let r = spool_body(&gz, bad, limit).await.expect_err("corrupt gzip");
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(decompressed_hits(), before + 3);
     }
 
     #[test]

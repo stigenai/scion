@@ -66,6 +66,14 @@ pub mod reason {
     pub const TENANT_CONCURRENCY: &str = "tenant_concurrency";
     /// 处理超过 deadline。
     pub const DEADLINE: &str = "deadline";
+    /// A caller has too many open server streams.
+    pub const TENANT_STREAMS: &str = "tenant_streams";
+    /// A server stream reached its maximum lifetime and ended with UNAVAILABLE.
+    pub const STREAM_LIFETIME: &str = "stream_lifetime";
+    /// A request body inflated past the limit of its endpoint.
+    pub const DECOMPRESSED_SIZE: &str = "decompressed_size";
+    /// A connection reached its hard age limit and was closed with its streams.
+    pub const CONNECTION_AGE: &str = "connection_age";
 }
 
 type RpcHistograms = Family<MethodLabels, Histogram, fn() -> Histogram>;

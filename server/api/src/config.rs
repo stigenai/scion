@@ -68,6 +68,11 @@ pub struct ServerConfig {
     pub tenant_rate: Option<WriteRate>,
     /// 每个调用者的在途请求上限；`None` 不限制。
     pub max_concurrent_per_tenant: Option<usize>,
+    /// The longest a server stream (WatchRefs, GetObjects, ReadFile, Diff, Archive, Grep) stays open.
+    /// It then ends with UNAVAILABLE and the client reconnects. `None` sets no limit.
+    pub max_stream_lifetime: Option<std::time::Duration>,
+    /// Open server streams per caller (the key of `max_concurrent_per_tenant`); `None` sets no limit.
+    pub max_streams_per_tenant: Option<usize>,
     /// 集群共享密钥：节点间转发合入时带上，收到的节点据此确认是本集群转发的，不再重复计入限流。
     /// 未设置时转发的请求照常计数（调用方自带的转发头也绕不过限流）。
     pub cluster_secret: Option<String>,
@@ -121,6 +126,8 @@ impl Default for ServerConfig {
             repo_write_rate: None,
             tenant_rate: None,
             max_concurrent_per_tenant: None,
+            max_stream_lifetime: Some(std::time::Duration::from_secs(3600)),
+            max_streams_per_tenant: None,
             cluster_secret: None,
             max_request_timeout: Some(std::time::Duration::from_secs(60)),
             ref_poll_interval: std::time::Duration::from_secs(1),
