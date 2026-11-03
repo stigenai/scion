@@ -21,7 +21,7 @@ scion-store.workspace = true
 thiserror.workspace = true
 tar = "0.4"
 flate2 = "1"
-zip = { version = "7", default-features = false, features = ["deflate", "deflate-flate2"] }
+zip = { version = "9", default-features = false, features = ["deflate", "deflate-flate2"] }
 
 [dev-dependencies]
 scion-store-sql.workspace = true

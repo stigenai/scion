@@ -629,10 +629,10 @@ async fn build_app_with_objects(
             "cluster mode without --cluster-secret: forwarded lands count against rate limits on both nodes"
         );
     }
-    if let Some(s) = &args.cluster_secret {
-        if tonic::metadata::MetadataValue::<tonic::metadata::Ascii>::try_from(s.as_str()).is_err() {
-            anyhow::bail!("--cluster-secret must be printable ASCII");
-        }
+    if let Some(s) = &args.cluster_secret
+        && tonic::metadata::MetadataValue::<tonic::metadata::Ascii>::try_from(s.as_str()).is_err()
+    {
+        anyhow::bail!("--cluster-secret must be printable ASCII");
     }
     let auth = args.auth.guard_config()?;
     check_exposure(args.listen, auth.required, args.allow_anonymous)?;

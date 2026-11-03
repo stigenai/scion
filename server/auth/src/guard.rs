@@ -349,35 +349,35 @@ impl Guard {
 
     async fn jwt(&self, token: &str, allow_own: bool) -> Result<Principal, AuthError> {
         let iss = peek(token).and_then(|(iss, _)| iss);
-        if let (Some(own), Some(iss)) = (&self.issuer, &iss) {
-            if own.issuer() == iss {
-                if !allow_own {
-                    return Err(AuthError::Invalid("access tokens cannot be exchanged".into()));
-                }
-                let c = own.verify(token).map_err(VerifyError::from)?;
-                let mut expires_at_ms = c.exp * 1000;
-                if let Some(sid) = &c.sid {
-                    // Fail closed: a missing or expired source record, or a store error, refuses the JWT.
-                    // One primary-key read per request; there is no cache, so the window is 0 s.
-                    let rec = self
-                        .meta()?
-                        .get_token_by_id(sid)
-                        .await?
-                        .ok_or_else(|| AuthError::Invalid("source token revoked".into()))?;
-                    if rec.subject != c.sub {
-                        return Err(AuthError::Invalid("source token does not match the subject".into()));
-                    }
-                    if let Some(src) = rec.expires_at_ms {
-                        if src <= now_ms() {
-                            return Err(AuthError::Expired);
-                        }
-                        expires_at_ms = expires_at_ms.min(src);
-                    }
-                }
-                let mut p = Principal::user(c.sub, c.groups);
-                p.expires_at_ms = Some(expires_at_ms);
-                return Ok(p);
+        if let (Some(own), Some(iss)) = (&self.issuer, &iss)
+            && own.issuer() == iss
+        {
+            if !allow_own {
+                return Err(AuthError::Invalid("access tokens cannot be exchanged".into()));
             }
+            let c = own.verify(token).map_err(VerifyError::from)?;
+            let mut expires_at_ms = c.exp * 1000;
+            if let Some(sid) = &c.sid {
+                // Fail closed: a missing or expired source record, or a store error, refuses the JWT.
+                // One primary-key read per request; there is no cache, so the window is 0 s.
+                let rec = self
+                    .meta()?
+                    .get_token_by_id(sid)
+                    .await?
+                    .ok_or_else(|| AuthError::Invalid("source token revoked".into()))?;
+                if rec.subject != c.sub {
+                    return Err(AuthError::Invalid("source token does not match the subject".into()));
+                }
+                if let Some(src) = rec.expires_at_ms {
+                    if src <= now_ms() {
+                        return Err(AuthError::Expired);
+                    }
+                    expires_at_ms = expires_at_ms.min(src);
+                }
+            }
+            let mut p = Principal::user(c.sub, c.groups);
+            p.expires_at_ms = Some(expires_at_ms);
+            return Ok(p);
         }
         match self.externals.iter().find(|e| Some(e.issuer()) == iss.as_deref()) {
             Some(e) => Ok(e.verify(token).await?),

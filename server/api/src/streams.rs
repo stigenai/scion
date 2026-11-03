@@ -135,18 +135,18 @@ where
         }
         // The deadline goes first. A stream of ready items (a finite answer) also ends at its
         // lifetime, and the sleep always has our waker. The UNAVAILABLE status makes the client retry.
-        if let Some((sleep, lifetime)) = &mut this.deadline {
-            if sleep.as_mut().poll(cx).is_ready() {
-                let lifetime = *lifetime;
-                this.expired = true;
-                scion_obs::metrics().reject(reason::STREAM_LIFETIME);
-                // Not a clean end: that would silently truncate a stream with a finite answer.
-                // No ErrorInfo reason, so the SDK retries on the code alone.
-                return Poll::Ready(Some(Err(Status::unavailable(format!(
-                    "stream lifetime of {}s reached; reconnect",
-                    lifetime.as_secs()
-                )))));
-            }
+        if let Some((sleep, lifetime)) = &mut this.deadline
+            && sleep.as_mut().poll(cx).is_ready()
+        {
+            let lifetime = *lifetime;
+            this.expired = true;
+            scion_obs::metrics().reject(reason::STREAM_LIFETIME);
+            // Not a clean end: that would silently truncate a stream with a finite answer.
+            // No ErrorInfo reason, so the SDK retries on the code alone.
+            return Poll::Ready(Some(Err(Status::unavailable(format!(
+                "stream lifetime of {}s reached; reconnect",
+                lifetime.as_secs()
+            )))));
         }
         Pin::new(&mut this.stream).poll_next(cx)
     }

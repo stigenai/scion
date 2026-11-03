@@ -344,12 +344,11 @@ fn encode(data: &Bytes) -> Bytes {
 /// The object bytes from what was stored: the decompressed frame if it matches `id`, else the
 /// stored bytes if they do (uncompressed objects). None when neither matches.
 fn decode(id: &ObjectId, stored: Bytes) -> Option<Bytes> {
-    if stored.starts_with(&ZSTD_MAGIC) {
-        if let Ok(plain) = zstd::stream::decode_all(stored.as_ref()) {
-            if id.verify(&plain) {
-                return Some(Bytes::from(plain));
-            }
-        }
+    if stored.starts_with(&ZSTD_MAGIC)
+        && let Ok(plain) = zstd::stream::decode_all(stored.as_ref())
+        && id.verify(&plain)
+    {
+        return Some(Bytes::from(plain));
     }
     id.verify(&stored).then_some(stored)
 }
@@ -548,10 +547,8 @@ impl ObjectBlobStore {
     /// Where `id` is packed, from the cache or the index (`fresh` skips the cache).
     async fn location(&self, id: &ObjectId, fresh: bool) -> Result<Option<PackLocation>> {
         let Some(p) = &self.packs else { return Ok(None) };
-        if !fresh {
-            if let Some(l) = p.locations.get(id) {
-                return Ok(Some(l));
-            }
+        if !fresh && let Some(l) = p.locations.get(id) {
+            return Ok(Some(l));
         }
         let found = p.index.pack_locations(&[*id]).await?.remove(id);
         match found {
@@ -727,10 +724,10 @@ impl ObjectBlobStore {
                 return self.get_loose(id).await;
             };
             // A cached location may be stale (the pack rewritten since): look it up again on any miss
-            if let Some(loc) = p.locations.get(id) {
-                if let Packed::Found(data) = self.read_packed(id, &loc, depth).await? {
-                    return Ok(Some(data));
-                }
+            if let Some(loc) = p.locations.get(id)
+                && let Packed::Found(data) = self.read_packed(id, &loc, depth).await?
+            {
+                return Ok(Some(data));
             }
             if let Some(loc) = self.location(id, true).await? {
                 match self.read_packed(id, &loc, depth).await? {
@@ -1081,10 +1078,10 @@ impl ObjectBlobStore {
                         out.push(e.id);
                     }
                 }
-            } else if let Some(id) = loose_id(key).filter(|_| !pack) {
-                if seen.insert(id) {
-                    out.push(id);
-                }
+            } else if let Some(id) = loose_id(key).filter(|_| !pack)
+                && seen.insert(id)
+            {
+                out.push(id);
             }
         }
         Ok(out)
@@ -1349,10 +1346,10 @@ impl BlobStore for ObjectBlobStore {
     }
 
     async fn delete(&self, id: &ObjectId) -> Result<()> {
-        if let Some(packs) = &self.packs {
-            if let Some(loc) = self.location(id, true).await? {
-                self.delete_packed(packs, id, &loc).await?;
-            }
+        if let Some(packs) = &self.packs
+            && let Some(loc) = self.location(id, true).await?
+        {
+            self.delete_packed(packs, id, &loc).await?;
         }
         match self.store.delete(&self.key(id)).await {
             Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),

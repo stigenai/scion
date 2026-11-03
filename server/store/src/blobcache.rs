@@ -64,10 +64,10 @@ impl CachedBlobs {
     }
 
     fn remember(&self, id: ObjectId, data: &Bytes) {
-        if let Some(c) = &self.cache {
-            if data.len() <= self.max_object_bytes {
-                c.insert(id, data.clone());
-            }
+        if let Some(c) = &self.cache
+            && data.len() <= self.max_object_bytes
+        {
+            c.insert(id, data.clone());
         }
     }
 

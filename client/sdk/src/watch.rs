@@ -147,10 +147,10 @@ impl RefWatch {
             };
             self.stream = None;
             loop {
-                if let Some(max) = self.max_reconnects {
-                    if failures >= max {
-                        return Err(err.unwrap_or_else(|| Error::Protocol("ref watch stream ended".into())));
-                    }
+                if let Some(max) = self.max_reconnects
+                    && failures >= max
+                {
+                    return Err(err.unwrap_or_else(|| Error::Protocol("ref watch stream ended".into())));
                 }
                 failures += 1;
                 tokio::time::sleep(backoff).await;

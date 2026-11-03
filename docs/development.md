@@ -48,6 +48,7 @@ Directory names describe location and role; crate names carry a `scion-` prefix 
 cargo test --workspace                                    # all tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo xtask layers                                        # dependency direction check
+cargo audit                                               # RUSTSEC advisories (cargo install cargo-audit --locked)
 cargo llvm-cov --workspace                                # coverage (cargo install cargo-llvm-cov)
 SCION_BLESS=1 cargo test -p scion-object --test vectors   # regenerate golden vectors after adding some
 docker compose -f deploy/dev/docker-compose.yml up -d     # SeaweedFS (S3) + PostgreSQL

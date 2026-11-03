@@ -1153,7 +1153,7 @@ pub async fn write_pack(started: Started<'_>, out: &Out, opts: PackOptions) -> R
             return Ok(());
         }
         sent += 1;
-        if sent % 10_000 == 0 && !out.progress(&format!("Writing files: {sent}\r")).await {
+        if sent.is_multiple_of(10_000) && !out.progress(&format!("Writing files: {sent}\r")).await {
             return Ok(());
         }
     }

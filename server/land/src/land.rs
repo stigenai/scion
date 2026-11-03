@@ -94,10 +94,10 @@ impl Lander {
         let fingerprint = record::fingerprint(reference, &tip, fast_forward_only);
         for attempt in 0..self.max_attempts {
             // 每次尝试都先查：并发的同 id 请求可能刚刚成功
-            if let Some(id) = request_id {
-                if let Some(done) = self.replay(repo, id, &fingerprint).await? {
-                    return Ok(done);
-                }
+            if let Some(id) = request_id
+                && let Some(done) = self.replay(repo, id, &fingerprint).await?
+            {
+                return Ok(done);
             }
             let head = meta.get_ref(repo, reference).await?;
             let mut batch = Batch::new(&self.writer, repo, reference, head.map(|h| h.target)).await?;
