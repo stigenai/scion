@@ -384,7 +384,7 @@ mod tests {
     fn a_header_that_is_not_a_bearer_one_has_no_token() {
         let token = |h: &str| {
             let mut r = Request::new(());
-            r.metadata_mut().insert("authorization", h.parse().unwrap());
+            r.metadata_mut().insert("authorization", h.parse().expect("header"));
             bearer_token(&r).map(str::to_owned)
         };
         assert_eq!(token("Bearer  t "), Some("t".into()));
