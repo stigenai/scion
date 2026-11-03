@@ -233,7 +233,18 @@ impl Filter {
 
 /// 订阅者的发送循环：通道里的变化逐批发送（同时到达的合并成一条响应），落后太多时重新取快照。
 ///
-/// 每批发送前重新认证并检查读权限：令牌被吊销、过期或策略不再允许读时，流以该错误结束，不再发送事件。
+/// Authenticates the caller's bearer token again and checks read access on `repo`.
+async fn still_allowed(guard: &Guard, bearer: Option<&str>, repo: &str) -> Result<(), Status> {
+    match guard.authenticate(bearer).await {
+        Ok(p) => authorize_any(guard, &p, repo, Action::Read).await,
+        Err(e) => Err(to_status(e)),
+    }
+}
+
+/// The loop checks the caller before each event batch and at each `recheck` tick, also when no ref changes.
+/// A failed check ends the stream with its error, and the stream sends no event.
+/// A failure found before a batch waits for the next tick.
+/// So a revoked caller does not learn when a ref changes, and the close time does not depend on ref changes.
 async fn pump(
     hub: Arc<RefHub>,
     guard: Arc<Guard>,
@@ -242,14 +253,31 @@ async fn pump(
     mut filter: Filter,
     mut rx: broadcast::Receiver<RefUpdate>,
     out: mpsc::Sender<Result<WatchRefsResponse, Status>>,
-    _recheck: std::time::Duration,
+    recheck: std::time::Duration,
 ) {
+    let recheck = recheck.max(std::time::Duration::from_millis(10));
+    let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + recheck, recheck);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut failed: Option<Status> = None;
     loop {
         let mut events = Vec::new();
-        let first = tokio::select! {
-            r = rx.recv() => r,
-            () = out.closed() => return,
-            () = hub.wait_closed() => return,
+        let first = loop {
+            tokio::select! {
+                r = rx.recv() => break r,
+                _ = tick.tick() => {
+                    let checked = match failed.take() {
+                        Some(e) => Err(e),
+                        None => still_allowed(&guard, bearer.as_deref(), &repo).await,
+                    };
+                    if let Err(e) = checked {
+                        tracing::info!(%repo, code = ?e.code(), "watch stream closed by credential recheck");
+                        let _ = out.send(Err(e)).await;
+                        return;
+                    }
+                }
+                () = out.closed() => return,
+                () = hub.wait_closed() => return,
+            }
         };
         let mut next = Some(first);
         while let Some(r) = next.take() {
@@ -274,16 +302,12 @@ async fn pump(
                 Err(_) => None,
             };
         }
-        if events.is_empty() {
+        if events.is_empty() || failed.is_some() {
             continue;
         }
-        let allowed = match guard.authenticate(bearer.as_deref()).await {
-            Ok(p) => authorize_any(&guard, &p, &repo, Action::Read).await,
-            Err(e) => Err(to_status(e)),
-        };
-        if let Err(e) = allowed {
-            let _ = out.send(Err(e)).await;
-            return;
+        if let Err(e) = still_allowed(&guard, bearer.as_deref(), &repo).await {
+            failed = Some(e);
+            continue;
         }
         if out
             .send(Ok(WatchRefsResponse {
