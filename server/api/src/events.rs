@@ -735,13 +735,13 @@ mod tests {
                 };
                 let mut headers = http::HeaderMap::new();
                 for l in head.lines().skip(1) {
-                    if let Some((k, v)) = l.split_once(':') {
-                        if let (Ok(k), Ok(v)) = (
+                    if let Some((k, v)) = l.split_once(':')
+                        && let (Ok(k), Ok(v)) = (
                             http::HeaderName::from_bytes(k.trim().as_bytes()),
                             http::HeaderValue::from_str(v.trim()),
-                        ) {
-                            headers.insert(k, v);
-                        }
+                        )
+                    {
+                        headers.insert(k, v);
                     }
                 }
                 log.lock().expect("lock").push((headers, body));

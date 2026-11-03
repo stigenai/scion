@@ -650,10 +650,10 @@ impl MetaStore for MemStore {
 
     async fn release_lease(&self, scope: &str, holder: &str) -> Result<()> {
         let mut inner = self.write()?;
-        if let Some(l) = inner.leases.get_mut(scope) {
-            if l.holder == holder {
-                l.expires_at_ms = 0;
-            }
+        if let Some(l) = inner.leases.get_mut(scope)
+            && l.holder == holder
+        {
+            l.expires_at_ms = 0;
         }
         Ok(())
     }

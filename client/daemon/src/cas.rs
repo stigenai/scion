@@ -78,10 +78,10 @@ impl Cas {
     pub fn remove(&self, id: &ObjectId) {
         self.memory.invalidate(id);
         let path = self.path(id);
-        if let Ok(meta) = std::fs::metadata(&path) {
-            if std::fs::remove_file(&path).is_ok() {
-                self.used.fetch_sub(meta.len(), Ordering::Relaxed);
-            }
+        if let Ok(meta) = std::fs::metadata(&path)
+            && std::fs::remove_file(&path).is_ok()
+        {
+            self.used.fetch_sub(meta.len(), Ordering::Relaxed);
         }
     }
 

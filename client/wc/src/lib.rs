@@ -845,10 +845,10 @@ impl WorkingCopy {
         // Finishing a sync or merge that stopped on conflicts: its message, author and merge
         // parent are the defaults
         let conflict = self.state.conflict.clone();
-        if let Some(c) = &conflict {
-            if !c.paths.is_empty() {
-                return Err(Error::Unresolved(c.paths.keys().cloned().collect()));
-            }
+        if let Some(c) = &conflict
+            && !c.paths.is_empty()
+        {
+            return Err(Error::Unresolved(c.paths.keys().cloned().collect()));
         }
         if merge.is_none() && self.state.head_merge.is_some() {
             return Err(Error::OnPendingMerge);
@@ -1331,10 +1331,10 @@ impl WorkingCopy {
                 let mut marked = Vec::new();
                 for p in &wanted {
                     let path = self.root().join(p);
-                    if let Ok(data) = std::fs::read(&path) {
-                        if merge::has_markers(&data) {
-                            marked.push(p.clone());
-                        }
+                    if let Ok(data) = std::fs::read(&path)
+                        && merge::has_markers(&data)
+                    {
+                        marked.push(p.clone());
                     }
                 }
                 if !marked.is_empty() {

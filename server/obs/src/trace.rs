@@ -145,10 +145,10 @@ pub fn inject(md: &mut MetadataMap) -> bool {
 
 /// 注入当前 span 的 trace 上下文；没有时转发调用方的 `traceparent`（本节点未启用追踪也不断开 trace）。
 pub fn inject_or(md: &mut MetadataMap, incoming: Option<&MetadataValue<Ascii>>) {
-    if !inject(md) {
-        if let Some(tp) = incoming {
-            md.insert("traceparent", tp.clone());
-        }
+    if !inject(md)
+        && let Some(tp) = incoming
+    {
+        md.insert("traceparent", tp.clone());
     }
 }
 

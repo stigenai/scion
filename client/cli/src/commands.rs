@@ -1674,10 +1674,10 @@ pub async fn land(ctx: &Ctx, dry_run: bool) -> Result<LandOut, CliError> {
     // After a rebase the range starts where the branch was on the server, as git shows the
     // remote's previous tip: the parent of the first commit landed. Only the text needs it,
     // so a failed lookup keeps the local base
-    if let Some(first) = landed.landed.first().filter(|_| landed.rebased()) {
-        if let Ok(r) = client.resolve_revision(&first.landed.to_string()).await {
-            old = r.parents.first().map(|p| p.to_string()).or(old);
-        }
+    if let Some(first) = landed.landed.first().filter(|_| landed.rebased())
+        && let Ok(r) = client.resolve_revision(&first.landed.to_string()).await
+    {
+        old = r.parents.first().map(|p| p.to_string()).or(old);
     }
     Ok(LandOut {
         schema: "scion.cli.land/v1",

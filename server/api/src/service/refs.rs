@@ -444,11 +444,11 @@ impl RefService for RefSvc {
             .map_err(status::from_store)?;
         // After the ref, so a refused create leaves an existing tag's annotation alone; if it
         // cannot be saved, the tag goes again rather than stay without it
-        if let Some(a) = &annotation {
-            if let Err(e) = self.meta.put_tag_annotation(&req.repo, &req.r#ref, a).await {
-                let _ = self.meta.delete_ref(&req.repo, &req.r#ref, Some(state.version)).await;
-                return Err(status::from_store(e));
-            }
+        if let Some(a) = &annotation
+            && let Err(e) = self.meta.put_tag_annotation(&req.repo, &req.r#ref, a).await
+        {
+            let _ = self.meta.delete_ref(&req.repo, &req.r#ref, Some(state.version)).await;
+            return Err(status::from_store(e));
         }
         let mut info = self.written(&p, &req.repo, &req.r#ref, state, "created").await;
         info.annotation = annotation.as_ref().map(proto_annotation);

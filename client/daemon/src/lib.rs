@@ -358,10 +358,10 @@ async fn idle_watch(daemon: Arc<Daemon>, timeout: Option<Duration>) {
     loop {
         tokio::time::sleep(check).await;
         daemon.prefetch.reap();
-        if let Some(t) = timeout {
-            if daemon.idle_for() >= t {
-                return;
-            }
+        if let Some(t) = timeout
+            && daemon.idle_for() >= t
+        {
+            return;
         }
     }
 }

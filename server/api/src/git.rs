@@ -89,10 +89,10 @@ fn as_principal<T>(p: &scion_auth::Principal, msg: T) -> tonic::Request<T> {
 /// What git prints after `ng REF`.
 fn reason(s: tonic::Status) -> String {
     use tonic_types::StatusExt;
-    if let Some(info) = s.get_error_details().error_info() {
-        if info.reason == "NOT_FAST_FORWARD" {
-            return "non-fast-forward".into();
-        }
+    if let Some(info) = s.get_error_details().error_info()
+        && info.reason == "NOT_FAST_FORWARD"
+    {
+        return "non-fast-forward".into();
     }
     s.message().to_string()
 }

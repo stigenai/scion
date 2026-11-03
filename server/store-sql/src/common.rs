@@ -96,7 +96,7 @@ pub(crate) fn ids_to_db(ids: &[ObjectId]) -> Vec<u8> {
 }
 
 pub(crate) fn ids_from_db(b: &[u8]) -> Result<Vec<ObjectId>> {
-    if b.len() % scion_object::ID_LEN != 0 {
+    if !b.len().is_multiple_of(scion_object::ID_LEN) {
         return Err(Error::Backend(format!("corrupt id list of {} bytes", b.len())));
     }
     b.chunks(scion_object::ID_LEN).map(id_from_db).collect()

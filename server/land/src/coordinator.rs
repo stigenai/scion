@@ -235,10 +235,10 @@ impl Coordinator {
         }
         let fingerprint = record::fingerprint(req.reference, &req.tip, req.fast_forward_only);
         // 快速路径：重试的请求不用排队
-        if let Some(id) = req.request_id {
-            if let Some(done) = replay(&self.shared.writer, req.repo, id, &fingerprint).await? {
-                return Ok(done);
-            }
+        if let Some(id) = req.request_id
+            && let Some(done) = replay(&self.shared.writer, req.repo, id, &fingerprint).await?
+        {
+            return Ok(done);
         }
         let key = (req.repo.to_owned(), req.reference.to_owned());
         self.shared.ensure_lease(&key).await?;
@@ -414,18 +414,18 @@ async fn process(shared: &Shared, repo: &str, batch: Vec<Job>) {
         let mut planned: Vec<(Job, Planned)> = Vec::with_capacity(pending.len());
         for job in pending {
             // 同一批里的重复请求（相同 request id）：与第一个共用结果
-            if let Some(id) = &job.request_id {
-                if let Some(&i) = by_request.get(id) {
-                    if planned[i].0.fingerprint != job.fingerprint {
-                        let _ = job.reply.send(Err(LandError::RequestIdReused(id.clone())));
-                    } else {
-                        let dup = Planned::Included {
-                            previously_landed: Vec::new(),
-                        };
-                        planned.push((job, dup));
-                    }
-                    continue;
+            if let Some(id) = &job.request_id
+                && let Some(&i) = by_request.get(id)
+            {
+                if planned[i].0.fingerprint != job.fingerprint {
+                    let _ = job.reply.send(Err(LandError::RequestIdReused(id.clone())));
+                } else {
+                    let dup = Planned::Included {
+                        previously_landed: Vec::new(),
+                    };
+                    planned.push((job, dup));
                 }
+                continue;
             }
             let opts = StackOptions {
                 fast_forward_only: job.fast_forward_only,

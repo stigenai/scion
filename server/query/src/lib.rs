@@ -456,10 +456,10 @@ async fn log_with(
     let mut scanned = 0;
     while entries.len() < limit.max(1) && scanned < max_scan.max(1) {
         // 候选被截断时，低于最后一个候选代数的部分留到下一页（下一页会重新读取索引）
-        if let (Some((_, true, floor)), Some((generation, _))) = (&candidates, queue.peek()) {
-            if generation < floor {
-                break;
-            }
+        if let (Some((_, true, floor)), Some((generation, _))) = (&candidates, queue.peek())
+            && generation < floor
+        {
+            break;
         }
         let Some((_, id)) = queue.pop() else { break };
         scanned += 1;
@@ -480,33 +480,36 @@ async fn log_with(
                 record,
                 changeset: load_changeset(blobs, id).await?,
             });
-        } else if candidates.is_none() {
-            if let Some(p) = path {
-                let changeset = load_changeset(blobs, id).await?;
-                if touches(&changeset, p) {
-                    entries.push(LogEntry { record, changeset });
-                }
+        } else if candidates.is_none()
+            && let Some(p) = path
+        {
+            let changeset = load_changeset(blobs, id).await?;
+            if touches(&changeset, p) {
+                entries.push(LogEntry { record, changeset });
             }
         }
         // As git's history simplification: a merge that took `path` as one of the other parents
         // had it changed nothing there itself; that parent's commits show the change
-        if let (Some(p), Some(e)) = (path, entries.last()) {
-            if e.record.id == id && e.record.parents.len() > 1 && same_as_a_side(&mut g, blobs, &e.record, p).await? {
-                entries.pop();
-            }
+        if let (Some(p), Some(e)) = (path, entries.last())
+            && e.record.id == id
+            && e.record.parents.len() > 1
+            && same_as_a_side(&mut g, blobs, &e.record, p).await?
+        {
+            entries.pop();
         }
         // git log --follow shows no merges: it diffs only commits with one parent
-        if let (true, Some(e)) = (follow, entries.last()) {
-            if e.record.id == id && e.record.parents.len() > 1 {
-                entries.pop();
-            }
+        if let (true, Some(e)) = (follow, entries.last())
+            && e.record.id == id
+            && e.record.parents.len() > 1
+        {
+            entries.pop();
         }
-        if let (true, Some(p), Some(e)) = (follow, path, entries.last()) {
-            if e.record.id == id {
-                renamed_from = follow::renamed_from(&mut g, blobs, id, &e.changeset, p, true).await?;
-                if renamed_from.is_some() {
-                    break;
-                }
+        if let (true, Some(p), Some(e)) = (follow, path, entries.last())
+            && e.record.id == id
+        {
+            renamed_from = follow::renamed_from(&mut g, blobs, id, &e.changeset, p, true).await?;
+            if renamed_from.is_some() {
+                break;
             }
         }
     }

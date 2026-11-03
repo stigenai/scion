@@ -350,10 +350,10 @@ async fn versions_by_index(
         versions.push((intro, blob));
         // 最新版本单独查一次（重复查询的常见情况），之后每 PROBE_BATCH 个版本批量查一次：
         // 远端数据库上逐版本查询的往返会主导冷启动耗时
-        if versions.len() - probed >= if probed == 0 { 1 } else { PROBE_BATCH } {
-            if let Some(lines) = probe(meta, repo, path, &mut versions, &mut probed).await? {
-                return Ok(Some((versions, Some(lines))));
-            }
+        if versions.len() - probed >= if probed == 0 { 1 } else { PROBE_BATCH }
+            && let Some(lines) = probe(meta, repo, path, &mut versions, &mut probed).await?
+        {
+            return Ok(Some((versions, Some(lines))));
         }
         let Some(parent) = first_parent(g, intro).await? else {
             break;

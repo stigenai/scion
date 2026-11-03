@@ -228,10 +228,8 @@ pub async fn last_commits(
     cache: bool,
 ) -> Result<Vec<Option<ObjectId>>> {
     let mut found: HashMap<String, ObjectId> = HashMap::new();
-    if cache {
-        if let Some(hit) = cached(meta, repo, &cs, dir).await? {
-            found = hit;
-        }
+    if cache && let Some(hit) = cached(meta, repo, &cs, dir).await? {
+        found = hit;
     }
     let mut g = Graph::new(meta, repo);
     let mut pending: HashSet<String> = names.iter().filter(|n| !found.contains_key(*n)).cloned().collect();
