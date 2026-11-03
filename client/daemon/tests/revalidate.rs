@@ -1,4 +1,4 @@
-//! The daemon checks read access on every GetObjects (ent-fdw, ADR 0003): a revoked or expired PAT and a
+//! The daemon checks read access on every GetObjects (ent-fdw, ADR 0004): a revoked or expired PAT and a
 //! policy change take effect on the next read, a hit included; offline reads of private objects are refused.
 //! The fixture is a real auth-required L3 and a real daemon on a Unix socket.
 #![cfg(unix)]
