@@ -101,6 +101,7 @@ fn from_pem_denies_every_other_key_form() {
         ("Ed25519", armor("PRIVATE KEY", &ed25519_pkcs8())),
         ("RSA", armor("PRIVATE KEY", &rsa_pkcs8())),
         ("junk DER", armor("PRIVATE KEY", b"junk junk junk")),
+        ("two blocks", format!("{}{}", fixed_pem(), fixed_pem())),
     ];
     for (name, pem) in rows {
         let r = Issuer::from_pem(&pem, "scion", 60);

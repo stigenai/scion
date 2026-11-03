@@ -5,10 +5,10 @@
 //! - 不透明令牌形如 `scn_pat_<43 个 base64url 字符>`，服务端只保存它的 SHA-256；公开标识是哈希的
 //!   前 12 个十六进制字符，用于列出和吊销。
 
+use aws_lc_rs::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
-use p256::pkcs8::{DecodePrivateKey, EncodePrivateKey, LineEnding};
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -24,12 +24,15 @@ pub enum KeyError {
 
 /// 生成一个新的 ES256 签名私钥（PKCS#8 PEM）。
 pub fn generate_signing_key() -> String {
-    let key = p256::SecretKey::random(&mut OsRng);
-    match key.to_pkcs8_pem(LineEnding::LF) {
-        Ok(pem) => pem.to_string(),
-        // P-256 私钥的 PKCS#8 编码不会失败
-        Err(e) => unreachable!("encoding a P-256 key: {e}"),
-    }
+    let der = match EcdsaKeyPair::generate(&ECDSA_P256_SHA256_FIXED_SIGNING).and_then(|k| k.to_pkcs8v1()) {
+        Ok(d) => d,
+        // 生成 P-256 密钥和 PKCS#8 编码不会失败
+        Err(e) => unreachable!("generating a P-256 key: {e}"),
+    };
+    pem::encode_config(
+        &pem::Pem::new("PRIVATE KEY", der.as_ref()),
+        pem::EncodeConfig::new().set_line_ending(pem::LineEnding::LF),
+    )
 }
 
 /// 服务端自签 JWT 的 claims。
@@ -83,11 +86,24 @@ impl std::fmt::Debug for Issuer {
 impl Issuer {
     /// `pem` 为 PKCS#8 格式的 P-256 私钥；`issuer` 写入 `iss`；`ttl_secs` 为令牌有效期。
     pub fn from_pem(pem: &str, issuer: &str, ttl_secs: i64) -> Result<Self, KeyError> {
-        let secret = p256::SecretKey::from_pkcs8_pem(pem).map_err(|e| KeyError::Invalid(e.to_string()))?;
-        let point = p256::elliptic_curve::sec1::ToEncodedPoint::to_encoded_point(&secret.public_key(), false);
-        let (x, y) = match (point.x(), point.y()) {
-            (Some(x), Some(y)) => (URL_SAFE_NO_PAD.encode(x), URL_SAFE_NO_PAD.encode(y)),
-            _ => return Err(KeyError::Invalid("public key is the identity point".into())),
+        let blocks = pem::parse_many(pem).map_err(|e| KeyError::Invalid(e.to_string()))?;
+        let block = match blocks.as_slice() {
+            [one] if one.tag() == "PRIVATE KEY" => one,
+            _ => {
+                return Err(KeyError::Invalid(
+                    "want exactly one PKCS#8 PRIVATE KEY PEM block".into(),
+                ));
+            }
+        };
+        let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, block.contents())
+            .map_err(|e| KeyError::Invalid(e.to_string()))?;
+        let (x, y) = match pair.public_key().as_ref() {
+            [0x04, xy @ ..] if xy.len() == 64 => (URL_SAFE_NO_PAD.encode(&xy[..32]), URL_SAFE_NO_PAD.encode(&xy[32..])),
+            _ => {
+                return Err(KeyError::Invalid(
+                    "public key is not an uncompressed P-256 point".into(),
+                ));
+            }
         };
         // kid：公钥坐标的哈希，换密钥时自然不同
         let kid = hex::encode(&Sha256::digest(format!("{x}.{y}").as_bytes())[..8]);
