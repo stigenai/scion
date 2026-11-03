@@ -237,10 +237,21 @@ async fn exchanged_jwt_from_an_introspected_token_ends_with_the_cache_ttl() {
     assert!(exp_ms <= src * 1000, "never past the token's exp");
     idp.set_introspection("opaque-ext2", active(Some(now_secs() + 3600)));
     let (_, exp_ms, _) = g.exchange("opaque-ext2").await.expect("exchange");
+    let cap = (now_secs() + 60) * 1000;
     assert!(
-        exp_ms <= (now_secs() + 60) * 1000,
-        "never past now + cache_ttl: {exp_ms}"
+        (cap - 3000..=cap).contains(&exp_ms),
+        "now + cache_ttl is the limit: {exp_ms}"
     );
+}
+
+#[tokio::test]
+async fn exchange_refuses_a_source_that_ended_inside_the_verifier_leeway() {
+    let idp = FakeIdp::start().await;
+    let g = guard(&idp, "60s");
+    assert!(matches!(
+        g.exchange(&external_jwt(now_secs() - 10)).await,
+        Err(AuthError::Expired)
+    ));
 }
 
 #[tokio::test]

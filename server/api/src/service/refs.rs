@@ -985,10 +985,15 @@ mod tests {
         assert_eq!(missing.map(|_| ()).map_err(|s| s.code()), Err(Code::NotFound));
     }
 
-    /// A revoked caller learns nothing before the next tick, not even that a ref changed:
-    /// the error arrives at the 30 s tick and no event is sent.
-    #[tokio::test(start_paused = true)]
-    async fn revoked_stream_closes_at_the_next_tick_without_an_event() {
+    const READ_R: &str = "[[rule]]\nsubjects = [\"user:alice\"]\nrepos = [\"r\"]\nactions = [\"read\"]\n";
+
+    /// A guard with alice's read policy, her token, and a pump on repo `r` that checks every 30 s.
+    async fn paused_pump() -> (
+        Arc<Guard>,
+        String,
+        broadcast::Sender<RefUpdate>,
+        mpsc::Receiver<Result<WatchRefsResponse, Status>>,
+    ) {
         use std::time::Duration;
         let store = Arc::new(scion_store::MemStore::new());
         store.create_repo("r").await.expect("repo");
@@ -1002,13 +1007,10 @@ mod tests {
             Arc::new(|_: &str| None),
         )
         .expect("guard");
-        guard
-            .set_policy("[[rule]]\nsubjects = [\"user:alice\"]\nrepos = [\"r\"]\nactions = [\"read\"]\n")
-            .await
-            .expect("policy");
+        guard.set_policy(READ_R).await.expect("policy");
         let (token, rec) = guard.create_token("pat", "alice", vec![], "", None).await.expect("pat");
         let (btx, rx) = broadcast::channel(16);
-        let (tx, mut out) = mpsc::channel(16);
+        let (tx, out) = mpsc::channel(16);
         let filter = Filter {
             refs: HashSet::new(),
             sent: HashMap::new(),
@@ -1023,16 +1025,47 @@ mod tests {
             tx,
             Duration::from_secs(30),
         ));
+        (guard, rec.id, btx, out)
+    }
+
+    /// A revoked caller learns nothing before the next tick, not even that a ref changed:
+    /// the error arrives at the 30 s tick and no event is sent.
+    #[tokio::test(start_paused = true)]
+    async fn revoked_stream_closes_at_the_next_tick_without_an_event() {
+        use std::time::Duration;
+        let (guard, id, btx, mut out) = paused_pump().await;
         tokio::time::sleep(Duration::from_secs(1)).await;
-        assert!(guard.revoke_token(&rec.id).await.expect("revoke"));
+        assert!(guard.revoke_token(&id).await.expect("revoke"));
         tokio::time::sleep(Duration::from_secs(1)).await;
         btx.send(update("main", 1)).expect("publish");
         tokio::time::sleep(Duration::from_secs(27)).await;
         assert!(out.try_recv().is_err(), "t=29 s: nothing sent before the tick");
         tokio::time::sleep(Duration::from_secs(2)).await;
-        let got = out.recv().await.expect("the stream ends with a message");
+        let got = out.try_recv().expect("t=31 s: the stream ended with a message");
         assert_eq!(got.map(|_| ()).map_err(|s| s.code()), Err(Code::Unauthenticated));
         assert!(out.recv().await.is_none(), "the stream ended and no event came");
+    }
+
+    /// A failure found before a batch stands: when the policy is back at the tick, the stream still ends.
+    #[tokio::test(start_paused = true)]
+    async fn failed_batch_check_closes_the_stream_even_if_access_returns() {
+        use std::time::Duration;
+        let (guard, _, btx, mut out) = paused_pump().await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        guard
+            .set_policy(&READ_R.replace("\"r\"", "\"other\""))
+            .await
+            .expect("policy gone");
+        btx.send(update("main", 1)).expect("publish");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        guard.set_policy(READ_R).await.expect("policy back");
+        btx.send(update("main", 2)).expect("publish");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(out.try_recv().is_err(), "no event while the first failure waits");
+        tokio::time::sleep(Duration::from_secs(28)).await;
+        let got = out.try_recv().expect("t=31 s: the stream ended with a message");
+        assert_eq!(got.map(|_| ()).map_err(|s| s.code()), Err(Code::PermissionDenied));
+        assert!(out.recv().await.is_none(), "no event came");
     }
 
     fn update(name: &str, version: u64) -> RefUpdate {
