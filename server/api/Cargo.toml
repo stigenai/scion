@@ -48,6 +48,7 @@ tonic = { workspace = true, features = ["gzip"] }
 scion-auth = { workspace = true, features = ["testing"] }
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto", "use_pem"] }
 serde_json.workspace = true
+h2 = "0.4"
 
 [lints]
 workspace = true

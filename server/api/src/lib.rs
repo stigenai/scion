@@ -345,7 +345,16 @@ pub async fn serve(
         )
     });
     // 从外到内：git → 追踪 → 指标 → 全局过载丢弃 → 认证 → 按租户限流 → deadline → 各服务（§5.3）
-    let result = tonic::transport::Server::builder()
+    let mut builder = tonic::transport::Server::builder();
+    // hyper does not poll a response body while a chunk waits for HTTP/2 send capacity, so a
+    // client that stops reading outlives the timer in `streams::Bounded`. A connection age
+    // limit backstops it: the connection closes after the lifetime plus a short grace.
+    if let Some(lifetime) = app.config.max_stream_lifetime {
+        builder = builder
+            .max_connection_age(lifetime)
+            .max_connection_age_grace(lifetime.min(std::time::Duration::from_secs(30)));
+    }
+    let result = builder
         .accept_http1(app.config.git)
         .layer(git::GitLayer::new(gateway))
         .layer(scion_obs::trace::TraceLayer)

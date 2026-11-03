@@ -9,6 +9,9 @@
 //! - [`StreamLimits::bound`] ends the stream with UNAVAILABLE after `--max-stream-lifetime`. The
 //!   client SDK retries that status, so `scn watch` reconnects and resumes by version.
 //!
+//! A client that stops reading stalls the response body, so the timer in [`Bounded`] does not run.
+//! `serve` also sets a connection age limit from `--max-stream-lifetime` as the backstop.
+//!
 //! Each hit counts in `scion_rejected_requests_total{reason}`.
 
 use std::collections::HashMap;

@@ -3283,6 +3283,7 @@ dependencies = [
  "async-nats",
  "async-trait",
  "bytes",
+ "h2",
  "hex",
  "hmac",
  "http",

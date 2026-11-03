@@ -335,3 +335,53 @@ async fn compressed_requests_are_refused() {
     let err = refs.watch_refs(with_token(req, &alice)).await.expect_err("refused");
     assert_eq!(err.code(), Code::Unimplemented, "{err}");
 }
+
+/// A client that keeps its HTTP/2 window at zero and never reads holds a stream past its
+/// lifetime, because hyper does not poll the body while a chunk waits for send capacity. The
+/// connection age limit is the backstop: the connection closes and the slot comes back.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_that_stops_reading_loses_its_stream_at_the_lifetime() {
+    let s = start(Some(Duration::from_secs(1)), Some(1)).await;
+    let alice = token(&s, "alice").await;
+    let tcp = tokio::net::TcpStream::connect(s.url.trim_start_matches("http://"))
+        .await
+        .expect("tcp");
+    let (mut send, conn) = h2::client::Builder::new()
+        .initial_window_size(0)
+        .initial_connection_window_size(0)
+        .handshake::<_, bytes::Bytes>(tcp)
+        .await
+        .expect("h2");
+    tokio::spawn(conn);
+    let request = http::Request::post(format!("{}/scion.v1.RefService/WatchRefs", s.url))
+        .header("content-type", "application/grpc")
+        .header("te", "trailers")
+        .header("authorization", format!("Bearer {alice}"))
+        .body(())
+        .expect("request");
+    let (response, mut body) = send.send_request(request, false).expect("send");
+    // repo = "mono", refs = ["main"], in one gRPC frame
+    let msg = b"\x0a\x04mono\x12\x04main";
+    let mut frame = vec![0u8, 0, 0, 0, msg.len() as u8];
+    frame.extend_from_slice(msg);
+    body.send_data(bytes::Bytes::from(frame), true).expect("data");
+    // The response head arrives; its body is never read, and the window stays at zero.
+    let _held = response.await.expect("response head");
+
+    let fresh = Channel::from_shared(s.url.clone())
+        .expect("url")
+        .connect()
+        .await
+        .expect("connect");
+    let refused = watch(&fresh, &alice, "mono").await.expect_err("the slot is held");
+    assert_eq!(refused.code(), Code::ResourceExhausted);
+    let mut freed = false;
+    for _ in 0..80 {
+        if watch(&fresh, &alice, "mono").await.is_ok() {
+            freed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(freed, "the stalled stream is gone a few seconds after its lifetime");
+}
