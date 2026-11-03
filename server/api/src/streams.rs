@@ -129,10 +129,8 @@ where
         if this.expired {
             return Poll::Ready(None);
         }
-        // The stream goes first, so items that are ready are not lost to a deadline that passed.
-        if let Poll::Ready(item) = Pin::new(&mut this.stream).poll_next(cx) {
-            return Poll::Ready(item);
-        }
+        // The deadline goes first. A stream of ready items (a finite answer) also ends at its
+        // lifetime, and the sleep always has our waker. The UNAVAILABLE status makes the client retry.
         if let Some((sleep, lifetime)) = &mut this.deadline {
             if sleep.as_mut().poll(cx).is_ready() {
                 let lifetime = *lifetime;
@@ -146,7 +144,7 @@ where
                 )))));
             }
         }
-        Poll::Pending
+        Pin::new(&mut this.stream).poll_next(cx)
     }
 }
 
@@ -191,7 +189,7 @@ mod tests {
         assert_eq!(end.code(), Code::Unavailable);
         assert_eq!(end.message(), "stream lifetime of 10s reached; reconnect");
         assert!(s.next().await.is_none(), "one status only");
-        assert_eq!(hits("stream_lifetime"), before + 1);
+        assert!(hits("stream_lifetime") > before, "other tests share the counter");
     }
 
     #[tokio::test(start_paused = true)]
@@ -207,6 +205,20 @@ mod tests {
         assert_eq!(s.next().await.expect("item").expect("ok"), 1);
         drop(tx);
         assert!(s.next().await.is_none(), "a clean end stays clean");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stream_with_ready_items_ends_at_its_lifetime() {
+        let limits = StreamLimits::new(Some(Duration::from_secs(10)), None);
+        let mut s = limits.bound(
+            limits.open(&caller(&call_from("a"))).expect("open"),
+            tokio_stream::iter(vec![Ok(1u32), Ok(2), Ok(3)]),
+        );
+        assert_eq!(s.next().await.expect("item").expect("ok"), 1);
+        tokio::time::advance(Duration::from_secs(11)).await;
+        let end = s.next().await.expect("a status").expect_err("ends");
+        assert_eq!(end.code(), Code::Unavailable);
+        assert!(s.next().await.is_none());
     }
 
     #[tokio::test]

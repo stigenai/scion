@@ -10,7 +10,9 @@ use scion_client::{Auth, Client};
 use scion_proto::v1::object_service_client::ObjectServiceClient;
 use scion_proto::v1::query_service_client::QueryServiceClient;
 use scion_proto::v1::ref_service_client::RefServiceClient;
-use scion_proto::v1::{GetObjectsRequest, ReadFileRequest, WatchRefsRequest, WatchRefsResponse};
+use scion_proto::v1::{
+    ArchiveRequest, DiffRequest, GetObjectsRequest, GrepRequest, ReadFileRequest, WatchRefsRequest, WatchRefsResponse,
+};
 use scion_store::{MemStore, MetaStore};
 use tokio::net::TcpListener;
 use tonic::codec::CompressionEncoding;
@@ -242,7 +244,42 @@ async fn each_caller_has_its_own_stream_budget() {
         get(&alice).await.expect_err("get_objects").code(),
         Code::ResourceExhausted
     );
-    assert!(counter("tenant_streams") >= before + 3, "each refusal counts");
+    let mut q = QueryServiceClient::new(channel.clone());
+    let diff = q
+        .diff(with_token(
+            DiffRequest {
+                repo: "mono".into(),
+                ..Default::default()
+            },
+            &alice,
+        ))
+        .await
+        .expect_err("diff");
+    let grep = q
+        .grep(with_token(
+            GrepRequest {
+                repo: "mono".into(),
+                pattern: "v".into(),
+                ..Default::default()
+            },
+            &alice,
+        ))
+        .await
+        .expect_err("grep");
+    let archive = q
+        .archive(with_token(
+            ArchiveRequest {
+                repo: "mono".into(),
+                ..Default::default()
+            },
+            &alice,
+        ))
+        .await
+        .expect_err("archive");
+    for (rpc, err) in [("diff", diff), ("grep", grep), ("archive", archive)] {
+        assert_eq!(err.code(), Code::ResourceExhausted, "{rpc}: {err}");
+    }
+    assert!(counter("tenant_streams") >= before + 6, "each refusal counts");
 
     drop(a1);
     let mut freed = false;
