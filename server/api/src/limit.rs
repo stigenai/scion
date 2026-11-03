@@ -226,7 +226,7 @@ fn tenant_of<B>(req: &http::Request<B>) -> String {
 
 /// The tenant key: `sub:<subject>` when authenticated, else `ip:<addr>`, else `anonymous`.
 /// Stream budgets ([`crate::streams`]) use the same key.
-pub fn tenant_key(principal: Option<&scion_auth::Principal>, addr: Option<std::net::IpAddr>) -> String {
+pub(crate) fn tenant_key(principal: Option<&scion_auth::Principal>, addr: Option<std::net::IpAddr>) -> String {
     match (principal, addr) {
         (Some(p), _) if p.authenticated => format!("sub:{}", p.subject),
         (_, Some(ip)) => format!("ip:{ip}"),

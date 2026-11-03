@@ -3553,6 +3553,7 @@ dependencies = [
  "pin-project-lite",
  "prometheus-client",
  "tokio",
+ "tokio-stream",
  "tonic",
  "tower",
  "tracing",

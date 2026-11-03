@@ -291,7 +291,7 @@ pub async fn serve_node(
         .unwrap_or(usize::MAX)
         .saturating_add(64 * 1024)
         .max(4 << 20);
-    let streams = scion_api::streams::StreamLimits::new(config.max_stream_lifetime, config.max_streams_per_tenant);
+    let streams = scion_obs::streams::StreamLimits::new(config.max_stream_lifetime, config.max_streams_per_tenant);
     let objects =
         ObjectServiceServer::new(CacheObjectSvc::new(node.clone(), limits, channels).with_stream_limits(streams))
             .max_encoding_message_size(max_msg);
@@ -300,13 +300,13 @@ pub async fn serve_node(
     let _stats = register_stats(&node);
     // A client that stops reading outlives the timer in `StreamLimits::bound`, because hyper does
     // not poll a body that waits for HTTP/2 capacity. `Aged` closes the connection at the lifetime
-    // plus a grace. See `scion_api::age`.
+    // plus a grace. See `scion_obs::age`.
     let hard_age = config
         .max_stream_lifetime
         .filter(|l| !l.is_zero())
-        .map(|l| scion_api::age::hard_age(l, None));
+        .map(|l| scion_obs::age::hard_age(l, None));
     let incoming = tokio_stream::StreamExt::map(TcpListenerStream::new(listener), move |io| {
-        io.map(|io| scion_api::age::Aged::new(io, hard_age))
+        io.map(|io| scion_obs::age::Aged::new(io, hard_age))
     });
     let result = tonic::transport::Server::builder()
         .layer(scion_obs::trace::TraceLayer)

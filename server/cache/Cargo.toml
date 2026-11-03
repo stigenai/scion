@@ -7,7 +7,6 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-scion-api.workspace = true
 scion-obs.workspace = true
 blake3.workspace = true
 bytes.workspace = true
@@ -27,6 +26,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 # 集成测试在进程内拉起 L3 服务端
+scion-api.workspace = true
 scion-store.workspace = true
 scion-client.workspace = true
 tempfile.workspace = true

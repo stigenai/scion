@@ -11,7 +11,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 use std::time::Duration;
 
-use scion_obs::reason;
+use crate::reason;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::time::{Sleep, sleep};
 use tonic::transport::server::Connected;
@@ -40,7 +40,7 @@ impl<T> Aged<T> {
         };
         ready!(timer.as_mut().poll(cx));
         if !std::mem::replace(&mut self.counted, true) {
-            scion_obs::metrics().reject(reason::CONNECTION_AGE);
+            crate::metrics().reject(reason::CONNECTION_AGE);
         }
         Poll::Ready(())
     }
@@ -154,9 +154,9 @@ mod tests {
     async fn expiry_counts_the_connection_once() {
         let _one = EXPIRES.lock().unwrap_or_else(|e| e.into_inner());
         let count = || {
-            scion_obs::metrics()
+            crate::metrics()
                 .rejected
-                .get_or_create(&scion_obs::metrics::ReasonLabels {
+                .get_or_create(&crate::metrics::ReasonLabels {
                     reason: reason::CONNECTION_AGE.to_owned(),
                 })
                 .get()

@@ -1,13 +1,14 @@
 //! 缓存节点对外提供的 gRPC 服务：`ObjectService`（与 L3 的消息定义完全相同）和 `ServerInfoService`
 //! （角色为 CACHE）。
 
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bytes::Bytes;
-use scion_api::streams::StreamLimits;
 use scion_object::ObjectId;
+use scion_obs::streams::StreamLimits;
 use scion_proto::v1::object_service_client::ObjectServiceClient;
 use scion_proto::v1::object_service_server::ObjectService;
 use scion_proto::v1::server_info_service_server::ServerInfoService;
@@ -66,8 +67,25 @@ fn ctx_of<T>(req: &Request<T>) -> (RequestCtx, bool) {
 fn caller_key<T>(request: &Request<T>) -> String {
     match request.metadata().get("authorization") {
         Some(h) => format!("tok:{}", &blake3::hash(h.as_bytes()).to_hex()[..32]),
-        None => scion_api::limit::tenant_key(None, request.remote_addr().map(|a| a.ip())),
+        None => match request.remote_addr() {
+            Some(a) => format!("ip:{}", a.ip()),
+            None => "anonymous".to_owned(),
+        },
     }
+}
+
+/// The same refusal as L3: RESOURCE_EXHAUSTED with reason RATE_LIMITED, retry after 1s.
+fn too_many_streams(key: &str) -> Status {
+    let details = tonic_types::ErrorDetails::with_error_info(
+        scion_proto::reason_name(v1::ErrorReason::RateLimited),
+        scion_proto::ERROR_DOMAIN,
+        HashMap::from([("retry_after_ms".to_string(), "1000".to_string())]),
+    );
+    <Status as tonic_types::StatusExt>::with_error_details(
+        tonic::Code::ResourceExhausted,
+        format!("too many open streams for {key}"),
+        details,
+    )
 }
 
 pub struct CacheObjectSvc {
@@ -137,7 +155,7 @@ impl ObjectService for CacheObjectSvc {
             }
         }
         // After the L3 check and the offset check: a refused call takes no slot.
-        let ticket = self.streams.open(&key)?;
+        let ticket = self.streams.open_with(&key, too_many_streams)?;
         let chunk = usize::try_from(self.limits.max_chunk_bytes)
             .unwrap_or(usize::MAX)
             .max(1);

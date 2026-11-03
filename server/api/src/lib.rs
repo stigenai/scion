@@ -1,6 +1,6 @@
 //! Scion 服务端的 gRPC 服务实现与启动入口。
 
-pub mod age;
+pub use scion_obs::age;
 pub mod auth;
 pub mod config;
 pub mod events;
