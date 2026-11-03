@@ -40,7 +40,7 @@ impl PgMetaStore {
             .execute(&mut *conn)
             .await
             .map_err(|e| backend("set lock timeout", e))?;
-        let full = sqlx::query(&format!("VACUUM (FULL, ANALYZE) {table}"))
+        let full = sqlx::query(sqlx::AssertSqlSafe(format!("VACUUM (FULL, ANALYZE) {table}")))
             .execute(&mut *conn)
             .await;
         sqlx::query("RESET lock_timeout")
@@ -100,10 +100,12 @@ impl PgMetaStore {
         .await
         .map_err(|e| backend("find invalid indexes", e))?;
         for name in leftovers {
-            sqlx::query(&format!("DROP INDEX CONCURRENTLY IF EXISTS \"{name}\""))
-                .execute(&mut *conn)
-                .await
-                .map_err(|e| backend("drop invalid index", e))?;
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "DROP INDEX CONCURRENTLY IF EXISTS \"{name}\""
+            )))
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| backend("drop invalid index", e))?;
         }
         let tables: &[&str] = if rewritten {
             &["objects_index", "path_changes"]
@@ -111,7 +113,7 @@ impl PgMetaStore {
             &["objects_index", "path_changes", "pack_locations"]
         };
         for table in tables {
-            sqlx::query(&format!("REINDEX TABLE CONCURRENTLY {table}"))
+            sqlx::query(sqlx::AssertSqlSafe(format!("REINDEX TABLE CONCURRENTLY {table}")))
                 .execute(&mut *conn)
                 .await
                 .map_err(|e| backend("reindex", e))?;
@@ -867,22 +869,24 @@ impl MetaStore for PgMetaStore {
     }
 
     async fn get_repo(&self, repo: &str) -> Result<Option<RepoInfo>> {
-        let row: Option<RepoRow> = sqlx::query_as(&format!("SELECT {REPO_COLUMNS} FROM repos WHERE name = $1"))
-            .bind(repo)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|e| backend("get repo", e))?;
+        let row: Option<RepoRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {REPO_COLUMNS} FROM repos WHERE name = $1"
+        )))
+        .bind(repo)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| backend("get repo", e))?;
         Ok(row.map(repo_from_row))
     }
 
     async fn list_repo_infos(&self, filter: &RepoFilter) -> Result<Vec<RepoInfo>> {
         let state = if filter.deleted { "IS NOT NULL" } else { "IS NULL" };
         let after = filter.after.clone().unwrap_or_default();
-        let rows: Vec<RepoRow> = sqlx::query_as(&format!(
+        let rows: Vec<RepoRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT {REPO_COLUMNS} FROM repos WHERE deleted_at_ms {state} \
              AND name COLLATE \"C\" >= $1 AND name COLLATE \"C\" < $2 AND name COLLATE \"C\" > $3 \
              ORDER BY name COLLATE \"C\" LIMIT $4"
-        ))
+        )))
         .bind(&filter.prefix)
         .bind(prefix_upper_bound(&filter.prefix))
         .bind(after)
@@ -894,10 +898,10 @@ impl MetaStore for PgMetaStore {
     }
 
     async fn update_repo(&self, repo: &str, patch: &RepoPatch) -> Result<RepoInfo> {
-        let row: Option<RepoRow> = sqlx::query_as(&format!(
+        let row: Option<RepoRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "UPDATE repos SET default_branch = COALESCE($1, default_branch), description = COALESCE($2, description) \
              WHERE name = $3 AND deleted_at_ms IS NULL RETURNING {REPO_COLUMNS}"
-        ))
+        )))
         .bind(&patch.default_branch)
         .bind(&patch.description)
         .bind(repo)
@@ -961,10 +965,10 @@ impl MetaStore for PgMetaStore {
         };
         // 每次只删一张表中的一批行，单个事务保持短小
         for (table, key) in REPO_TABLES {
-            let done = sqlx::query(&format!(
+            let done = sqlx::query(sqlx::AssertSqlSafe(format!(
                 "DELETE FROM {table} WHERE repo_id = $1 AND ({key}) IN \
                  (SELECT {key} FROM {table} WHERE repo_id = $1 LIMIT $2)"
-            ))
+            )))
             .bind(id)
             .bind(purge_limit(batch))
             .execute(&mut *tx)
@@ -1026,9 +1030,9 @@ impl MetaStore for PgMetaStore {
             }
         })?;
         for (table, cols) in FORK_TABLES {
-            sqlx::query(&format!(
+            sqlx::query(sqlx::AssertSqlSafe(format!(
                 "INSERT INTO {table} (repo_id, {cols}) SELECT $1, {cols} FROM {table} WHERE repo_id = $2"
-            ))
+            )))
             .bind(dst_id)
             .bind(src_id)
             .execute(&mut *tx)
@@ -1091,9 +1095,9 @@ impl MetaStore for PgMetaStore {
 
     async fn list_ref_events(&self, after_seq: u64, limit: usize, repo: Option<&str>) -> Result<Vec<RefEvent>> {
         let filter = if repo.is_some() { "AND repo = $3" } else { "" };
-        let rows: Vec<RefEventRow> = sqlx::query_as(&format!(
+        let rows: Vec<RefEventRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT {REF_EVENT_COLUMNS} FROM ref_events WHERE seq > $1 {filter} ORDER BY seq LIMIT $2"
-        ))
+        )))
         .bind(version_to_db(after_seq)?)
         .bind(list_limit(limit))
         .bind(repo)
@@ -1442,7 +1446,7 @@ impl MetaStore for PgMetaStore {
     async fn get_changeset(&self, repo: &str, id: &ObjectId) -> Result<Option<ChangesetRecord>> {
         let repo_id = self.repo_id(repo).await?;
         let sql = format!("SELECT {CHANGESET_COLUMNS} FROM changesets WHERE repo_id = $1 AND cs_id = $2");
-        sqlx::query_as::<_, ChangesetRow>(&sql)
+        sqlx::query_as::<_, ChangesetRow>(sqlx::AssertSqlSafe(sql))
             .bind(repo_id)
             .bind(id.to_bytes().to_vec())
             .fetch_optional(&self.pool)
@@ -1458,7 +1462,7 @@ impl MetaStore for PgMetaStore {
             "SELECT {CHANGESET_COLUMNS} FROM changesets WHERE repo_id = $1 AND generation <= $2 \
              ORDER BY generation DESC LIMIT $3"
         );
-        sqlx::query_as::<_, ChangesetRow>(&sql)
+        sqlx::query_as::<_, ChangesetRow>(sqlx::AssertSqlSafe(sql))
             .bind(repo_id)
             .bind(version_to_db(max_generation.min(i64::MAX as u64))?)
             .bind(i64::try_from(limit).unwrap_or(i64::MAX))
@@ -1700,7 +1704,7 @@ mod tests {
         static N: AtomicU32 = AtomicU32::new(0);
         let schema = format!("t{}_{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed));
         let admin = PgPool::connect(&url).await.expect("connect admin");
-        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
             .execute(&admin)
             .await
             .expect("create schema");
@@ -1805,7 +1809,7 @@ mod tests {
         static N: AtomicU32 = AtomicU32::new(0);
         let schema = format!("up{}_{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed));
         let admin = PgPool::connect(&url).await.expect("connect admin");
-        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
             .execute(&admin)
             .await
             .expect("create schema");

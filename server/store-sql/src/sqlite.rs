@@ -784,21 +784,23 @@ impl MetaStore for SqliteMetaStore {
     }
 
     async fn get_repo(&self, repo: &str) -> Result<Option<RepoInfo>> {
-        let row: Option<RepoRow> = sqlx::query_as(&format!("SELECT {REPO_COLUMNS} FROM repos WHERE name = ?1"))
-            .bind(repo)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|e| backend("get repo", e))?;
+        let row: Option<RepoRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {REPO_COLUMNS} FROM repos WHERE name = ?1"
+        )))
+        .bind(repo)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| backend("get repo", e))?;
         Ok(row.map(repo_from_row))
     }
 
     async fn list_repo_infos(&self, filter: &RepoFilter) -> Result<Vec<RepoInfo>> {
         let state = if filter.deleted { "IS NOT NULL" } else { "IS NULL" };
         let after = filter.after.clone().unwrap_or_default();
-        let rows: Vec<RepoRow> = sqlx::query_as(&format!(
+        let rows: Vec<RepoRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT {REPO_COLUMNS} FROM repos WHERE deleted_at_ms {state} \
              AND name >= ?1 AND name < ?2 AND name > ?3 ORDER BY name LIMIT ?4"
-        ))
+        )))
         .bind(&filter.prefix)
         .bind(prefix_upper_bound(&filter.prefix))
         .bind(after)
@@ -810,10 +812,10 @@ impl MetaStore for SqliteMetaStore {
     }
 
     async fn update_repo(&self, repo: &str, patch: &RepoPatch) -> Result<RepoInfo> {
-        let row: Option<RepoRow> = sqlx::query_as(&format!(
+        let row: Option<RepoRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "UPDATE repos SET default_branch = COALESCE(?1, default_branch), description = COALESCE(?2, description) \
              WHERE name = ?3 AND deleted_at_ms IS NULL RETURNING {REPO_COLUMNS}"
-        ))
+        )))
         .bind(&patch.default_branch)
         .bind(&patch.description)
         .bind(repo)
@@ -877,10 +879,10 @@ impl MetaStore for SqliteMetaStore {
         };
         // 每次只删一张表中的一批行，单个事务保持短小
         for (table, key) in REPO_TABLES {
-            let done = sqlx::query(&format!(
+            let done = sqlx::query(sqlx::AssertSqlSafe(format!(
                 "DELETE FROM {table} WHERE repo_id = ?1 AND ({key}) IN \
                  (SELECT {key} FROM {table} WHERE repo_id = ?1 LIMIT ?2)"
-            ))
+            )))
             .bind(id)
             .bind(purge_limit(batch))
             .execute(&mut *tx)
@@ -942,9 +944,9 @@ impl MetaStore for SqliteMetaStore {
             }
         })?;
         for (table, cols) in FORK_TABLES {
-            sqlx::query(&format!(
+            sqlx::query(sqlx::AssertSqlSafe(format!(
                 "INSERT INTO {table} (repo_id, {cols}) SELECT ?1, {cols} FROM {table} WHERE repo_id = ?2"
-            ))
+            )))
             .bind(dst_id)
             .bind(src_id)
             .execute(&mut *tx)
@@ -1007,9 +1009,9 @@ impl MetaStore for SqliteMetaStore {
 
     async fn list_ref_events(&self, after_seq: u64, limit: usize, repo: Option<&str>) -> Result<Vec<RefEvent>> {
         let filter = if repo.is_some() { "AND repo = ?3" } else { "" };
-        let rows: Vec<RefEventRow> = sqlx::query_as(&format!(
+        let rows: Vec<RefEventRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT {REF_EVENT_COLUMNS} FROM ref_events WHERE seq > ?1 {filter} ORDER BY seq LIMIT ?2"
-        ))
+        )))
         .bind(version_to_db(after_seq)?)
         .bind(list_limit(limit))
         .bind(repo)
@@ -1358,7 +1360,7 @@ impl MetaStore for SqliteMetaStore {
     async fn get_changeset(&self, repo: &str, id: &ObjectId) -> Result<Option<ChangesetRecord>> {
         let repo_id = self.repo_id(repo).await?;
         let sql = format!("SELECT {CHANGESET_COLUMNS} FROM changesets WHERE repo_id = ? AND cs_id = ?");
-        sqlx::query_as::<_, ChangesetRow>(&sql)
+        sqlx::query_as::<_, ChangesetRow>(sqlx::AssertSqlSafe(sql))
             .bind(repo_id)
             .bind(id.to_bytes().to_vec())
             .fetch_optional(&self.pool)
@@ -1374,7 +1376,7 @@ impl MetaStore for SqliteMetaStore {
             "SELECT {CHANGESET_COLUMNS} FROM changesets WHERE repo_id = ? AND generation <= ? \
              ORDER BY generation DESC LIMIT ?"
         );
-        sqlx::query_as::<_, ChangesetRow>(&sql)
+        sqlx::query_as::<_, ChangesetRow>(sqlx::AssertSqlSafe(sql))
             .bind(repo_id)
             .bind(version_to_db(max_generation.min(i64::MAX as u64))?)
             .bind(i64::try_from(limit).unwrap_or(i64::MAX))
