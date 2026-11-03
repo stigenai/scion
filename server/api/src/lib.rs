@@ -303,7 +303,8 @@ pub async fn serve(
             .with_blobs(app.blobs.clone())
             .with_guard(guard.clone())
             .with_stream_limits(streams.clone())
-            .with_pre_land(pre_land),
+            .with_pre_land(pre_land)
+            .with_recheck(app.config.stream_recheck_interval),
     );
     let refs = RefServiceServer::from_arc(ref_svc.clone());
     let query = QueryServiceServer::new(

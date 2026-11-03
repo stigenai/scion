@@ -98,6 +98,9 @@ pub struct ServerConfig {
     pub pre_land: Option<crate::prehook::PreLandConfig>,
     /// Serve git's smart HTTP protocol on the same listener (the git gateway).
     pub git: bool,
+    /// How often an open WatchRefs stream authenticates its caller again and checks read access,
+    /// also when no ref changes. A revoked caller loses the stream at the next tick.
+    pub stream_recheck_interval: std::time::Duration,
 }
 
 /// 令牌桶参数：每秒补充 `per_second` 个，最多积攒 `burst` 个。
@@ -133,6 +136,7 @@ impl Default for ServerConfig {
             repo_delete_grace: std::time::Duration::from_secs(24 * 3600),
             pre_land: None,
             git: true,
+            stream_recheck_interval: std::time::Duration::from_secs(30),
             events: crate::events::EventsConfig {
                 retention: std::time::Duration::from_secs(7 * 24 * 3600),
                 ..Default::default()

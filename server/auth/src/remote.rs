@@ -95,26 +95,54 @@ impl Introspection {
         principal_from_claims(&body, subject_claim, self.config.groups_claim.as_deref(), None).map(Some)
     }
 
+    /// How long the cache keeps an active answer. A token that `exchange` derives must not outlive it.
+    pub fn cache_ttl(&self) -> Duration {
+        self.config.cache_ttl
+    }
+
+    /// Ask the server now and skip the cache, so a revoke shows at once.
+    /// An active answer with an `exp` that is not in the future gives `Ok(None)`.
+    pub async fn verify_uncached(&self, token: &str) -> Result<Option<Principal>, VerifyError> {
+        let now = crate::guard::now_ms();
+        Ok(self
+            .call(token)
+            .await?
+            .filter(|p| p.expires_at_ms.is_none_or(|e| e > now)))
+    }
+
     /// 校验令牌：有效时返回身份，无效返回 `Ok(None)`。
+    ///
+    /// After a revoke, this call can still accept the token for `cache_ttl` (default 60 s), but not past its `exp`.
+    /// An active answer with an `exp` that is not in the future gives `Ok(None)`.
+    /// With `cache_ttl = "0s"` the cache is off.
     pub async fn verify(&self, token: &str) -> Result<Option<Principal>, VerifyError> {
         let key = crate::token::hash_opaque(token);
-        if let Some(hit) = self.cache.get(&key).await {
+        let cached = !self.config.cache_ttl.is_zero();
+        if cached && let Some(hit) = self.cache.get(&key).await {
             return Ok(hit);
         }
-        let r = self.call(token).await?;
-        self.cache.insert(key, r.clone()).await;
+        let r = self.verify_uncached(token).await?;
+        if cached {
+            self.cache.insert(key, r.clone()).await;
+        }
         Ok(r)
     }
 }
 
-/// 允许的结果缓存 `positive`，拒绝的缓存 [`NEGATIVE_TTL`]。
+/// 允许的结果缓存 `positive`，但不超过令牌的 `exp`；拒绝的缓存 [`NEGATIVE_TTL`]。
 struct Ttl {
     positive: Duration,
 }
 
 impl<K> moka::Expiry<K, Option<Principal>> for Ttl {
     fn expire_after_create(&self, _: &K, v: &Option<Principal>, _: std::time::Instant) -> Option<Duration> {
-        Some(if v.is_some() { self.positive } else { NEGATIVE_TTL })
+        let Some(p) = v else {
+            return Some(NEGATIVE_TTL);
+        };
+        let left = p
+            .expires_at_ms
+            .map(|e| Duration::from_millis(u64::try_from(e - crate::guard::now_ms()).unwrap_or(0)));
+        Some(left.map_or(self.positive, |l| l.min(self.positive)))
     }
 }
 

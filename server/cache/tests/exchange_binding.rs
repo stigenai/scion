@@ -50,6 +50,7 @@ async fn cache_hit_refuses_exchanged_jwt_after_source_revoke_or_expiry() {
         config: Arc::new(ServerConfig {
             auth,
             ref_poll_interval: Duration::from_millis(50),
+            stream_recheck_interval: Duration::from_millis(200),
             ..ServerConfig::default()
         }),
         meta: s.clone(),
