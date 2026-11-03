@@ -44,6 +44,7 @@ tempfile.workspace = true
 scion-gitimport.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 scion-client.workspace = true
+tonic = { workspace = true, features = ["gzip"] }
 scion-auth = { workspace = true, features = ["testing"] }
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto", "use_pem"] }
 serde_json.workspace = true
