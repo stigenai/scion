@@ -82,7 +82,7 @@ pub trait Upstream: Send + Sync {
     /// `ids` 中在 `repo` 里不可见的对象（`HasObjects`）。
     async fn missing(&self, repo: &str, ids: &[ObjectId], ctx: &RequestCtx) -> Result<Vec<ObjectId>, Status>;
 
-    /// 调用者（`ctx` 中的令牌）能否读取整个仓库（`AuthService.CheckAccess`）。上游不支持时视为允许。
+    /// 调用者（`ctx` 中的令牌）能否读取整个仓库（`AuthService.CheckAccess`）。上游不支持（Unimplemented）时返回 Ok(false)，调用方拒绝读取。
     async fn can_read(&self, repo: &str, ctx: &RequestCtx) -> Result<bool, Status>;
 
     /// `repo` 中 `after_seq` 之后的 redaction 变化（用调用者的令牌）。上游不支持（Unimplemented）时返回错误，调用方拒绝读取。

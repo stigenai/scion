@@ -48,7 +48,7 @@ Every record keeps the reason, who did it and when. The server logs each operati
 | Landing | When a rebase needs a three-way merge of a redacted version, the land fails with `REDACTED`; the content is never merged into a new commit |
 | The regional cache, `scion cache` | Syncs with the server at most every 10 seconds per repository, with the caller's token (`ObjectService.ListRedactedObjects`), then returns `REDACTED` and deletes its local copy |
 | The local daemon | The same, per server and repository |
-| When a sync fails | With the upstream unavailable, timing out or offline, cache layers **refuse** to read (`UNAVAILABLE`) rather than serve their local copy; errors such as a rejected token are passed on as they are. Only an old server without redaction (`UNIMPLEMENTED`) is treated as having no redactions |
+| When a sync fails | With the upstream unavailable, timing out or offline, cache layers **refuse** to read (`UNAVAILABLE`) rather than serve their local copy; errors such as a rejected token are passed on as they are. If the server answers `UNIMPLEMENTED` to `ListRedactedObjects`, they also refuse the read (`UNAVAILABLE`) |
 | Undoing | Takes effect in cache layers within 10 seconds as well |
 
 Redactions are per repository: the same object, if not redacted in another repository, can still be read there.
