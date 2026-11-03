@@ -350,7 +350,7 @@ pub async fn serve(
     let builder = tonic::transport::Server::builder();
     // At the lifetime, tonic starts a graceful shutdown of the connection: hyper sends GOAWAY,
     // calls in flight finish, and the client opens new calls on a new connection. Do not set
-    // `max_connection_age_grace`: with a grace, tonic only closes the connection and sends no
+    // a connection age grace: with a grace, tonic only closes the connection and sends no
     // GOAWAY. Hyper does not poll a response body while a chunk waits for HTTP/2 send capacity,
     // so a client that stops reading outlives the timer in `streams::Bounded`. `age::Aged`
     // closes such a connection at the lifetime plus a grace: the longer of the request timeout

@@ -106,7 +106,7 @@ async fn a_healthy_connection_gets_goaway_at_the_lifetime() {
     assert_eq!(
         check(send.clone(), &s.url).await,
         (200, "0".into()),
-        "no GOAWAY before the lifetime"
+        "a call works before the lifetime"
     );
     tokio::time::sleep(Duration::from_millis(800)).await;
     let err = send
@@ -144,7 +144,7 @@ async fn a_call_in_flight_at_the_lifetime_finishes() {
     assert_eq!(finish(response).await, (200, "0".into()));
 }
 
-/// With no lifetime the server sends no GOAWAY.
+/// With no lifetime the server keeps the connection open.
 #[tokio::test(flavor = "multi_thread")]
 async fn no_lifetime_sends_no_goaway() {
     let s = start(None).await;
