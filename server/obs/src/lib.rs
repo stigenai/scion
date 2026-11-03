@@ -5,10 +5,12 @@
 //! - [`trace`]：日志与 OTLP 导出的初始化、从 `traceparent` 接续调用方的 trace、向上游注入；
 //! - [`deadline::DeadlineLayer`]：取客户端 deadline 与服务端上限中较小的一个，超时返回 DEADLINE_EXCEEDED。
 
+pub mod age;
 pub mod deadline;
 pub mod grpc;
 pub mod http;
 pub mod metrics;
+pub mod streams;
 pub mod trace;
 
 pub use metrics::{Metrics, Sample, SampleKind, metrics, reason};

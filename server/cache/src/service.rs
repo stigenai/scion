@@ -1,12 +1,14 @@
 //! 缓存节点对外提供的 gRPC 服务：`ObjectService`（与 L3 的消息定义完全相同）和 `ServerInfoService`
 //! （角色为 CACHE）。
 
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bytes::Bytes;
 use scion_object::ObjectId;
+use scion_obs::streams::StreamLimits;
 use scion_proto::v1::object_service_client::ObjectServiceClient;
 use scion_proto::v1::object_service_server::ObjectService;
 use scion_proto::v1::server_info_service_server::ServerInfoService;
@@ -59,12 +61,55 @@ fn ctx_of<T>(req: &Request<T>) -> (RequestCtx, bool) {
     (ctx, req.metadata().contains_key(CACHE_FORWARDED_HEADER))
 }
 
+/// The stream budget key of the caller of `request`. The cache has no auth layer and does not know
+/// the subject, so the key is a hash of the bearer token, else the peer address. The bearer is
+/// not in the key: the refusal message shows the key to the caller.
+fn caller_key<T>(request: &Request<T>) -> String {
+    match bearer_token(request) {
+        Some(t) => format!("tok:{}", &blake3::hash(t.as_bytes()).to_hex()[..32]),
+        None => match request.remote_addr() {
+            Some(a) => format!("ip:{}", a.ip()),
+            None => "anonymous".to_owned(),
+        },
+    }
+}
+
+/// The bearer token as L3 reads it (`bearer_value` in server/api/src/auth.rs): the scheme matches
+/// in any case and the token is trimmed. scion-cache cannot depend on scion-api (xtask layer
+/// rule), so this is a copy: keep the two the same. A header that is not a Bearer one is
+/// anonymous at L3, so it has no token here. An empty token also gives none (L3 gives `Some("")`).
+fn bearer_token<T>(request: &Request<T>) -> Option<&str> {
+    let (scheme, token) = request
+        .metadata()
+        .get("authorization")?
+        .to_str()
+        .ok()?
+        .split_once(' ')?;
+    let token = token.trim();
+    (scheme.eq_ignore_ascii_case("bearer") && !token.is_empty()).then_some(token)
+}
+
+/// The same refusal as L3: RESOURCE_EXHAUSTED with reason RATE_LIMITED, retry after 1s.
+fn too_many_streams(key: &str) -> Status {
+    let details = tonic_types::ErrorDetails::with_error_info(
+        scion_proto::reason_name(v1::ErrorReason::RateLimited),
+        scion_proto::ERROR_DOMAIN,
+        HashMap::from([("retry_after_ms".to_string(), "1000".to_string())]),
+    );
+    <Status as tonic_types::StatusExt>::with_error_details(
+        tonic::Code::ResourceExhausted,
+        format!("too many open streams for {key}"),
+        details,
+    )
+}
+
 pub struct CacheObjectSvc {
     node: Arc<CacheNode>,
     limits: v1::Limits,
     /// HasObjects 不缓存（写路径用），直接转给上游。
     upstreams: Vec<Channel>,
     next: AtomicUsize,
+    streams: StreamLimits,
 }
 
 impl CacheObjectSvc {
@@ -74,7 +119,14 @@ impl CacheObjectSvc {
             limits,
             upstreams,
             next: AtomicUsize::new(0),
+            streams: StreamLimits::default(),
         }
+    }
+
+    /// Sets the lifetime and the per-caller budget of GetObjects streams. The default sets none.
+    pub fn with_stream_limits(mut self, streams: StreamLimits) -> Self {
+        self.streams = streams;
+        self
     }
 
     fn check_batch(&self, n: usize) -> Result<(), Status> {
@@ -94,6 +146,7 @@ impl ObjectService for CacheObjectSvc {
 
     async fn get_objects(&self, request: Request<GetObjectsRequest>) -> Result<Response<GetObjectsStream>, Status> {
         let (ctx, forwarded) = ctx_of(&request);
+        let key = caller_key(&request);
         let req = request.into_inner();
         self.check_batch(req.wants.len())?;
         if !req.accept_encodings.is_empty() && !req.accept_encodings.contains(&(Encoding::Identity as i32)) {
@@ -116,6 +169,8 @@ impl ObjectService for CacheObjectSvc {
                 )));
             }
         }
+        // After the L3 check and the offset check: a refused call takes no slot.
+        let ticket = self.streams.open_with(&key, too_many_streams)?;
         let chunk = usize::try_from(self.limits.max_chunk_bytes)
             .unwrap_or(usize::MAX)
             .max(1);
@@ -126,7 +181,9 @@ impl ObjectService for CacheObjectSvc {
             .flat_map(|((id, data), want)| chunk_object(id, data, want.offset as usize, chunk))
             .map(Ok)
             .collect();
-        Ok(Response::new(Box::pin(tokio_stream::iter(parts))))
+        Ok(Response::new(Box::pin(
+            self.streams.bound(ticket, tokio_stream::iter(parts)),
+        )))
     }
 
     async fn has_objects(&self, request: Request<HasObjectsRequest>) -> Result<Response<HasObjectsResponse>, Status> {
@@ -321,6 +378,22 @@ mod tests {
             .await
             .map(|_| ());
         assert_eq!(none.map_err(|e| e.code()), Err(Code::Unavailable));
+    }
+
+    #[test]
+    fn a_header_that_is_not_a_bearer_one_has_no_token() {
+        let token = |h: &str| {
+            let mut r = Request::new(());
+            r.metadata_mut().insert("authorization", h.parse().expect("header"));
+            bearer_token(&r).map(str::to_owned)
+        };
+        assert_eq!(token("Bearer  t "), Some("t".into()));
+        assert_eq!(token("BEARER t"), Some("t".into()));
+        assert_eq!(token("Basic x"), None);
+        assert_eq!(token("junk"), None);
+        assert_eq!(token("Bearer "), None);
+        assert_eq!(token("Bearer    "), None);
+        assert_eq!(bearer_token(&Request::new(())), None);
     }
 
     #[test]

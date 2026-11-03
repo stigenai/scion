@@ -30,6 +30,9 @@ scion-api.workspace = true
 scion-store.workspace = true
 scion-client.workspace = true
 tempfile.workspace = true
+h2 = "0.4"
+http.workspace = true
+prost.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
