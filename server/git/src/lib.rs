@@ -678,6 +678,7 @@ where
         )));
     }
     if out.len() > limit {
+        scion_obs::metrics().reject(scion_obs::reason::DECOMPRESSED_SIZE);
         return Err(Box::new(text(StatusCode::PAYLOAD_TOO_LARGE, "request body too large")));
     }
     Ok(Bytes::from(out))
@@ -853,6 +854,21 @@ mod tests {
             .await
             .expect("exact plain");
         assert_eq!(decompressed_hits(), before + 2);
+
+        // The other inflate site shares the counter, so it is tested here: the counter is global.
+        let bomb = Full::new(Bytes::from(gzip(&vec![0u8; limit + 1])));
+        let r = read_body(&gz, bomb, limit).await.expect_err("bomb refused");
+        assert_eq!(r.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(decompressed_hits(), before + 3);
+        let at_limit = Full::new(Bytes::from(gzip(&vec![7u8; limit])));
+        read_body(&gz, at_limit, limit).await.expect("exact gzip");
+        assert_eq!(decompressed_hits(), before + 3);
+
+        // A body shorter than a gzip header is not an error to the decoder, so use a longer one.
+        let bad = Full::new(Bytes::from_static(b"this is not a gzip body"));
+        let r = spool_body(&gz, bad, limit).await.expect_err("corrupt gzip");
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(decompressed_hits(), before + 3);
     }
 
     #[test]
