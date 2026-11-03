@@ -105,12 +105,18 @@ impl<T: Connected> Connected for Aged<T> {
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)] // each test runs on its own current-thread runtime
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// The tests that expire a connection share one global counter, so they run one at a time.
+    static EXPIRES: Mutex<()> = Mutex::new(());
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[tokio::test(start_paused = true)]
     async fn io_works_until_the_age_and_fails_after_it() {
+        let _one = EXPIRES.lock().unwrap_or_else(|e| e.into_inner());
         let (a, mut b) = tokio::io::duplex(64);
         let mut aged = Aged::new(a, Some(Duration::from_secs(10)));
         b.write_all(b"hi").await.expect("write");
@@ -132,6 +138,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn pending_write_and_flush_fail_after_the_age() {
+        let _one = EXPIRES.lock().unwrap_or_else(|e| e.into_inner());
         let (a, _b) = tokio::io::duplex(1);
         let mut aged = Aged::new(a, Some(Duration::from_secs(10)));
         aged.write_all(b"x").await.expect("fills the pipe");
@@ -143,6 +150,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn expiry_counts_the_connection_once() {
+        let _one = EXPIRES.lock().unwrap_or_else(|e| e.into_inner());
         let count = || {
             scion_obs::metrics()
                 .rejected
