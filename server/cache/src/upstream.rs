@@ -85,7 +85,7 @@ pub trait Upstream: Send + Sync {
     /// 调用者（`ctx` 中的令牌）能否读取整个仓库（`AuthService.CheckAccess`）。上游不支持时视为允许。
     async fn can_read(&self, repo: &str, ctx: &RequestCtx) -> Result<bool, Status>;
 
-    /// `repo` 中 `after_seq` 之后的 redaction 变化（用调用者的令牌）。上游不支持时返回空页。
+    /// `repo` 中 `after_seq` 之后的 redaction 变化（用调用者的令牌）。上游不支持（Unimplemented）时返回错误，调用方拒绝读取。
     async fn redactions(&self, repo: &str, after_seq: u64, ctx: &RequestCtx) -> Result<RedactionPage, Status>;
 
     /// 日志中使用的名字（地址）。
@@ -257,11 +257,7 @@ impl Upstream for GrpcUpstream {
                     more: r.more,
                 })
             }
-            // 不支持 redaction 的旧服务端
-            Err(s) if s.code() == Code::Unimplemented => Ok(RedactionPage {
-                next_seq: after_seq,
-                ..RedactionPage::default()
-            }),
+            // Unimplemented 也是错误：无法确认 redaction 时调用方拒绝读取
             Err(s) => Err(s),
         }
     }
