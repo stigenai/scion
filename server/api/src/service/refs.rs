@@ -25,6 +25,7 @@ use tonic::{Request, Response, Status};
 use crate::auth::{authorize, authorize_any, principal, request_bearer, to_status};
 use crate::service::support::{check_repo, parse_id, resolve_revision};
 use crate::status;
+use crate::streams::{self, StreamLimits};
 use crate::watch::{RefHub, RefUpdate};
 use scion_auth::{Action, Guard, Principal, Request as AuthRequest};
 
@@ -41,6 +42,7 @@ pub struct RefSvc {
     pre_land: Option<Arc<crate::prehook::PreLand>>,
     /// For a tag's git object: its target's git SHA is computed from the objects.
     blobs: Option<Arc<dyn BlobStore>>,
+    streams: StreamLimits,
 }
 
 impl RefSvc {
@@ -51,7 +53,13 @@ impl RefSvc {
             guard: Guard::disabled(),
             pre_land: None,
             blobs: None,
+            streams: StreamLimits::default(),
         }
+    }
+
+    pub fn with_stream_limits(mut self, streams: StreamLimits) -> Self {
+        self.streams = streams;
+        self
     }
 
     pub fn with_blobs(mut self, blobs: Arc<dyn BlobStore>) -> Self {
@@ -478,9 +486,11 @@ impl RefService for RefSvc {
     async fn watch_refs(&self, request: Request<WatchRefsRequest>) -> Result<Response<Self::WatchRefsStream>, Status> {
         let p = principal(&request);
         let bearer = request_bearer(&request);
+        let caller = streams::caller(&request);
         let req = request.into_inner();
         authorize_any(&self.guard, &p, &req.repo, Action::Read).await?;
         check_repo(self.meta.as_ref(), &req.repo).await?;
+        let ticket = self.streams.open(&caller)?;
         // 先订阅再取快照：两者之间的变化会出现在通道里，按版本去重
         let rx = self.hub.subscribe(&req.repo);
         let snap = self.hub.snapshot(&req.repo).await.map_err(status::from_store)?;
@@ -500,7 +510,10 @@ impl RefService for RefSvc {
             rx,
             tx,
         ));
-        Ok(Response::new(Box::pin(ReceiverStream::new(out))))
+        // Dropping the stream, at the lifetime or when the client leaves, closes `out` and ends the pump.
+        Ok(Response::new(Box::pin(
+            self.streams.bound(ticket, ReceiverStream::new(out)),
+        )))
     }
 }
 

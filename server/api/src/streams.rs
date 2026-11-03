@@ -62,22 +62,16 @@ impl StreamLimits {
         }
     }
 
-    /// Takes a slot of the caller's budget. Call it after the handler authorizes the request, so a
-    /// refused call takes no slot. The key is the one [`crate::limit::TenantLimitLayer`] uses.
-    pub fn open<T>(&self, request: &Request<T>) -> Result<Ticket, Status> {
+    /// Takes a slot of the budget of `caller`. Call it after the handler authorizes the request, so
+    /// a refused call takes no slot.
+    pub fn open(&self, caller: &str) -> Result<Ticket, Status> {
         let Some((max, open)) = &self.budget else {
             return Ok(Ticket { slot: None });
         };
-        let key = limit::tenant_key(
-            request.extensions().get::<scion_auth::Principal>(),
-            request.remote_addr().map(|a| a.ip()),
-        );
+        let key = caller.to_owned();
         let mut map = open.lock().unwrap_or_else(|e| e.into_inner());
         let n = map.entry(key.clone()).or_insert(0);
         if *n >= *max {
-            if *n == 0 {
-                map.remove(&key);
-            }
             scion_obs::metrics().reject(reason::TENANT_STREAMS);
             return Err(status::rate_limited(
                 &format!("too many open streams for {key}"),
@@ -105,6 +99,15 @@ impl StreamLimits {
             _ticket: ticket,
         }
     }
+}
+
+/// The budget key of the caller of `request`. It is the key [`crate::limit::TenantLimitLayer`] uses.
+/// Take it before `into_inner`, which drops the extensions.
+pub fn caller<T>(request: &Request<T>) -> String {
+    limit::tenant_key(
+        request.extensions().get::<scion_auth::Principal>(),
+        request.remote_addr().map(|a| a.ip()),
+    )
 }
 
 /// A stream that ends with UNAVAILABLE at its deadline. See [`StreamLimits::bound`].
@@ -174,7 +177,7 @@ mod tests {
         let limits = StreamLimits::new(Some(Duration::from_secs(10)), None);
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<u32, Status>>(4);
         let mut s = limits.bound(
-            limits.open(&call_from("a")).expect("open"),
+            limits.open(&caller(&call_from("a"))).expect("open"),
             tokio_stream::wrappers::ReceiverStream::new(rx),
         );
         let before = hits("stream_lifetime");
@@ -196,7 +199,7 @@ mod tests {
         let limits = StreamLimits::new(Some(Duration::ZERO), None);
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<u32, Status>>(1);
         let mut s = limits.bound(
-            limits.open(&call_from("a")).expect("open"),
+            limits.open(&caller(&call_from("a"))).expect("open"),
             tokio_stream::wrappers::ReceiverStream::new(rx),
         );
         tokio::time::advance(Duration::from_secs(10 * 3600)).await;
@@ -210,7 +213,7 @@ mod tests {
     async fn a_finite_stream_ends_cleanly_before_its_lifetime() {
         let limits = StreamLimits::new(Some(Duration::from_secs(3600)), None);
         let s = limits.bound(
-            limits.open(&call_from("a")).expect("open"),
+            limits.open(&caller(&call_from("a"))).expect("open"),
             tokio_stream::iter(vec![Ok(1u32), Ok(2)]),
         );
         let got: Vec<_> = s.collect().await;
@@ -222,14 +225,16 @@ mod tests {
     fn the_budget_is_per_caller_and_frees_on_drop() {
         let limits = StreamLimits::new(None, Some(2));
         let before = hits("tenant_streams");
-        let a1 = limits.open(&call_from("alice")).expect("1");
-        let _a2 = limits.open(&call_from("alice")).expect("2");
-        let refused = limits.open(&call_from("alice")).err().expect("3rd refused");
+        let a1 = limits.open(&caller(&call_from("alice"))).expect("1");
+        let _a2 = limits.open(&caller(&call_from("alice"))).expect("2");
+        let refused = limits.open(&caller(&call_from("alice"))).err().expect("3rd refused");
         assert_eq!(refused.code(), Code::ResourceExhausted);
         assert!(hits("tenant_streams") > before, "other tests share the counter");
-        let _b = limits.open(&call_from("bob")).expect("bob has his own budget");
+        let _b = limits.open(&caller(&call_from("bob"))).expect("bob has his own budget");
         drop(a1);
-        let _a3 = limits.open(&call_from("alice")).expect("a dropped ticket frees a slot");
+        let _a3 = limits
+            .open(&caller(&call_from("alice")))
+            .expect("a dropped ticket frees a slot");
     }
 
     #[test]
@@ -243,14 +248,19 @@ mod tests {
             });
             r
         };
-        let _a = limits.open(&from("10.0.0.1:1000")).expect("first");
-        assert!(limits.open(&from("10.0.0.1:2000")).is_err(), "same address, other port");
-        assert!(limits.open(&from("10.0.0.2:1000")).is_ok());
+        let _a = limits.open(&caller(&from("10.0.0.1:1000"))).expect("first");
+        assert!(
+            limits.open(&caller(&from("10.0.0.1:2000"))).is_err(),
+            "same address, other port"
+        );
+        assert!(limits.open(&caller(&from("10.0.0.2:1000"))).is_ok());
     }
 
     #[test]
     fn no_budget_refuses_nothing() {
         let limits = StreamLimits::new(None, None);
-        let _tickets: Vec<_> = (0..100).map(|_| limits.open(&call_from("a")).expect("open")).collect();
+        let _tickets: Vec<_> = (0..100)
+            .map(|_| limits.open(&caller(&call_from("a"))).expect("open"))
+            .collect();
     }
 }

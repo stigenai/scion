@@ -242,9 +242,12 @@ pub async fn serve(
     let max_msg = usize::try_from(app.config.limits.max_chunk_bytes)
         .unwrap_or(usize::MAX)
         .saturating_add(64 * 1024);
+    let streams = streams::StreamLimits::new(app.config.max_stream_lifetime, app.config.max_streams_per_tenant);
     let info = ServerInfoServiceServer::new(ServerInfoSvc::new(app.config.clone()).with_guard(guard.clone()));
     let objects = ObjectServiceServer::new(
-        ObjectSvc::new(app.config.clone(), app.meta.clone(), app.blobs.clone()).with_guard(guard.clone()),
+        ObjectSvc::new(app.config.clone(), app.meta.clone(), app.blobs.clone())
+            .with_guard(guard.clone())
+            .with_stream_limits(streams.clone()),
     )
     .max_encoding_message_size(max_msg);
     // 上传的分块可能和读取分块一样大
@@ -298,11 +301,14 @@ pub async fn serve(
         RefSvc::new(app.meta.clone(), hub)
             .with_blobs(app.blobs.clone())
             .with_guard(guard.clone())
+            .with_stream_limits(streams.clone())
             .with_pre_land(pre_land),
     );
     let refs = RefServiceServer::from_arc(ref_svc.clone());
     let query = QueryServiceServer::new(
-        QuerySvc::new(app.config.clone(), app.meta.clone(), app.blobs.clone()).with_guard(guard.clone()),
+        QuerySvc::new(app.config.clone(), app.meta.clone(), app.blobs.clone())
+            .with_guard(guard.clone())
+            .with_stream_limits(streams.clone()),
     )
     .max_encoding_message_size(max_msg);
     let auth_svc = AuthServiceServer::new(AuthSvc::new(guard.clone()));

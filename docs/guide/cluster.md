@@ -62,7 +62,9 @@ Linearizability tests cover this (`server/land/tests/lincheck.rs`), including ki
 | `--repo-write-rate RATE[/BURST]` | `SCION_REPO_WRITE_RATE` | unlimited | Writes per node and repository (an upload, a commit creation and a land count once each); beyond it, `RATE_LIMITED`. |
 | `--tenant-rate RATE[/BURST]` | `SCION_TENANT_RATE` | unlimited | Requests per node and caller; every RPC counts once. The caller is the authenticated principal, or the source IP for anonymous requests. |
 | `--tenant-concurrency N` | `SCION_TENANT_CONCURRENCY` | unlimited | Requests in flight per node and caller, so that one caller cannot take every slot. |
-| `--max-request-timeout DURATION` | `SCION_MAX_REQUEST_TIMEOUT` | 60s | The longest a request may take, or the client's deadline (`grpc-timeout`) if shorter; beyond it, `DEADLINE_EXCEEDED`. Streaming responses are limited only until they start. `0s` leaves only the client's deadline. |
+| `--max-request-timeout DURATION` | `SCION_MAX_REQUEST_TIMEOUT` | 60s | The longest a request may take, or the client's deadline (`grpc-timeout`) if shorter; beyond it, `DEADLINE_EXCEEDED`. A server stream is limited only until it starts; `--max-stream-lifetime` limits how long it stays open. `0s` leaves only the client's deadline. |
+| `--tenant-streams N` | `SCION_TENANT_STREAMS` | unlimited | Open server streams (`WatchRefs`, `GetObjects`, `ReadFile`, `Diff`, `Archive`, `Grep`) per node and caller. The caller is the same as for `--tenant-rate`. Beyond it, the new stream gets `RESOURCE_EXHAUSTED` / `RATE_LIMITED`. A call that fails authorization takes no slot. |
+| `--max-stream-lifetime DURATION` | `SCION_MAX_STREAM_LIFETIME` | 1h | The longest a server stream stays open. It then ends with `UNAVAILABLE` ("stream lifetime of Ns reached; reconnect"), which the client SDK retries: `scn watch` reconnects and resumes by version with no lost event. `0s` sets no limit. |
 
 Each ref's land queue also holds at most 1,024 requests; when it is full, lands return `RATE_LIMITED` too.
 
