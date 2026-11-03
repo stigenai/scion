@@ -4,6 +4,9 @@
 //! 与服务端一致，对象只对索引中有它的仓库可见：本地缓存按 id 去重，但应答前确认 id 在调用者的仓库里
 //! 可见。回源成功的 (服务端, 仓库, id) 记入可见集；命中而可见性未知的，先向服务端 `HasObjects` 确认。
 //!
+//! 读权限：每次 `GetObjects`（命中也一样）都用调用者自己的令牌向服务端 `CheckAccess`，不缓存结果；
+//! 服务端不可达时拒绝读取。
+//!
 //! redaction：按 (服务端, 仓库) 保存 redact 过的对象，最多每 [`REDACTION_TTL`] 用调用者的身份增量同步一次。
 //! redact 过的对象返回与服务端相同的 REDACTED，本地副本删除。同步失败（包括离线）时拒绝读取。
 
@@ -37,9 +40,6 @@ pub type Flight = Group<Key, Result<Bytes, Status>>;
 /// 已确认可见的 (服务端, 仓库, 对象)。
 pub type Visible = moka::sync::Cache<Key, ()>;
 
-/// 已确认能读取整个仓库的 (服务端, 仓库, 令牌摘要)。
-pub type Access = moka::sync::Cache<(Arc<str>, Arc<str>, ObjectId), ()>;
-
 /// 两次同步 redaction 的默认最长间隔。
 pub const REDACTION_TTL: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -57,12 +57,6 @@ pub struct RepoRedactions {
 /// 各 (服务端, 仓库) 的 redaction 状态；锁同时让同一仓库的并发同步只做一次。
 pub type Redactions = moka::sync::Cache<(Arc<str>, Arc<str>), Arc<tokio::sync::Mutex<RepoRedactions>>>;
 
-/// 读权限确认结果的缓存时间（吊销令牌或修改策略最多延迟这么久生效）。
-pub const ACCESS_TTL: std::time::Duration = std::time::Duration::from_secs(60);
-
-/// 服务端不可达（而不是拒绝）时，这段时间内确认过的读权限仍然有效，daemon 可以离线读本地缓存。
-pub const OFFLINE_GRACE: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
-
 /// 按仓库名保存的状态（可见集、redaction）的最长保留时间。服务端删除的仓库名至少 2 小时后才能重新使用，
 /// 所以重新创建的同名仓库不会沿用旧仓库的状态。
 pub const REPO_STATE_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
@@ -78,20 +72,6 @@ pub fn new_redaction_cache() -> Redactions {
     moka::sync::Cache::builder()
         .max_capacity(100_000)
         .time_to_live(REPO_STATE_TTL)
-        .build()
-}
-
-pub fn new_access_cache() -> Access {
-    moka::sync::Cache::builder()
-        .max_capacity(100_000)
-        .time_to_live(ACCESS_TTL)
-        .build()
-}
-
-pub fn new_offline_cache() -> Access {
-    moka::sync::Cache::builder()
-        .max_capacity(100_000)
-        .time_to_live(OFFLINE_GRACE)
         .build()
 }
 
@@ -262,20 +242,16 @@ impl Daemon {
         out
     }
 
-    /// 确认调用者（`authorization`）能读取整个仓库：本地命中也不例外。用调用者的令牌向服务端
-    /// `CheckAccess`，结果按 (服务端, 仓库, 令牌) 缓存；没有 AuthService 的旧服务端视为允许。
+    /// 确认调用者（`authorization`）能读取整个仓库：本地命中也不例外。每次读取都用调用者的令牌向服务端
+    /// `CheckAccess`，结果不缓存：令牌被吊销或过期、策略改变后，下一次读取就被拒绝（ent ADR 0004）。
+    /// 服务端不可达时拒绝读取（离线不放行私有对象）；没有 AuthService 的旧服务端视为允许。
     pub(crate) async fn check_access(
         &self,
         raw: &tonic::transport::Channel,
-        upstream: &Arc<str>,
         repo: &Arc<str>,
         authorization: Option<&tonic::metadata::MetadataValue<tonic::metadata::Ascii>>,
     ) -> Result<(), Status> {
-        let token = authorization.map_or(&[][..], |a| a.as_bytes());
-        let key = (upstream.clone(), repo.clone(), ObjectId::of_blob(token));
-        if self.access.contains_key(&key) {
-            return Ok(());
-        }
+        self.stats.access_check();
         let mut req = tonic::Request::new(scion_proto::v1::CheckAccessRequest {
             repo: repo.to_string(),
             action: scion_proto::v1::Action::Read.into(),
@@ -291,12 +267,10 @@ impl Daemon {
         {
             Ok(r) => r.into_inner().allowed,
             Err(s) if s.code() == tonic::Code::Unimplemented => true,
-            // 服务端不可达：最近确认过的身份可以继续离线读本地缓存
-            Err(s) if s.code() == tonic::Code::Unavailable && self.offline_access.contains_key(&key) => {
-                tracing::debug!(%repo, "server unreachable; using the offline access grace");
-                return Ok(());
+            Err(s) => {
+                tracing::debug!(%repo, code = ?s.code(), "checking read access failed; refusing the read");
+                return Err(s);
             }
-            Err(s) => return Err(s),
         };
         if !allowed {
             return Err(if authorization.is_none() {
@@ -314,8 +288,6 @@ impl Daemon {
                 .to_status()
             });
         }
-        self.offline_access.insert(key.clone(), ());
-        self.access.insert(key, ());
         Ok(())
     }
 
@@ -442,9 +414,7 @@ impl ObjectService for DaemonObjectSvc {
         unique.sort_unstable_by_key(|id| id.to_bytes());
         unique.dedup();
         let (upstream, repo): (Arc<str>, Arc<str>) = (Arc::from(url.as_str()), Arc::from(req.repo.as_str()));
-        self.daemon
-            .check_access(&up.raw, &upstream, &repo, authorization.as_ref())
-            .await?;
+        self.daemon.check_access(&up.raw, &repo, authorization.as_ref()).await?;
         self.daemon.check_redactions(&client, &upstream, &repo, &unique).await?;
         let found = self.daemon.objects(&client, &upstream, &repo, &unique).await;
         let chunk = usize::try_from(limits.max_chunk_bytes).unwrap_or(usize::MAX).max(1);
