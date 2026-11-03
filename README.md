@@ -155,6 +155,7 @@ Details: [milestones](docs/design/milestones.md) · [roadmap](docs/design/roadma
 ```sh
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+cargo audit   # needs: cargo install cargo-audit --locked
 ```
 
 [Development](docs/development.md) describes the repository layout, the dependency rules between crates and the testing requirements (at least 90% coverage of new code).
