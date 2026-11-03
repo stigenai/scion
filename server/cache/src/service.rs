@@ -77,7 +77,7 @@ fn caller_key<T>(request: &Request<T>) -> String {
 /// The bearer token as L3 reads it (`bearer_value` in server/api/src/auth.rs): the scheme matches
 /// in any case and the token is trimmed. scion-cache cannot depend on scion-api (xtask layer
 /// rule), so this is a copy: keep the two the same. A header that is not a Bearer one is
-/// anonymous at L3, so it has no token here.
+/// anonymous at L3, so it has no token here. An empty token also gives none (L3 gives `Some("")`).
 fn bearer_token<T>(request: &Request<T>) -> Option<&str> {
     let (scheme, token) = request
         .metadata()
@@ -378,6 +378,22 @@ mod tests {
             .await
             .map(|_| ());
         assert_eq!(none.map_err(|e| e.code()), Err(Code::Unavailable));
+    }
+
+    #[test]
+    fn a_header_that_is_not_a_bearer_one_has_no_token() {
+        let token = |h: &str| {
+            let mut r = Request::new(());
+            r.metadata_mut().insert("authorization", h.parse().unwrap());
+            bearer_token(&r).map(str::to_owned)
+        };
+        assert_eq!(token("Bearer  t "), Some("t".into()));
+        assert_eq!(token("BEARER t"), Some("t".into()));
+        assert_eq!(token("Basic x"), None);
+        assert_eq!(token("junk"), None);
+        assert_eq!(token("Bearer "), None);
+        assert_eq!(token("Bearer    "), None);
+        assert_eq!(bearer_token(&Request::new(())), None);
     }
 
     #[test]
