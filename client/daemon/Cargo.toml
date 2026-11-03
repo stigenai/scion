@@ -28,6 +28,7 @@ tracing.workspace = true
 scion-api.workspace = true
 scion-store.workspace = true
 tempfile.workspace = true
+tonic-health.workspace = true
 scion-wc.workspace = true
 hyper-util = { version = "0.1", features = ["tokio"] }
 tokio = { workspace = true, features = ["test-util"] }

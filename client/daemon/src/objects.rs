@@ -244,7 +244,7 @@ impl Daemon {
 
     /// 确认调用者（`authorization`）能读取整个仓库：本地命中也不例外。每次读取都用调用者的令牌向服务端
     /// `CheckAccess`，结果不缓存：令牌被吊销或过期、策略改变后，下一次读取就被拒绝（ent ADR 0004）。
-    /// 服务端不可达时拒绝读取（离线不放行私有对象）；没有 AuthService 的旧服务端视为允许。
+    /// 服务端不可达时拒绝读取（离线不放行私有对象）；没有 AuthService 的服务端（`Unimplemented`）也拒绝读取。
     pub(crate) async fn check_access(
         &self,
         raw: &tonic::transport::Channel,
@@ -266,7 +266,10 @@ impl Daemon {
             .await
         {
             Ok(r) => r.into_inner().allowed,
-            Err(s) if s.code() == tonic::Code::Unimplemented => true,
+            Err(s) if s.code() == tonic::Code::Unimplemented => {
+                tracing::warn!(%repo, "upstream has no AuthService; daemon denies the read");
+                false
+            }
             Err(s) => {
                 tracing::debug!(%repo, code = ?s.code(), "checking read access failed; refusing the read");
                 return Err(s);
