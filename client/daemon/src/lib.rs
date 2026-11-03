@@ -43,6 +43,7 @@ pub use upstream::{Upstream, Upstreams};
 pub struct Stats {
     hits: AtomicU64,
     misses: AtomicU64,
+    access_checks: AtomicU64,
 }
 
 impl Stats {
@@ -52,11 +53,18 @@ impl Stats {
     fn miss(&self) {
         self.misses.fetch_add(1, Ordering::Relaxed);
     }
+    pub(crate) fn access_check(&self) {
+        self.access_checks.fetch_add(1, Ordering::Relaxed);
+    }
     pub fn hits(&self) -> u64 {
         self.hits.load(Ordering::Relaxed)
     }
     pub fn misses(&self) -> u64 {
         self.misses.load(Ordering::Relaxed)
+    }
+    /// CheckAccess requests sent to the upstream.
+    pub fn access_checks(&self) -> u64 {
+        self.access_checks.load(Ordering::Relaxed)
     }
 }
 

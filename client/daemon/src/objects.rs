@@ -276,6 +276,7 @@ impl Daemon {
         if self.access.contains_key(&key) {
             return Ok(());
         }
+        self.stats.access_check();
         let mut req = tonic::Request::new(scion_proto::v1::CheckAccessRequest {
             repo: repo.to_string(),
             action: scion_proto::v1::Action::Read.into(),
