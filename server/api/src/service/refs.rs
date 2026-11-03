@@ -231,8 +231,6 @@ impl Filter {
     }
 }
 
-/// 订阅者的发送循环：通道里的变化逐批发送（同时到达的合并成一条响应），落后太多时重新取快照。
-///
 /// Authenticates the caller's bearer token again and checks read access on `repo`.
 async fn still_allowed(guard: &Guard, bearer: Option<&str>, repo: &str) -> Result<(), Status> {
     match guard.authenticate(bearer).await {
@@ -241,6 +239,8 @@ async fn still_allowed(guard: &Guard, bearer: Option<&str>, repo: &str) -> Resul
     }
 }
 
+/// 订阅者的发送循环：通道里的变化逐批发送（同时到达的合并成一条响应），落后太多时重新取快照。
+///
 /// The loop checks the caller before each event batch and at each `recheck` tick, also when no ref changes.
 /// A failed check ends the stream with its error, and the stream sends no event.
 /// A failure found before a batch waits for the next tick.

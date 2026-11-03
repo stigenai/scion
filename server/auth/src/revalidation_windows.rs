@@ -267,3 +267,34 @@ async fn exchange_keeps_opaque_binding_and_refuses_own_jwt() {
     assert_eq!(g.authenticate(Some(&jwt)).await.expect("bound").subject, "alice");
     assert!(matches!(g.exchange(&jwt).await, Err(AuthError::Invalid(_))));
 }
+
+#[tokio::test]
+async fn exchange_caps_a_jwt_shaped_token_that_no_issuer_knows() {
+    let idp = FakeIdp::start().await;
+    let g = guard(&idp, "60s");
+    idp.set_introspection("aa.bb.cc", active(Some(now_secs() + 3600)));
+    let (_, exp_ms, _) = g.exchange("aa.bb.cc").await.expect("exchange");
+    let cap = (now_secs() + 60) * 1000;
+    assert!(
+        (cap - 3000..=cap).contains(&exp_ms),
+        "now + cache_ttl is the limit: {exp_ms}"
+    );
+}
+
+#[tokio::test]
+async fn exchange_reads_introspection_fresh_not_from_the_cache() {
+    let idp = FakeIdp::start().await;
+    let g = guard(&idp, "60s");
+    idp.set_introspection("opaque-ext", active(Some(now_secs() + 3600)));
+    g.authenticate(Some("opaque-ext")).await.expect("cached");
+    idp.set_introspection("opaque-ext", json!({"active": false}));
+    assert!(matches!(g.exchange("opaque-ext").await, Err(AuthError::Invalid(_))));
+}
+
+#[tokio::test]
+async fn exchange_from_an_introspected_token_is_refused_when_the_cache_is_off() {
+    let idp = FakeIdp::start().await;
+    let g = guard(&idp, "0s");
+    idp.set_introspection("opaque-ext", active(Some(now_secs() + 3600)));
+    assert!(matches!(g.exchange("opaque-ext").await, Err(AuthError::Unavailable(_))));
+}

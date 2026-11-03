@@ -100,6 +100,16 @@ impl Introspection {
         self.config.cache_ttl
     }
 
+    /// Ask the server now and skip the cache, so a revoke shows at once.
+    /// An active answer with an `exp` that is not in the future gives `Ok(None)`.
+    pub async fn verify_uncached(&self, token: &str) -> Result<Option<Principal>, VerifyError> {
+        let now = crate::guard::now_ms();
+        Ok(self
+            .call(token)
+            .await?
+            .filter(|p| p.expires_at_ms.is_none_or(|e| e > now)))
+    }
+
     /// 校验令牌：有效时返回身份，无效返回 `Ok(None)`。
     ///
     /// After a revoke, this call can still accept the token for `cache_ttl` (default 60 s), but not past its `exp`.
@@ -111,11 +121,7 @@ impl Introspection {
         if cached && let Some(hit) = self.cache.get(&key).await {
             return Ok(hit);
         }
-        let now = crate::guard::now_ms();
-        let r = self
-            .call(token)
-            .await?
-            .filter(|p| p.expires_at_ms.is_none_or(|e| e > now));
+        let r = self.verify_uncached(token).await?;
         if cached {
             self.cache.insert(key, r.clone()).await;
         }

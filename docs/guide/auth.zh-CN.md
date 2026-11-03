@@ -353,8 +353,8 @@ starhub 侧需要提供两个内部接口，都只是对现有逻辑的薄包装
 | 外部 JWT | JWT 的 `exp` 加 30 秒时钟容差。 |
 | `[authz_webhook]` 的允许结果 | `cache_ttl`（默认 30 秒）。`cache_ttl = "0s"` 关闭允许结果的缓存。 |
 | `[authz_webhook]` 的拒绝结果 | 5 秒。 |
-| 打开的 `WatchRefs` 流 | 30 秒，没有 ref 变化时也一样。服务端每隔 `stream_recheck_interval` 以及每批事件发送前检查调用者。 |
-| `ExchangeToken` 换出的访问 JWT | 不透明令牌来源：下一个请求。外部 JWT 来源：来源的 `exp`。内省令牌来源：来源的 `exp` 与换取时起 `cache_ttl` 中较早的一个。以上都另加 30 秒校验容差，并以令牌 `ttl`（15 分钟）为上限。 |
+| 打开的 `WatchRefs` 流 | `stream_recheck_interval`（30 秒）加上调用者凭据与策略检查自身的窗口：内省或 webhook 的 `cache_ttl`；外部 JWT 为其 `exp` 加 30 秒。没有 ref 变化时流也会关闭。 |
+| `ExchangeToken` 换出的访问 JWT | 不透明令牌来源：下一个请求。外部 JWT 来源：来源的 `exp`。内省令牌来源（无论是否为 JWT 形态）：来源的 `exp` 与换取时起 `cache_ttl` 中较早的一个。换取时直接询问内省服务端，不用缓存，所以窗口不超过 `cache_ttl`。内省 `cache_ttl = "0s"` 时，换取会拒绝内省令牌来源。以上都另加 30 秒校验容差，并以令牌 `ttl`（15 分钟）为上限。 |
 | 区域缓存读取 | 下一次读取。每次读取向服务端调用一次 `CheckAccess`，公开仓库的匿名读取也一样。 |
 
 访问 JWT 到期后，客户端要重新换取。响应的 `expires_at_ms` 字段给出到期时间。

@@ -426,7 +426,9 @@ impl Guard {
     /// The access token never ends after its source token.
     /// An opaque source sets `sid`, so a revoke shows at once.
     /// An external JWT has no record to read, so the access token ends at the JWT `exp`.
-    /// A token from introspection also ends within `cache_ttl` from now, and the token TTL (900 s) caps all.
+    /// A token from introspection (JWT-shaped or not) is read from the server, not the cache.
+    /// The access token then also ends within `cache_ttl` from now, and the token TTL (900 s) caps all.
+    /// If introspection `cache_ttl` is `0s`, this call refuses such a token.
     pub async fn exchange(&self, subject_token: &str) -> Result<(String, i64, String), AuthError> {
         let t = subject_token.trim();
         if t.is_empty() {
@@ -437,11 +439,25 @@ impl Guard {
             let (p, id, _) = self.opaque_record(t, true).await?;
             sid = Some(id);
             p
-        } else if t.split('.').count() == 3 {
+        } else if t.split('.').count() == 3 && self.knows_issuer(t) {
             self.jwt(t, false).await?
         } else {
-            cache_ttl = self.introspection.as_ref().map(Introspection::cache_ttl);
-            self.introspect(t).await?
+            // Any other token goes to introspection. Read the server now: a cached answer
+            // can be up to `cache_ttl` old, and the access token adds `cache_ttl` more.
+            let i = self
+                .introspection
+                .as_ref()
+                .ok_or_else(|| AuthError::Invalid("token is not issued by a trusted issuer".into()))?;
+            let ttl = i.cache_ttl();
+            if ttl.is_zero() {
+                return Err(AuthError::Unavailable(
+                    "exchange from an introspected token needs introspection cache_ttl above 0s".into(),
+                ));
+            }
+            cache_ttl = Some(ttl);
+            i.verify_uncached(t)
+                .await?
+                .ok_or_else(|| AuthError::Invalid("token is not active".into()))?
         };
         let mut not_after = p.expires_at_ms;
         if not_after.is_some_and(|e| e <= now_ms()) {
@@ -454,6 +470,14 @@ impl Guard {
         }
         let (token, exp) = self.issue(&p, sid.as_deref(), not_after)?;
         Ok((token, exp, p.subject))
+    }
+
+    /// True if the JWT `iss` names this server or a configured external issuer.
+    fn knows_issuer(&self, token: &str) -> bool {
+        let Some(iss) = peek(token).and_then(|(iss, _)| iss) else {
+            return false;
+        };
+        self.issuer.as_ref().is_some_and(|o| o.issuer() == iss) || self.externals.iter().any(|e| e.issuer() == iss)
     }
 
     /// 创建不透明令牌，返回令牌（只出现这一次）与记录。

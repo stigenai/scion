@@ -376,8 +376,8 @@ You can revoke a credential or change a policy. Then a request can still pass fo
 | External JWT | The JWT `exp` plus 30 s of clock leeway. |
 | Allow from `[authz_webhook]` | `cache_ttl` (default 30 s). With `cache_ttl = "0s"` the allow cache is off. |
 | Deny from `[authz_webhook]` | 5 s. |
-| Open `WatchRefs` stream | 30 s, also when no ref changes. The server checks the caller every `stream_recheck_interval` and before each event batch. |
-| Access JWT from `ExchangeToken` | An opaque source: the next request. An external JWT source: the source `exp`. An introspected source: the source `exp` or `cache_ttl` from the exchange, whichever is first. All of them also have 30 s of verifier leeway and the token `ttl` (15 minutes) as an upper limit. |
+| Open `WatchRefs` stream | `stream_recheck_interval` (30 s) plus the window of the caller's credential and of the policy check: the introspection or webhook `cache_ttl`, or for an external JWT its `exp` plus 30 s. The stream closes also when no ref changes. |
+| Access JWT from `ExchangeToken` | An opaque source: the next request. An external JWT source: the source `exp`. An introspected source, JWT-shaped or not: the source `exp` or `cache_ttl` from the exchange, whichever is first. The exchange asks the introspection server and does not use the cache, so the window is not longer than `cache_ttl`. With introspection `cache_ttl = "0s"` the exchange refuses an introspected source. All of them also have 30 s of verifier leeway and the token `ttl` (15 minutes) as an upper limit. |
 | Regional cache read | The next read. Each read costs one `CheckAccess` call to the server, also an anonymous read on a public repository. |
 
 When an access JWT ends, the client must exchange again. The `expires_at_ms` field of the response shows the end time.
