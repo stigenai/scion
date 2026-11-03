@@ -41,6 +41,8 @@ pub struct RefSvc {
     pre_land: Option<Arc<crate::prehook::PreLand>>,
     /// For a tag's git object: its target's git SHA is computed from the objects.
     blobs: Option<Arc<dyn BlobStore>>,
+    /// How often an open WatchRefs stream checks its caller again.
+    recheck: std::time::Duration,
 }
 
 impl RefSvc {
@@ -51,7 +53,13 @@ impl RefSvc {
             guard: Guard::disabled(),
             pre_land: None,
             blobs: None,
+            recheck: crate::ServerConfig::default().stream_recheck_interval,
         }
+    }
+
+    pub fn with_recheck(mut self, every: std::time::Duration) -> Self {
+        self.recheck = every;
+        self
     }
 
     pub fn with_blobs(mut self, blobs: Arc<dyn BlobStore>) -> Self {
@@ -234,6 +242,7 @@ async fn pump(
     mut filter: Filter,
     mut rx: broadcast::Receiver<RefUpdate>,
     out: mpsc::Sender<Result<WatchRefsResponse, Status>>,
+    _recheck: std::time::Duration,
 ) {
     loop {
         let mut events = Vec::new();
@@ -499,6 +508,7 @@ impl RefService for RefSvc {
             filter,
             rx,
             tx,
+            self.recheck,
         ));
         Ok(Response::new(Box::pin(ReceiverStream::new(out))))
     }
@@ -883,6 +893,8 @@ mod tests {
         assert_eq!(r.map(|_| ()).map_err(|s| s.code()), Err(Code::NotFound));
     }
 
+    const HOUR: std::time::Duration = std::time::Duration::from_secs(3600);
+
     fn hub(store: Arc<scion_store::MemStore>) -> Arc<RefHub> {
         RefHub::new(store, std::time::Duration::from_secs(3600))
     }
@@ -947,6 +959,56 @@ mod tests {
         assert_eq!(missing.map(|_| ()).map_err(|s| s.code()), Err(Code::NotFound));
     }
 
+    /// A revoked caller learns nothing before the next tick, not even that a ref changed:
+    /// the error arrives at the 30 s tick and no event is sent.
+    #[tokio::test(start_paused = true)]
+    async fn revoked_stream_closes_at_the_next_tick_without_an_event() {
+        use std::time::Duration;
+        let store = Arc::new(scion_store::MemStore::new());
+        store.create_repo("r").await.expect("repo");
+        let guard = Guard::build(
+            scion_auth::GuardConfig {
+                required: true,
+                auth: scion_auth::AuthConfig::parse("[token]\nissuer = \"https://scion.test\"\n").expect("config"),
+                signing_key_pem: Some(scion_auth::token::generate_signing_key()),
+            },
+            store.clone(),
+            Arc::new(|_: &str| None),
+        )
+        .expect("guard");
+        guard
+            .set_policy("[[rule]]\nsubjects = [\"user:alice\"]\nrepos = [\"r\"]\nactions = [\"read\"]\n")
+            .await
+            .expect("policy");
+        let (token, rec) = guard.create_token("pat", "alice", vec![], "", None).await.expect("pat");
+        let (btx, rx) = broadcast::channel(16);
+        let (tx, mut out) = mpsc::channel(16);
+        let filter = Filter {
+            refs: HashSet::new(),
+            sent: HashMap::new(),
+        };
+        tokio::spawn(pump(
+            hub(store),
+            guard.clone(),
+            Some(token),
+            "r".into(),
+            filter,
+            rx,
+            tx,
+            Duration::from_secs(30),
+        ));
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(guard.revoke_token(&rec.id).await.expect("revoke"));
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        btx.send(update("main", 1)).expect("publish");
+        tokio::time::sleep(Duration::from_secs(27)).await;
+        assert!(out.try_recv().is_err(), "t=29 s: nothing sent before the tick");
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let got = out.recv().await.expect("the stream ends with a message");
+        assert_eq!(got.map(|_| ()).map_err(|s| s.code()), Err(Code::Unauthenticated));
+        assert!(out.recv().await.is_none(), "the stream ended and no event came");
+    }
+
     fn update(name: &str, version: u64) -> RefUpdate {
         RefUpdate {
             name: name.into(),
@@ -997,7 +1059,7 @@ mod tests {
             refs: HashSet::new(),
             sent: HashMap::new(),
         };
-        let task = tokio::spawn(pump(h, Guard::disabled(), None, REPO.into(), filter, brx, tx));
+        let task = tokio::spawn(pump(h, Guard::disabled(), None, REPO.into(), filter, brx, tx, HOUR));
         let resp = out.recv().await.expect("resp").expect("ok");
         // 快照里的 main，加上通道里剩下的 x 的最新版本
         let got: Vec<_> = resp.events.iter().map(|e| (e.name.as_str(), e.version)).collect();
@@ -1016,7 +1078,7 @@ mod tests {
             refs: HashSet::new(),
             sent: HashMap::new(),
         };
-        pump(closing, Guard::disabled(), None, REPO.into(), filter, brx, tx).await;
+        pump(closing, Guard::disabled(), None, REPO.into(), filter, brx, tx, HOUR).await;
         assert!(out.recv().await.is_none());
         drop(btx);
 
@@ -1036,6 +1098,7 @@ mod tests {
             filter,
             brx,
             tx,
+            HOUR,
         )
         .await;
         drop(btx);
@@ -1049,7 +1112,17 @@ mod tests {
             refs: HashSet::new(),
             sent: HashMap::new(),
         };
-        pump(hub(store), Guard::disabled(), None, "missing".into(), filter, brx, tx).await;
+        pump(
+            hub(store),
+            Guard::disabled(),
+            None,
+            "missing".into(),
+            filter,
+            brx,
+            tx,
+            HOUR,
+        )
+        .await;
         assert_eq!(
             out.recv().await.expect("err").map(|_| ()).map_err(|s| s.code()),
             Err(Code::NotFound)
