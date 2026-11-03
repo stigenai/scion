@@ -245,6 +245,8 @@ async fn still_allowed(guard: &Guard, bearer: Option<&str>, repo: &str) -> Resul
 /// A failed check ends the stream with its error, and the stream sends no event.
 /// A failure found before a batch waits for the next tick.
 /// So a revoked caller does not learn when a ref changes, and the close time does not depend on ref changes.
+// ponytail: eight plain arguments for one private task; group them into a struct if a ninth appears.
+#[allow(clippy::too_many_arguments)]
 async fn pump(
     hub: Arc<RefHub>,
     guard: Arc<Guard>,
