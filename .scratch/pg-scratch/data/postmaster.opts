@@ -1,1 +1,0 @@
-/nix/store/4pvzkppw0jpll4ahddbnzccblzz143h0-postgresql-17.11/bin/postgres "-D" "/Users/ztaylor/.herdr/worktrees/stek/factory-lifecycle-mw0v1aw5na/scion/.scratch/pg-scratch/data" "-k" "/tmp/pgs-d55ad1ec3df9" "-c" "listen_addresses=" "-c" "unix_socket_permissions=0700" "-F"

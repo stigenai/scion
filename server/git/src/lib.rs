@@ -837,6 +837,10 @@ mod tests {
         assert_eq!(r.status(), StatusCode::PAYLOAD_TOO_LARGE);
         assert_eq!(decompressed_hits(), before + 1);
 
+        let one_over = Full::new(Bytes::from(gzip(&vec![7u8; limit + 1])));
+        let r = spool_body(&gz, one_over, limit).await.expect_err("one byte over");
+        assert_eq!(r.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
         let edge = vec![7u8; limit];
         let mut f = spool_body(&gz, Full::new(Bytes::from(gzip(&edge))), limit)
             .await
@@ -848,7 +852,7 @@ mod tests {
         spool_body(&plain, Full::new(Bytes::from(edge)), limit)
             .await
             .expect("exact plain");
-        assert_eq!(decompressed_hits(), before + 1);
+        assert_eq!(decompressed_hits(), before + 2);
     }
 
     #[test]
