@@ -297,7 +297,8 @@ pub async fn serve(
         RefSvc::new(app.meta.clone(), hub)
             .with_blobs(app.blobs.clone())
             .with_guard(guard.clone())
-            .with_pre_land(pre_land),
+            .with_pre_land(pre_land)
+            .with_recheck(app.config.stream_recheck_interval),
     );
     let refs = RefServiceServer::from_arc(ref_svc.clone());
     let query = QueryServiceServer::new(

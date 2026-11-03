@@ -10,6 +10,9 @@ pub mod policy;
 pub mod remote;
 pub mod token;
 
+#[cfg(test)]
+mod revalidation_windows;
+
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 

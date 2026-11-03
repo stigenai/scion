@@ -365,12 +365,31 @@ starhub needs two internal endpoints, both thin wrappers over its existing logic
 
 `scn login` can go through the Casdoor OIDC that starhub uses (`[oidc]`), or use `scn login --token <starhub access token>`.
 
+## How fast a change takes effect
+
+You can revoke a credential or change a policy. Then a request can still pass for a short time. The table gives the longest time for each case.
+
+| Case | Longest time |
+| ---- | ------------ |
+| PAT, refresh token, access JWT with a `sid` | The next request. The server reads the token record each time. |
+| Opaque token checked by `[introspection]` | `cache_ttl` (default 60 s), and never past the token `exp`. The server refuses an active answer with an `exp` in the past. With `cache_ttl = "0s"` the cache is off. |
+| External JWT | The JWT `exp` plus 30 s of clock leeway. |
+| Allow from `[authz_webhook]` | `cache_ttl` (default 30 s). With `cache_ttl = "0s"` the allow cache is off. |
+| Deny from `[authz_webhook]` | 5 s. |
+| Open `WatchRefs` stream | `stream_recheck_interval` (30 s) plus the window of the caller's credential and of the policy check: the introspection or webhook `cache_ttl`, or for an external JWT its `exp` plus 30 s. The stream closes also when no ref changes. |
+| Access JWT from `ExchangeToken` | An opaque source: the next request. An external JWT source: the source `exp`. An introspected source, JWT-shaped or not: the source `exp` or `cache_ttl` from the exchange, whichever is first. The exchange asks the introspection server and does not use the cache, so the window is not longer than `cache_ttl`. With introspection `cache_ttl = "0s"` the exchange refuses an introspected source. All of them also have 30 s of verifier leeway and the token `ttl` (15 minutes) as an upper limit. |
+| Regional cache read | The next read. Each read costs one `CheckAccess` call to the server, also an anonymous read on a public repository. |
+
+When an access JWT ends, the client must exchange again. The `expires_at_ms` field of the response shows the end time.
+
+A failed check ends an open stream at the next tick, not at the next ref change. So a revoked caller cannot see when a ref changes. Each tick makes one token check and one policy check for each stream. The cache serves the check of an external or introspected token. `ServerConfig::stream_recheck_interval` sets the tick. The `scion` binary uses 30 s.
+
 ## Caches and the daemon
 
 The regional cache (`scion cache`) and the local daemon do not parse tokens.
 - **Regional cache read permission:** every object read (local hits included) calls `CheckAccess(repo, read)` on the server with the caller's own token. Permission results are not cached, so revocation or expiry is enforced on the next read. Object bytes remain cached.
 - **Daemon read permission:** the local daemon still caches permission results per token and repository for 60 seconds; its credential-revalidation behavior is separate from the regional cache.
-- **Active ref streams:** `WatchRefs` reauthenticates and checks read permission before each new event batch. If credentials expire, are revoked, or lose read access, the stream ends with an error before delivering that batch.
+- **Active ref streams:** `WatchRefs` reauthenticates and checks read permission every 30 s and before each new event batch. A credential can expire, or an admin can revoke it or remove read access. Then the stream ends with an error at the next 30 s tick and delivers no event.
 - **The daemon offline:** when the server is unreachable (rather than refusing), identities confirmed within 24 hours still pass the read check. Reads also need redactions to be current, though ([redaction.md](redaction.md)): repositories last synced more than 10 seconds ago return `UNAVAILABLE`, so offline the local cache can mostly not be read.
 - **Warming:** when the server requires authentication, the regional cache warms up as the identity given by `--warm-token` (`SCION_CACHE_WARM_TOKEN`).
 
