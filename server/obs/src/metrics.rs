@@ -66,6 +66,8 @@ pub mod reason {
     pub const TENANT_CONCURRENCY: &str = "tenant_concurrency";
     /// 处理超过 deadline。
     pub const DEADLINE: &str = "deadline";
+    /// A request body inflated past the limit of its endpoint.
+    pub const DECOMPRESSED_SIZE: &str = "decompressed_size";
 }
 
 type RpcHistograms = Family<MethodLabels, Histogram, fn() -> Histogram>;

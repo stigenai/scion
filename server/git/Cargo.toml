@@ -18,6 +18,7 @@ http-body = "1"
 http-body-util = "0.1"
 scion-auth.workspace = true
 scion-object.workspace = true
+scion-obs.workspace = true
 scion-query.workspace = true
 scion-store.workspace = true
 sha1 = "0.10"

@@ -3463,6 +3463,7 @@ dependencies = [
  "scion-auth",
  "scion-land",
  "scion-object",
+ "scion-obs",
  "scion-query",
  "scion-store",
  "sha1",
