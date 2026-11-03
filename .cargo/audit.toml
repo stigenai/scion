@@ -1,0 +1,9 @@
+[advisories]
+ignore = [
+    # ent-x6g: rsa 0.9.10 comes from jsonwebtoken. Scion uses it only for RS/PS verify (public-key operations).
+    # No patched release exists. Remove this line when ent-x6g moves jsonwebtoken to the aws_lc_rs backend.
+    "RUSTSEC-2023-0071",
+    # ent-x6g: crypto-bigint 0.5.5 comes from p256 0.13 through jsonwebtoken. ES256 signing in server/auth/src/token.rs reaches it.
+    # Remove this line when ent-x6g moves jsonwebtoken to the aws_lc_rs backend.
+    "RUSTSEC-2026-0387",
+]

@@ -89,24 +89,24 @@ pub fn delta(base: &[u8], target: &[u8]) -> Option<Vec<u8>> {
     let mut i = 0;
     while i < target.len() {
         let mut best: Option<(usize, usize, usize)> = None; // (base start, target start, length)
-        if i + BLOCK <= target.len() {
-            if let Some(cands) = index.get(&block_hash(&target[i..])) {
-                for &b in cands {
-                    if base[b..b + BLOCK] != target[i..i + BLOCK] {
-                        continue;
-                    }
-                    let mut len = BLOCK;
-                    while b + len < base.len() && i + len < target.len() && base[b + len] == target[i + len] {
-                        len += 1;
-                    }
-                    // Extend backwards into bytes waiting to be inserted
-                    let mut back = 0;
-                    while back < pending.len() && back < b && base[b - back - 1] == target[i - back - 1] {
-                        back += 1;
-                    }
-                    if best.is_none_or(|(_, _, l)| len + back > l) {
-                        best = Some((b - back, i - back, len + back));
-                    }
+        if i + BLOCK <= target.len()
+            && let Some(cands) = index.get(&block_hash(&target[i..]))
+        {
+            for &b in cands {
+                if base[b..b + BLOCK] != target[i..i + BLOCK] {
+                    continue;
+                }
+                let mut len = BLOCK;
+                while b + len < base.len() && i + len < target.len() && base[b + len] == target[i + len] {
+                    len += 1;
+                }
+                // Extend backwards into bytes waiting to be inserted
+                let mut back = 0;
+                while back < pending.len() && back < b && base[b - back - 1] == target[i - back - 1] {
+                    back += 1;
+                }
+                if best.is_none_or(|(_, _, l)| len + back > l) {
+                    best = Some((b - back, i - back, len + back));
                 }
             }
         }

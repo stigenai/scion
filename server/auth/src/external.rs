@@ -99,15 +99,15 @@ impl Jwks {
             }?;
             DecodingKey::from_jwk(jwk).ok()
         };
-        if let (Some(set), Some(age)) = (&cached, age) {
-            if age < self.ttl {
-                if let Some(k) = find(set) {
-                    return Ok(k);
-                }
-                // 未知的 kid：密钥可能刚轮换过，但不要每个请求都去取
-                if age < self.min_refresh {
-                    return Err(VerifyError::Invalid(format!("unknown key id {kid:?}")));
-                }
+        if let (Some(set), Some(age)) = (&cached, age)
+            && age < self.ttl
+        {
+            if let Some(k) = find(set) {
+                return Ok(k);
+            }
+            // 未知的 kid：密钥可能刚轮换过，但不要每个请求都去取
+            if age < self.min_refresh {
+                return Err(VerifyError::Invalid(format!("unknown key id {kid:?}")));
             }
         }
         let set = self.fetch().await?;

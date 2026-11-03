@@ -64,14 +64,14 @@ impl Prefetcher {
             return;
         };
         let key = (up.url.clone(), repo.to_owned(), reference.to_owned());
-        if let Some(w) = watches.get_mut(&key) {
-            if !w.task.is_finished() {
-                w.last_used = Instant::now();
-                if let Ok(mut a) = w.auth.lock() {
-                    *a = auth;
-                }
-                return;
+        if let Some(w) = watches.get_mut(&key)
+            && !w.task.is_finished()
+        {
+            w.last_used = Instant::now();
+            if let Ok(mut a) = w.auth.lock() {
+                *a = auth;
             }
+            return;
         }
         let auth = Arc::new(Mutex::new(auth));
         let task = tokio::spawn(follow(

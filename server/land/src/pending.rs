@@ -73,10 +73,10 @@ impl Pending {
         }
         while let Some(joined) = set.join_next().await {
             // 预取失败不影响正确性：之后按需读取时会报告错误
-            if let Ok((id, Ok(Some(data)))) = joined {
-                if let Ok(mut f) = self.fetched.lock() {
-                    f.insert(id, data);
-                }
+            if let Ok((id, Ok(Some(data)))) = joined
+                && let Ok(mut f) = self.fetched.lock()
+            {
+                f.insert(id, data);
             }
         }
     }

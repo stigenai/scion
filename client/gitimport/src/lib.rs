@@ -303,13 +303,13 @@ async fn land_chain(
             None => client.resolve_revision(&c.to_string()).await?.parents.first().copied(),
         };
     }
-    if let Some(cur_tip) = current {
-        if cur.is_none() {
-            return Err(Error::Diverged {
-                reference: target_ref.to_owned(),
-                current: cur_tip,
-            });
-        }
+    if let Some(cur_tip) = current
+        && cur.is_none()
+    {
+        return Err(Error::Diverged {
+            reference: target_ref.to_owned(),
+            current: cur_tip,
+        });
     }
     // 只允许快进：导入的历史必须原样进入 ref，期间 ref 被别人移动时报错而不是 rebase
     chain.reverse();

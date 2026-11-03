@@ -52,10 +52,10 @@ impl BlobStore for RedactedBlobs {
     }
 
     async fn get(&self, id: &ObjectId) -> Result<Option<Bytes>> {
-        if redactable(id) {
-            if let Some(e) = redacted_error(&self.meta.get_redactions(&self.repo, &[*id]).await?) {
-                return Err(e);
-            }
+        if redactable(id)
+            && let Some(e) = redacted_error(&self.meta.get_redactions(&self.repo, &[*id]).await?)
+        {
+            return Err(e);
         }
         self.inner.get(id).await
     }

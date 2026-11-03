@@ -268,10 +268,10 @@ pub(crate) async fn list_last_commits(
     let mut ids = Vec::new();
     for (name, id) in page.iter().zip(found) {
         let id = id.filter(|_| !hidden.contains(name));
-        if let Some(id) = id {
-            if !ids.contains(&id) {
-                ids.push(id);
-            }
+        if let Some(id) = id
+            && !ids.contains(&id)
+        {
+            ids.push(id);
         }
         entries.push(v1::LastCommit {
             name: name.clone(),

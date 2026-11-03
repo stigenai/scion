@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-async-nats = { version = "0.46", default-features = false, features = ["jetstream", "ring", "server_2_10"] }
+async-nats = { version = "0.51", default-features = false, features = ["jetstream", "ring", "server_2_10"] }
 async-trait.workspace = true
 hmac = "0.12"
 reqwest.workspace = true

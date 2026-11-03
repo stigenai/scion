@@ -455,7 +455,7 @@ mod tests {
                 };
                 let mut d = Vec::new();
                 f.read_to_end(&mut d).expect("read");
-                (f.name().to_owned(), kind, mode & 0o777, d)
+                (f.name().expect("name").into_owned(), kind, mode & 0o777, d)
             })
             .collect()
     }
