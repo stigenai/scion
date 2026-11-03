@@ -120,17 +120,18 @@ impl Issuer {
     }
 
     /// 签发访问令牌，返回令牌与过期时间（Unix 毫秒）。
-    /// `source` is the id and expiry (Unix ms) of the opaque token this JWT is exchanged from.
-    /// It sets `sid`, and `exp` is cut to the whole second at or before the source expiry.
+    /// `sid` is the id of the opaque token this JWT is exchanged from; it sets the `sid` claim.
+    /// `not_after_ms` (Unix ms) cuts `exp` to the whole second at or before it.
     pub fn issue(
         &self,
         subject: &str,
         groups: &[String],
         now_secs: i64,
-        source: Option<(&str, Option<i64>)>,
+        sid: Option<&str>,
+        not_after_ms: Option<i64>,
     ) -> (String, i64) {
         let mut exp = now_secs + self.ttl_secs;
-        if let Some((_, Some(src_ms))) = source {
+        if let Some(src_ms) = not_after_ms {
             exp = exp.min(src_ms.div_euclid(1000));
         }
         let claims = Claims {
@@ -139,7 +140,7 @@ impl Issuer {
             groups: groups.to_vec(),
             iat: now_secs,
             exp,
-            sid: source.map(|(id, _)| id.to_owned()),
+            sid: sid.map(str::to_owned),
         };
         let mut header = Header::new(Algorithm::ES256);
         header.kid = Some(self.kid.clone());
@@ -199,13 +200,13 @@ mod tests {
     fn issue_and_verify_round_trip() {
         let i = issuer();
         let now = 1_700_000_000;
-        let (t, exp) = i.issue("alice", &["eng".into()], now, None);
+        let (t, exp) = i.issue("alice", &["eng".into()], now, None, None);
         assert_eq!(exp, (now + 900) * 1000);
         let real_now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock")
             .as_secs() as i64;
-        let (fresh, _) = i.issue("alice", &["eng".into()], real_now, None);
+        let (fresh, _) = i.issue("alice", &["eng".into()], real_now, None, None);
         let c = i.verify(&fresh).expect("valid");
         assert_eq!(
             (c.sub.as_str(), c.groups.as_slice(), c.iss.as_str()),
@@ -229,17 +230,17 @@ mod tests {
             .as_secs() as i64;
         // Source ends in 60 s 500 ms: exp is cut to the whole second before it.
         let src_ms = (now + 60) * 1000 + 500;
-        let (t, exp) = i.issue("alice", &[], now, Some(("abc", Some(src_ms))));
+        let (t, exp) = i.issue("alice", &[], now, Some("abc"), Some(src_ms));
         assert_eq!(exp, (now + 60) * 1000);
         assert_eq!(i.verify(&t).expect("valid").sid.as_deref(), Some("abc"));
         // A source that outlives the default lifetime does not extend it.
-        let (_, exp) = i.issue("alice", &[], now, Some(("abc", Some(src_ms + 3_600_000))));
+        let (_, exp) = i.issue("alice", &[], now, Some("abc"), Some(src_ms + 3_600_000));
         assert_eq!(exp, (now + 900) * 1000);
         // A source without an expiry keeps the default lifetime.
-        let (_, exp) = i.issue("alice", &[], now, Some(("abc", None)));
+        let (_, exp) = i.issue("alice", &[], now, Some("abc"), None);
         assert_eq!(exp, (now + 900) * 1000);
         // A JWT without a source has no sid.
-        let (t, _) = i.issue("alice", &[], now, None);
+        let (t, _) = i.issue("alice", &[], now, None, None);
         assert_eq!(i.verify(&t).expect("valid").sid, None);
     }
 
@@ -252,10 +253,10 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock")
             .as_secs() as i64;
-        let (t, _) = b.issue("mallory", &[], now, None);
+        let (t, _) = b.issue("mallory", &[], now, None, None);
         assert!(a.verify(&t).is_err(), "signed by another key");
         let other_iss = Issuer::from_pem(&generate_signing_key(), "https://elsewhere", 60).expect("issuer");
-        let (t, _) = other_iss.issue("x", &[], now, None);
+        let (t, _) = other_iss.issue("x", &[], now, None, None);
         assert!(a.verify(&t).is_err());
         assert!(a.verify("not.a.jwt").is_err());
         assert_eq!(peek("garbage"), None);
