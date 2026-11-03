@@ -158,7 +158,7 @@ enum PolicyState {
     Set(Arc<Policy>),
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
@@ -414,31 +414,70 @@ impl Guard {
 
     // ---------- 令牌 ----------
 
-    fn issue(&self, p: &Principal, source: Option<(&str, Option<i64>)>) -> Result<(String, i64), AuthError> {
+    fn issue(&self, p: &Principal, sid: Option<&str>, not_after_ms: Option<i64>) -> Result<(String, i64), AuthError> {
         let issuer = self.issuer.as_ref().ok_or_else(|| {
             AuthError::Unavailable("this server does not issue access tokens (no signing key)".into())
         })?;
-        Ok(issuer.issue(&p.subject, &p.groups, now_ms() / 1000, source))
+        Ok(issuer.issue(&p.subject, &p.groups, now_ms() / 1000, sid, not_after_ms))
     }
 
     /// 用长期凭据换取访问令牌：(令牌, 过期时间, 身份)。
+    ///
+    /// The access token never ends after its source token.
+    /// An opaque source sets `sid`, so a revoke shows at once.
+    /// An external JWT has no record to read, so the access token ends at the JWT `exp`.
+    /// A token from introspection (JWT-shaped or not) is read from the server, not the cache.
+    /// The access token then also ends within `cache_ttl` from now, and the token TTL (900 s) caps all.
+    /// If introspection `cache_ttl` is `0s`, this call refuses such a token.
     pub async fn exchange(&self, subject_token: &str) -> Result<(String, i64, String), AuthError> {
         let t = subject_token.trim();
         if t.is_empty() {
             return Err(AuthError::BadRequest("subject_token is required".into()));
         }
-        let mut source = None;
+        let (mut sid, mut cache_ttl) = (None, None);
         let p = if t.starts_with(OPAQUE_PREFIX) {
-            let (p, id, exp) = self.opaque_record(t, true).await?;
-            source = Some((id, exp));
+            let (p, id, _) = self.opaque_record(t, true).await?;
+            sid = Some(id);
             p
-        } else if t.split('.').count() == 3 {
+        } else if t.split('.').count() == 3 && self.knows_issuer(t) {
             self.jwt(t, false).await?
         } else {
-            self.introspect(t).await?
+            // Any other token goes to introspection. Read the server now: a cached answer
+            // can be up to `cache_ttl` old, and the access token adds `cache_ttl` more.
+            let i = self
+                .introspection
+                .as_ref()
+                .ok_or_else(|| AuthError::Invalid("token is not issued by a trusted issuer".into()))?;
+            let ttl = i.cache_ttl();
+            if ttl.is_zero() {
+                return Err(AuthError::Unavailable(
+                    "exchange from an introspected token needs introspection cache_ttl above 0s".into(),
+                ));
+            }
+            cache_ttl = Some(ttl);
+            i.verify_uncached(t)
+                .await?
+                .ok_or_else(|| AuthError::Invalid("token is not active".into()))?
         };
-        let (token, exp) = self.issue(&p, source.as_ref().map(|(id, e)| (id.as_str(), *e)))?;
+        let mut not_after = p.expires_at_ms;
+        if not_after.is_some_and(|e| e <= now_ms()) {
+            // The verifier allows 30 s of clock leeway. A token that ended already must not give a new one.
+            return Err(AuthError::Expired);
+        }
+        if let Some(ttl) = cache_ttl {
+            let cap = now_ms().saturating_add(i64::try_from(ttl.as_millis()).unwrap_or(i64::MAX));
+            not_after = Some(not_after.map_or(cap, |e| e.min(cap)));
+        }
+        let (token, exp) = self.issue(&p, sid.as_deref(), not_after)?;
         Ok((token, exp, p.subject))
+    }
+
+    /// True if the JWT `iss` names this server or a configured external issuer.
+    fn knows_issuer(&self, token: &str) -> bool {
+        let Some(iss) = peek(token).and_then(|(iss, _)| iss) else {
+            return false;
+        };
+        self.issuer.as_ref().is_some_and(|o| o.issuer() == iss) || self.externals.iter().any(|e| e.issuer() == iss)
     }
 
     /// 创建不透明令牌，返回令牌（只出现这一次）与记录。
@@ -512,7 +551,7 @@ impl Guard {
         let (refresh, refresh_rec) = self
             .create_token("refresh", &p.subject, p.groups.clone(), "scn login", Some(REFRESH_TTL))
             .await?;
-        let (access, exp) = self.issue(p, Some((&refresh_rec.id, refresh_rec.expires_at_ms)))?;
+        let (access, exp) = self.issue(p, Some(&refresh_rec.id), refresh_rec.expires_at_ms)?;
         Ok((poll, Some((refresh, access, exp))))
     }
 
@@ -1237,14 +1276,14 @@ actions = ["admin"]
         assert_eq!(g.authenticate(Some(&jwt)).await.expect("bound").subject, "alice");
         // A JWT for another subject that names alice's record is refused.
         let (forged, _) = g
-            .issue(&Principal::user("mallory", vec![]), Some((&rec.id, None)))
+            .issue(&Principal::user("mallory", vec![]), Some(&rec.id), None)
             .expect("issue");
         assert!(matches!(
             g.authenticate(Some(&forged)).await,
             Err(AuthError::Invalid(_))
         ));
         // A JWT without a source stays valid (external exchange, or issued before the upgrade).
-        let (plain, _) = g.issue(&Principal::user("bob", vec![]), None).expect("issue");
+        let (plain, _) = g.issue(&Principal::user("bob", vec![]), None, None).expect("issue");
         assert_eq!(g.authenticate(Some(&plain)).await.expect("plain").subject, "bob");
         assert!(g.revoke_token(&rec.id).await.expect("revoke"));
         assert!(matches!(g.authenticate(Some(&jwt)).await, Err(AuthError::Invalid(_))));
@@ -1276,7 +1315,7 @@ actions = ["admin"]
         .expect("guard");
         assert!(!g.policy_loaded());
         // 自签令牌不查库也能验证，但策略没加载成功时不能退回默认放行
-        let (token, _) = g.issue(&Principal::user("alice", vec![]), None).expect("issue");
+        let (token, _) = g.issue(&Principal::user("alice", vec![]), None, None).expect("issue");
         let alice = g.authenticate(Some(&token)).await.expect("jwt");
         let unavailable = |r: Result<bool, AuthError>| matches!(r, Err(AuthError::Unavailable(_)));
         assert!(unavailable(g.check(&alice, &Request::repo("x", Action::Read)).await));
@@ -1325,7 +1364,7 @@ actions = ["admin"]
         assert!(!fresh.is_admin(&alice).await.expect("ok"));
         // 默认策略：admins 组可以管理
         let (token, _) = fresh
-            .issue(&Principal::user("root", vec!["admins".into()]), None)
+            .issue(&Principal::user("root", vec!["admins".into()]), None, None)
             .expect("issue");
         let root = fresh.authenticate(Some(&token)).await.expect("jwt");
         assert!(fresh.is_admin(&root).await.expect("ok"));

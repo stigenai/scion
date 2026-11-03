@@ -41,6 +41,8 @@ pub struct RefSvc {
     pre_land: Option<Arc<crate::prehook::PreLand>>,
     /// For a tag's git object: its target's git SHA is computed from the objects.
     blobs: Option<Arc<dyn BlobStore>>,
+    /// How often an open WatchRefs stream checks its caller again.
+    recheck: std::time::Duration,
 }
 
 impl RefSvc {
@@ -51,7 +53,13 @@ impl RefSvc {
             guard: Guard::disabled(),
             pre_land: None,
             blobs: None,
+            recheck: crate::ServerConfig::default().stream_recheck_interval,
         }
+    }
+
+    pub fn with_recheck(mut self, every: std::time::Duration) -> Self {
+        self.recheck = every;
+        self
     }
 
     pub fn with_blobs(mut self, blobs: Arc<dyn BlobStore>) -> Self {
@@ -223,9 +231,22 @@ impl Filter {
     }
 }
 
+/// Authenticates the caller's bearer token again and checks read access on `repo`.
+async fn still_allowed(guard: &Guard, bearer: Option<&str>, repo: &str) -> Result<(), Status> {
+    match guard.authenticate(bearer).await {
+        Ok(p) => authorize_any(guard, &p, repo, Action::Read).await,
+        Err(e) => Err(to_status(e)),
+    }
+}
+
 /// 订阅者的发送循环：通道里的变化逐批发送（同时到达的合并成一条响应），落后太多时重新取快照。
 ///
-/// 每批发送前重新认证并检查读权限：令牌被吊销、过期或策略不再允许读时，流以该错误结束，不再发送事件。
+/// The loop checks the caller before each event batch and at each `recheck` tick, also when no ref changes.
+/// A failed check ends the stream with its error, and the stream sends no event.
+/// A failure found before a batch waits for the next tick.
+/// So a revoked caller does not learn when a ref changes, and the close time does not depend on ref changes.
+// ponytail: eight plain arguments for one private task; group them into a struct if a ninth appears.
+#[allow(clippy::too_many_arguments)]
 async fn pump(
     hub: Arc<RefHub>,
     guard: Arc<Guard>,
@@ -234,13 +255,31 @@ async fn pump(
     mut filter: Filter,
     mut rx: broadcast::Receiver<RefUpdate>,
     out: mpsc::Sender<Result<WatchRefsResponse, Status>>,
+    recheck: std::time::Duration,
 ) {
+    let recheck = recheck.max(std::time::Duration::from_millis(10));
+    let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + recheck, recheck);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut failed: Option<Status> = None;
     loop {
         let mut events = Vec::new();
-        let first = tokio::select! {
-            r = rx.recv() => r,
-            () = out.closed() => return,
-            () = hub.wait_closed() => return,
+        let first = loop {
+            tokio::select! {
+                r = rx.recv() => break r,
+                _ = tick.tick() => {
+                    let checked = match failed.take() {
+                        Some(e) => Err(e),
+                        None => still_allowed(&guard, bearer.as_deref(), &repo).await,
+                    };
+                    if let Err(e) = checked {
+                        tracing::info!(%repo, code = ?e.code(), "watch stream closed by credential recheck");
+                        let _ = out.send(Err(e)).await;
+                        return;
+                    }
+                }
+                () = out.closed() => return,
+                () = hub.wait_closed() => return,
+            }
         };
         let mut next = Some(first);
         while let Some(r) = next.take() {
@@ -265,16 +304,12 @@ async fn pump(
                 Err(_) => None,
             };
         }
-        if events.is_empty() {
+        if events.is_empty() || failed.is_some() {
             continue;
         }
-        let allowed = match guard.authenticate(bearer.as_deref()).await {
-            Ok(p) => authorize_any(&guard, &p, &repo, Action::Read).await,
-            Err(e) => Err(to_status(e)),
-        };
-        if let Err(e) = allowed {
-            let _ = out.send(Err(e)).await;
-            return;
+        if let Err(e) = still_allowed(&guard, bearer.as_deref(), &repo).await {
+            failed = Some(e);
+            continue;
         }
         if out
             .send(Ok(WatchRefsResponse {
@@ -499,6 +534,7 @@ impl RefService for RefSvc {
             filter,
             rx,
             tx,
+            self.recheck,
         ));
         Ok(Response::new(Box::pin(ReceiverStream::new(out))))
     }
@@ -883,6 +919,8 @@ mod tests {
         assert_eq!(r.map(|_| ()).map_err(|s| s.code()), Err(Code::NotFound));
     }
 
+    const HOUR: std::time::Duration = std::time::Duration::from_secs(3600);
+
     fn hub(store: Arc<scion_store::MemStore>) -> Arc<RefHub> {
         RefHub::new(store, std::time::Duration::from_secs(3600))
     }
@@ -947,6 +985,89 @@ mod tests {
         assert_eq!(missing.map(|_| ()).map_err(|s| s.code()), Err(Code::NotFound));
     }
 
+    const READ_R: &str = "[[rule]]\nsubjects = [\"user:alice\"]\nrepos = [\"r\"]\nactions = [\"read\"]\n";
+
+    /// A guard with alice's read policy, her token, and a pump on repo `r` that checks every 30 s.
+    async fn paused_pump() -> (
+        Arc<Guard>,
+        String,
+        broadcast::Sender<RefUpdate>,
+        mpsc::Receiver<Result<WatchRefsResponse, Status>>,
+    ) {
+        use std::time::Duration;
+        let store = Arc::new(scion_store::MemStore::new());
+        store.create_repo("r").await.expect("repo");
+        let guard = Guard::build(
+            scion_auth::GuardConfig {
+                required: true,
+                auth: scion_auth::AuthConfig::parse("[token]\nissuer = \"https://scion.test\"\n").expect("config"),
+                signing_key_pem: Some(scion_auth::token::generate_signing_key()),
+            },
+            store.clone(),
+            Arc::new(|_: &str| None),
+        )
+        .expect("guard");
+        guard.set_policy(READ_R).await.expect("policy");
+        let (token, rec) = guard.create_token("pat", "alice", vec![], "", None).await.expect("pat");
+        let (btx, rx) = broadcast::channel(16);
+        let (tx, out) = mpsc::channel(16);
+        let filter = Filter {
+            refs: HashSet::new(),
+            sent: HashMap::new(),
+        };
+        tokio::spawn(pump(
+            hub(store),
+            guard.clone(),
+            Some(token),
+            "r".into(),
+            filter,
+            rx,
+            tx,
+            Duration::from_secs(30),
+        ));
+        (guard, rec.id, btx, out)
+    }
+
+    /// A revoked caller learns nothing before the next tick, not even that a ref changed:
+    /// the error arrives at the 30 s tick and no event is sent.
+    #[tokio::test(start_paused = true)]
+    async fn revoked_stream_closes_at_the_next_tick_without_an_event() {
+        use std::time::Duration;
+        let (guard, id, btx, mut out) = paused_pump().await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(guard.revoke_token(&id).await.expect("revoke"));
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        btx.send(update("main", 1)).expect("publish");
+        tokio::time::sleep(Duration::from_secs(27)).await;
+        assert!(out.try_recv().is_err(), "t=29 s: nothing sent before the tick");
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let got = out.try_recv().expect("t=31 s: the stream ended with a message");
+        assert_eq!(got.map(|_| ()).map_err(|s| s.code()), Err(Code::Unauthenticated));
+        assert!(out.recv().await.is_none(), "the stream ended and no event came");
+    }
+
+    /// A failure found before a batch stands: when the policy is back at the tick, the stream still ends.
+    #[tokio::test(start_paused = true)]
+    async fn failed_batch_check_closes_the_stream_even_if_access_returns() {
+        use std::time::Duration;
+        let (guard, _, btx, mut out) = paused_pump().await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        guard
+            .set_policy(&READ_R.replace("\"r\"", "\"other\""))
+            .await
+            .expect("policy gone");
+        btx.send(update("main", 1)).expect("publish");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        guard.set_policy(READ_R).await.expect("policy back");
+        btx.send(update("main", 2)).expect("publish");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(out.try_recv().is_err(), "no event while the first failure waits");
+        tokio::time::sleep(Duration::from_secs(28)).await;
+        let got = out.try_recv().expect("t=31 s: the stream ended with a message");
+        assert_eq!(got.map(|_| ()).map_err(|s| s.code()), Err(Code::PermissionDenied));
+        assert!(out.recv().await.is_none(), "no event came");
+    }
+
     fn update(name: &str, version: u64) -> RefUpdate {
         RefUpdate {
             name: name.into(),
@@ -997,7 +1118,7 @@ mod tests {
             refs: HashSet::new(),
             sent: HashMap::new(),
         };
-        let task = tokio::spawn(pump(h, Guard::disabled(), None, REPO.into(), filter, brx, tx));
+        let task = tokio::spawn(pump(h, Guard::disabled(), None, REPO.into(), filter, brx, tx, HOUR));
         let resp = out.recv().await.expect("resp").expect("ok");
         // 快照里的 main，加上通道里剩下的 x 的最新版本
         let got: Vec<_> = resp.events.iter().map(|e| (e.name.as_str(), e.version)).collect();
@@ -1016,7 +1137,7 @@ mod tests {
             refs: HashSet::new(),
             sent: HashMap::new(),
         };
-        pump(closing, Guard::disabled(), None, REPO.into(), filter, brx, tx).await;
+        pump(closing, Guard::disabled(), None, REPO.into(), filter, brx, tx, HOUR).await;
         assert!(out.recv().await.is_none());
         drop(btx);
 
@@ -1036,6 +1157,7 @@ mod tests {
             filter,
             brx,
             tx,
+            HOUR,
         )
         .await;
         drop(btx);
@@ -1049,7 +1171,17 @@ mod tests {
             refs: HashSet::new(),
             sent: HashMap::new(),
         };
-        pump(hub(store), Guard::disabled(), None, "missing".into(), filter, brx, tx).await;
+        pump(
+            hub(store),
+            Guard::disabled(),
+            None,
+            "missing".into(),
+            filter,
+            brx,
+            tx,
+            HOUR,
+        )
+        .await;
         assert_eq!(
             out.recv().await.expect("err").map(|_| ()).map_err(|s| s.code()),
             Err(Code::NotFound)

@@ -21,6 +21,10 @@ struct Shared {
     jwks: Value,
     approved: HashSet<String>,
     calls: HashMap<String, usize>,
+    /// Introspection answers that replace the built-in ones, by token.
+    introspection: HashMap<String, Value>,
+    /// An authorization answer that replaces the built-in ones.
+    authz: Option<Value>,
 }
 
 /// 测试用的身份提供方。
@@ -193,7 +197,11 @@ async fn introspect(
     if headers.get("authorization").and_then(|v| v.to_str().ok()) != Some(expected) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    let set = form
+        .get("token")
+        .and_then(|t| st.lock().ok().and_then(|s| s.introspection.get(t).cloned()));
     let body = match form.get("token").map(String::as_str) {
+        _ if set.is_some() => set.unwrap_or_default(),
         Some("good-token") => json!({"active": true, "username": "alice", "groups": ["eng"]}),
         Some("sub-only") => json!({"active": true, "sub": "bob"}),
         _ => json!({"active": false}),
@@ -205,6 +213,9 @@ async fn authz(State(st): State<St>, uri: Uri, headers: HeaderMap, Json(body): J
     count(&st, &uri);
     if headers.get("authorization").and_then(|v| v.to_str().ok()) != Some("Bearer opa") {
         return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if let Some(v) = st.lock().ok().and_then(|s| s.authz.clone()) {
+        return Json(v).into_response();
     }
     let i = &body["input"];
     let out = match (i["subject"].as_str(), i["repo"].as_str(), i["action"].as_str()) {
@@ -272,6 +283,20 @@ impl FakeIdp {
             .lock()
             .map(|s| s.calls.get(path).copied().unwrap_or(0))
             .unwrap_or(0)
+    }
+
+    /// From now on `/introspect` answers `body` for `token`.
+    pub fn set_introspection(&self, token: &str, body: Value) {
+        if let Ok(mut s) = self.shared.lock() {
+            s.introspection.insert(token.to_owned(), body);
+        }
+    }
+
+    /// From now on `/authz` answers `body` for every request.
+    pub fn set_authz(&self, body: Value) {
+        if let Ok(mut s) = self.shared.lock() {
+            s.authz = Some(body);
+        }
     }
 
     pub fn approve(&self, device_code: &str) {
