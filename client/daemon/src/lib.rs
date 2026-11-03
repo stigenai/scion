@@ -12,6 +12,8 @@
 //! 按对象 id 去重，但只把对象交给索引中有它的仓库（见 `objects.rs`）。
 
 mod cas;
+#[cfg(test)]
+mod no_auth_service_tests;
 mod objects;
 mod prefetch;
 mod refs;
