@@ -119,8 +119,16 @@ async fn a_healthy_connection_gets_goaway_at_the_lifetime() {
         .await
         .expect("the connection ends");
     assert!(ended.expect("join").is_ok(), "a graceful close");
-    assert!(t0.elapsed() < Duration::from_secs(2), "before the hard age: {:?}", t0.elapsed());
-    assert_eq!(counter("connection_age"), forced, "a graceful close is not a forced close");
+    assert!(
+        t0.elapsed() < Duration::from_secs(2),
+        "before the hard age: {:?}",
+        t0.elapsed()
+    );
+    assert_eq!(
+        counter("connection_age"),
+        forced,
+        "a graceful close is not a forced close"
+    );
 }
 
 /// A call that starts before the lifetime and sends its body after the GOAWAY finishes.

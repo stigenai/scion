@@ -348,13 +348,17 @@ pub async fn serve(
     });
     // 从外到内：git → 追踪 → 指标 → 全局过载丢弃 → 认证 → 按租户限流 → deadline → 各服务（§5.3）
     let builder = tonic::transport::Server::builder();
-    // hyper does not poll a response body while a chunk waits for HTTP/2 send capacity, so a
-    // client that stops reading outlives the timer in `streams::Bounded`. `age::Aged` closes
-    // each connection at the lifetime plus a grace: the longer of the request timeout and 30s
-    // (at most the lifetime). With `--max-request-timeout 0s` the grace is 30s, so a unary call
-    // can then be cut off. No GOAWAY is sent:
-    // tonic 0.14.5 `max_connection_age` without a grace panics after the graceful shutdown
-    // (transport/server/mod.rs:891), and with a grace it only closes the connection.
+    // At the lifetime, tonic starts a graceful shutdown of the connection: hyper sends GOAWAY,
+    // calls in flight finish, and the client opens new calls on a new connection. Do not set
+    // `max_connection_age_grace`: with a grace, tonic only closes the connection and sends no
+    // GOAWAY. Hyper does not poll a response body while a chunk waits for HTTP/2 send capacity,
+    // so a client that stops reading outlives the timer in `streams::Bounded`. `age::Aged`
+    // closes such a connection at the lifetime plus a grace: the longer of the request timeout
+    // and 30s (at most the lifetime). With `--max-request-timeout 0s` that grace is 30s.
+    let builder = match app.config.max_stream_lifetime {
+        Some(l) => builder.max_connection_age(l),
+        None => builder,
+    };
     let hard_age = app
         .config
         .max_stream_lifetime
