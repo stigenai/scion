@@ -32,7 +32,7 @@ members = [
 [workspace.package]
 version = "0.1.12"
 edition = "2024"
-rust-version = "1.89"
+rust-version = "1.94"
 license = "Apache-2.0"
 
 [workspace.dependencies]
@@ -80,7 +80,7 @@ protox = "0.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 cargo_metadata = "0.23"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "postgres", "migrate", "macros"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "postgres", "migrate", "macros"] }
 tempfile = "3"
 moka = { version = "0.12", features = ["sync"] }
 object_store = { version = "0.14", default-features = false, features = ["aws", "fs"] }
