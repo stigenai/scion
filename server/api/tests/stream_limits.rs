@@ -235,11 +235,11 @@ async fn each_caller_has_its_own_stream_budget() {
         async move { o.get_objects(req).await.map(|r| r.into_inner()) }
     };
     assert_eq!(
-        read(&alice).await.err().expect("read_file").code(),
+        read(&alice).await.expect_err("read_file").code(),
         Code::ResourceExhausted
     );
     assert_eq!(
-        get(&alice).await.err().expect("get_objects").code(),
+        get(&alice).await.expect_err("get_objects").code(),
         Code::ResourceExhausted
     );
     assert!(counter("tenant_streams") >= before + 3, "each refusal counts");

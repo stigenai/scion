@@ -1,0 +1,23 @@
+2026-11-03 11:27:03.557 EST [64665] LOG:  starting PostgreSQL 17.11 on aarch64-apple-darwin25.6.0, compiled by clang version 21.1.8, 64-bit
+2026-11-03 11:27:03.557 EST [64665] LOG:  listening on Unix socket "/tmp/pgs-d55ad1ec3df9/.s.PGSQL.5432"
+2026-11-03 11:27:03.561 EST [64668] LOG:  database system was shut down at 2026-11-03 11:27:03 EST
+2026-11-03 11:27:03.564 EST [64665] LOG:  database system is ready to accept connections
+2026-11-03 11:32:03.562 EST [64666] LOG:  checkpoint starting: time
+2026-11-03 11:32:08.046 EST [64666] LOG:  checkpoint complete: wrote 47 buffers (0.3%); 0 WAL file(s) added, 0 removed, 0 recycled; write=4.484 s, sync=0.001 s, total=4.484 s; sync files=0, longest=0.000 s, average=0.000 s; distance=290 kB, estimate=290 kB; lsn=0/155D740, redo lsn=0/155D6E8
+2026-11-03 11:33:10.242 EST [75884] LOG:  unexpected EOF on client connection with an open transaction
+2026-11-03 11:33:10.311 EST [75886] LOG:  unexpected EOF on client connection with an open transaction
+2026-11-03 11:33:10.629 EST [75941] ERROR:  duplicate key value violates unique constraint "repos_name_key"
+2026-11-03 11:33:10.629 EST [75941] DETAIL:  Key (name)=(a) already exists.
+2026-11-03 11:33:10.629 EST [75941] STATEMENT:  INSERT INTO repos (name, created_at_ms, default_branch, description, forked_from) VALUES ($1, $2, $3, $4, $5)
+2026-11-03 11:33:10.710 EST [75878] ERROR:  duplicate key value violates unique constraint "tokens_pkey"
+2026-11-03 11:33:10.710 EST [75878] DETAIL:  Key (id)=(t1) already exists.
+2026-11-03 11:33:10.710 EST [75878] STATEMENT:  INSERT INTO tokens (id, hash, kind, subject, groups_text, description, created_at_ms, expires_at_ms) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+2026-11-03 11:33:10.724 EST [75946] ERROR:  duplicate key value violates unique constraint "repos_name_key"
+2026-11-03 11:33:10.724 EST [75946] DETAIL:  Key (name)=(adm/src) already exists.
+2026-11-03 11:33:10.724 EST [75946] STATEMENT:  INSERT INTO repos (name, created_at_ms, default_branch, description, forked_from) VALUES ($1, $2, $3, $4, $5)
+2026-11-03 11:33:10.739 EST [75946] ERROR:  duplicate key value violates unique constraint "repos_name_key"
+2026-11-03 11:33:10.739 EST [75946] DETAIL:  Key (name)=(adm/src) already exists.
+2026-11-03 11:33:10.739 EST [75946] STATEMENT:  INSERT INTO repos (name, created_at_ms, default_branch, description, forked_from) VALUES ($1, $2, $3, $4, $5)
+2026-11-03 11:33:22.940 EST [75879] ERROR:  could not create unique index "dup_ccnew"
+2026-11-03 11:33:22.940 EST [75879] DETAIL:  Key (v)=(1) is duplicated.
+2026-11-03 11:33:22.940 EST [75879] STATEMENT:  CREATE UNIQUE INDEX CONCURRENTLY dup_ccnew ON dup (v)
