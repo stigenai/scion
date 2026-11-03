@@ -72,6 +72,8 @@ pub mod reason {
     pub const STREAM_LIFETIME: &str = "stream_lifetime";
     /// A request body inflated past the limit of its endpoint.
     pub const DECOMPRESSED_SIZE: &str = "decompressed_size";
+    /// A connection reached its hard age limit and was closed with its streams.
+    pub const CONNECTION_AGE: &str = "connection_age";
 }
 
 type RpcHistograms = Family<MethodLabels, Histogram, fn() -> Histogram>;

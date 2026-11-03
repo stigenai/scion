@@ -1,5 +1,6 @@
 //! Scion 服务端的 gRPC 服务实现与启动入口。
 
+mod age;
 pub mod auth;
 pub mod config;
 pub mod events;
@@ -345,15 +346,22 @@ pub async fn serve(
         )
     });
     // 从外到内：git → 追踪 → 指标 → 全局过载丢弃 → 认证 → 按租户限流 → deadline → 各服务（§5.3）
-    let mut builder = tonic::transport::Server::builder();
+    let builder = tonic::transport::Server::builder();
     // hyper does not poll a response body while a chunk waits for HTTP/2 send capacity, so a
-    // client that stops reading outlives the timer in `streams::Bounded`. A connection age
-    // limit backstops it: the connection closes after the lifetime plus a short grace.
-    if let Some(lifetime) = app.config.max_stream_lifetime {
-        builder = builder
-            .max_connection_age(lifetime)
-            .max_connection_age_grace(lifetime.min(std::time::Duration::from_secs(30)));
-    }
+    // client that stops reading outlives the timer in `streams::Bounded`. `age::Aged` closes
+    // each connection at the lifetime plus a grace: 30s or the request timeout, whichever is
+    // longer, so a unary call that starts before the lifetime ends in time. No GOAWAY is sent:
+    // tonic 0.14.5 `max_connection_age` without a grace panics after the graceful shutdown
+    // (transport/server/mod.rs:891), and with a grace it only closes the connection.
+    let hard_age = app.config.max_stream_lifetime.map(|lifetime| {
+        let grace = lifetime
+            .min(std::time::Duration::from_secs(30))
+            .max(app.config.max_request_timeout.unwrap_or_default());
+        lifetime + grace
+    });
+    let incoming = tokio_stream::StreamExt::map(TcpListenerStream::new(listener), move |io| {
+        io.map(|io| age::Aged::new(io, hard_age))
+    });
     let result = builder
         .accept_http1(app.config.git)
         .layer(git::GitLayer::new(gateway))
@@ -380,7 +388,7 @@ pub async fn serve(
         .add_service(repo_svc)
         .add_service(org_svc)
         .add_service(event_svc)
-        .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async move {
+        .serve_with_incoming_shutdown(incoming, async move {
             shutdown.await;
             // 结束 WatchRefs 的长连接，否则优雅停机会一直等它们
             hub_for_shutdown.close();

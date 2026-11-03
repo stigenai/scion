@@ -10,7 +10,8 @@
 //!   client SDK retries that status, so `scn watch` reconnects and resumes by version.
 //!
 //! A client that stops reading stalls the response body, so the timer in [`Bounded`] does not run.
-//! `serve` also sets a connection age limit from `--max-stream-lifetime` as the backstop.
+//! `serve` wraps each connection in `age::Aged` as the backstop. It closes the connection after
+//! `--max-stream-lifetime` plus a grace and counts the close as `connection_age`.
 //!
 //! Each hit counts in `scion_rejected_requests_total{reason}`.
 

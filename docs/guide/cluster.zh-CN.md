@@ -64,7 +64,7 @@ scion server --listen 0.0.0.0:7080 --advertise-url http://10.0.0.12:7080 \
 | `--tenant-concurrency N` | `SCION_TENANT_CONCURRENCY` | 不限制 | 每个节点、每个调用者的在途请求上限，避免一个调用者占满全局名额。 |
 | `--max-request-timeout DURATION` | `SCION_MAX_REQUEST_TIMEOUT` | 60s | 请求处理时间上限，与客户端的 deadline（`grpc-timeout`）取较小者，超时返回 `DEADLINE_EXCEEDED`。服务端流只限制到开始返回为止，保持打开的时间由 `--max-stream-lifetime` 限制。`0s` 只按客户端的 deadline。 |
 | `--tenant-streams N` | `SCION_TENANT_STREAMS` | 不限制 | 每个节点、每个调用者同时打开的服务端流（`WatchRefs`、`GetObjects`、`ReadFile`、`Diff`、`Archive`、`Grep`）上限，调用者的计法与 `--tenant-rate` 相同。超过后新流返回 `RESOURCE_EXHAUSTED` / `RATE_LIMITED`。鉴权失败的调用不占名额。 |
-| `--max-stream-lifetime DURATION` | `SCION_MAX_STREAM_LIFETIME` | 1h | 服务端流保持打开的最长时间，到期以 `UNAVAILABLE`（"stream lifetime of Ns reached; reconnect"）结束；客户端 SDK 会重试该状态，`scn watch` 重连后按版本续上，不丢事件。服务端还会在该时间加至多 30s 宽限后关闭每个连接，因此不再读取的客户端无法一直占用流。`0s` 不限制。 |
+| `--max-stream-lifetime DURATION` | `SCION_MAX_STREAM_LIFETIME` | 1h | 服务端流保持打开的最长时间，到期以 `UNAVAILABLE`（"stream lifetime of Ns reached; reconnect"）结束；客户端 SDK 会重试该状态，`scn watch` 重连后按版本续上，不丢事件。服务端还会在该时间加 30s 或 `--max-request-timeout`（取较大者）的宽限后关闭每个连接（不发 GOAWAY）：宽限内一元调用可完成，不再读取的客户端无法一直占用流。强制关闭计入 `scion_rejected_requests_total{reason="connection_age"}`，客户端需重连。`0s` 不限制。 |
 
 另外，每个 ref 的合入队列最多 1024 个请求，排满时同样返回 `RATE_LIMITED`。
 
