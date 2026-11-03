@@ -59,6 +59,7 @@ async fn replica(store: &Arc<MemStore>, key: &str) -> Replica {
             auth,
             warm_record_cache: false,
             ref_poll_interval: Duration::from_millis(50),
+            stream_recheck_interval: Duration::from_millis(200),
             ..ServerConfig::default()
         }),
         meta: store.clone(),

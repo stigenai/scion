@@ -63,6 +63,7 @@ async fn cache_rechecks_revoked_token_on_hit() {
         config: Arc::new(ServerConfig {
             auth,
             ref_poll_interval: Duration::from_millis(50),
+            stream_recheck_interval: Duration::from_millis(200),
             ..ServerConfig::default()
         }),
         meta: s.clone(),
