@@ -30,7 +30,9 @@ async fn check(authorization: Option<&str>) -> Result<(), tonic::Status> {
         REDACTION_TTL,
     );
     let auth = authorization.map(|a| a.parse().expect("header"));
-    daemon.check_access(&bare_upstream().await, &"r".into(), auth.as_ref()).await
+    daemon
+        .check_access(&bare_upstream().await, &"r".into(), auth.as_ref())
+        .await
 }
 
 #[tokio::test]
