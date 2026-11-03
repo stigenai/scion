@@ -164,13 +164,21 @@ async fn sdk_works_through_the_daemon() {
     assert_eq!(w.next().await.expect("snapshot").changeset, a.id);
     drop(w);
 
-    // 服务端停掉：对象仍从本地读到
+    // 服务端停掉：读权限无法确认，本地有副本也拒绝（ADR 0003），副本仍在磁盘上
     drop(_stop);
     tokio::time::sleep(Duration::from_millis(100)).await;
-    assert_eq!(
-        c.get_object(&blob).await.expect("served locally").as_ref(),
-        b"fn a() {}"
+    let offline = c.get_object(&blob).await.expect_err("offline reads are refused");
+    assert!(
+        matches!(
+            &offline,
+            scion_client::Error::Rpc {
+                code: tonic::Code::Unavailable,
+                ..
+            }
+        ),
+        "{offline:?}"
     );
+    assert_eq!(cached_files(dir.path()), 2);
     daemon.stop().await;
     assert!(!socket.exists(), "socket removed on exit");
     assert!(!scion_daemon::pid_file(&socket).exists());
@@ -215,9 +223,7 @@ async fn resolved_refs_are_prefetched_when_they_advance() {
         "root, src and b.rs prefetched ({} files)",
         cached_files(&d)
     );
-    // 之后读取直接命中，不需要服务端
-    drop(_stop);
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // 之后读取成功（读权限每次向服务端确认，字节来自本地缓存）
     assert!(c.get_object(&b.root_tree).await.is_ok());
     assert_eq!(
         c.get_object(&ObjectId::of_blob(b"fn b() {}"))
@@ -226,6 +232,7 @@ async fn resolved_refs_are_prefetched_when_they_advance() {
             .as_ref(),
         b"fn b() {}"
     );
+    drop(_stop);
     daemon.stop().await;
 }
 

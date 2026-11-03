@@ -19,6 +19,7 @@ use tonic::Code;
 const SECRET: &[u8] = b"private bytes of mono";
 
 const POLICY: &str = "[[rule]]\nsubjects=[\"user:root\"]\nrepos=[\"mono\"]\nactions=[\"land\"]\n\n\
+[[rule]]\nsubjects=[\"user:root\"]\nrepos=[\"*\"]\nactions=[\"admin\"]\n\n\
 [[rule]]\nsubjects=[\"user:bob\",\"user:carol\"]\nrepos=[\"mono\"]\nactions=[\"read\"]\n";
 
 struct Fx {
@@ -223,8 +224,19 @@ async fn policy_change_is_refused_at_once() {
     let (bob, _) = fx.token("bob", None).await;
     let (carol, _) = fx.token("carol", None).await;
     fx.read(Some(&bob)).await.expect("warm read");
-    let only_carol = POLICY.replace("\"user:bob\",", "");
-    fx.guard.set_policy(&only_carol).await.expect("policy");
+    // The server owns its own guard: change the policy through the admin RPC.
+    let (root, _) = fx.token("root", None).await;
+    let mut req = tonic::Request::new(scion_proto::v1::SetPolicyRequest {
+        policy: POLICY.replace("\"user:bob\",", ""),
+    });
+    req.metadata_mut()
+        .insert("authorization", format!("Bearer {root}").parse().expect("header"));
+    scion_proto::v1::admin_service_client::AdminServiceClient::connect(fx.server.clone())
+        .await
+        .expect("admin")
+        .set_policy(req)
+        .await
+        .expect("set policy");
     assert_eq!(fx.read(Some(&bob)).await, Err(Code::PermissionDenied));
     fx.read(Some(&carol)).await.expect("valid reader");
 }
