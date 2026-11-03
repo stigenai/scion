@@ -388,28 +388,3 @@ async fn a_client_that_stops_reading_loses_its_stream_at_the_lifetime() {
     assert!(freed, "the stalled stream is gone a few seconds after its lifetime");
     assert!(counter("connection_age") > forced, "the forced close counts");
 }
-
-/// A connection serves a unary call after the lifetime, because the hard limit adds a grace of
-/// at least the lifetime. The server then closes it at the hard limit (here 2s).
-#[tokio::test(flavor = "multi_thread")]
-async fn a_unary_call_after_the_lifetime_completes_and_the_connection_then_closes() {
-    let s = start(Some(Duration::from_secs(1)), None).await;
-    let tcp = tokio::net::TcpStream::connect(s.url.trim_start_matches("http://"))
-        .await
-        .expect("tcp");
-    let (mut send, conn) = h2::client::handshake(tcp).await.expect("h2");
-    let mut conn = tokio::spawn(conn);
-    tokio::time::sleep(Duration::from_millis(1200)).await;
-    let request = http::Request::post(format!("{}/grpc.health.v1.Health/Check", s.url))
-        .header("content-type", "application/grpc")
-        .header("te", "trailers")
-        .body(())
-        .expect("request");
-    let (response, mut body) = send.send_request(request, false).expect("send");
-    body.send_data(bytes::Bytes::from_static(&[0, 0, 0, 0, 0]), true)
-        .expect("data");
-    let head = response.await.expect("response after the lifetime");
-    assert_eq!(head.status(), 200);
-    let closed = tokio::time::timeout(Duration::from_secs(3), &mut conn).await;
-    assert!(closed.is_ok(), "the server closes the connection at the hard limit");
-}

@@ -1,10 +1,10 @@
 //! A hard limit on the age of a connection.
 //!
-//! A client that keeps its HTTP/2 window at zero holds a stream for ever, because hyper does not
-//! poll the body while a chunk waits for send capacity. [`Aged`] is the backstop: after the hard
-//! limit every read, write, flush and shutdown fails, so the connection drops with its streams. It sends no
-//! GOAWAY. Tonic 0.14.5 `max_connection_age` cannot do it: with no grace it panics after the
-//! graceful shutdown (transport/server/mod.rs:891), and with a grace it only closes.
+//! At the lifetime the server sends GOAWAY (tonic `max_connection_age`) and calls in flight
+//! finish. A client that keeps its HTTP/2 window at zero holds a stream for ever, because hyper
+//! does not poll the body while a chunk waits for send capacity. [`Aged`] is the backstop: it
+//! closes only a connection that is still open at the hard limit. Every read, write, flush and
+//! shutdown then fails, so the connection drops with its streams.
 
 use std::io;
 use std::pin::Pin;
