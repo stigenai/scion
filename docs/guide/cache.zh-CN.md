@@ -44,6 +44,8 @@ scion server ... --read-endpoint http://cache.cn-beijing.internal:7090@cn-beijin
 | `--warm REPO[:REF,…]` | `SCION_CACHE_WARM` | 不预热 | 预热的仓库与 ref，可重复指定 |
 | `--warm-blob-max SIZE` | | 0 | 预热时连同不超过这个大小的文件一起预取；0 只预取目录树 |
 | `--no-hedge` | | 开启对冲 | 关闭对冲 |
+| `--max-stream-lifetime DURATION` | `SCION_MAX_STREAM_LIFETIME` | 1h | GetObjects 流最长保持多久，到期以 UNAVAILABLE 结束，客户端重连。缓存还会在该时间加最多 30s 宽限后关闭连接，不再读取的客户端无法一直占用。`0s` 不限制 |
+| `--tenant-streams N` | `SCION_TENANT_STREAMS` | 不限制 | 每个调用者同时打开的 GetObjects 流数。调用者按 `authorization` 头的哈希区分，同一用户的两个 token 各有一份额度。超出时返回 RESOURCE_EXHAUSTED |
 
 ### 读取路径
 

@@ -44,6 +44,8 @@ After connecting to the server, a client picks a cache from `ServerInfo.read_end
 | `--warm REPO[:REF,…]` | `SCION_CACHE_WARM` | no warming | Repositories and refs to warm; repeatable |
 | `--warm-blob-max SIZE` | | 0 | Also prefetch files up to this size when warming; 0 prefetches trees only |
 | `--no-hedge` | | hedging on | Turn hedging off |
+| `--max-stream-lifetime DURATION` | `SCION_MAX_STREAM_LIFETIME` | 1h | The longest a GetObjects stream stays open. It then ends with UNAVAILABLE and the client reconnects. The cache also closes a connection at this time plus a grace of 30s at most, so a client that stops reading cannot hold it. `0s` sets no limit |
+| `--tenant-streams N` | `SCION_TENANT_STREAMS` | no limit | Open GetObjects streams for each caller. A caller is a hash of the `authorization` header, so two tokens of one user have two budgets. The next stream gets RESOURCE_EXHAUSTED |
 
 ### The read path
 

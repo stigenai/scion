@@ -443,6 +443,13 @@ struct CacheArgs {
     /// Token for warming (when the server requires authentication); best passed in the environment.
     #[arg(long, value_name = "TOKEN", env = "SCION_CACHE_WARM_TOKEN", hide_env_values = true)]
     warm_token: Option<String>,
+    /// The longest a GetObjects stream stays open; it then ends with UNAVAILABLE and clients reconnect. 0s sets no limit.
+    #[arg(long, value_name = "DURATION", default_value = "1h", value_parser = parse_duration,
+        env = "SCION_MAX_STREAM_LIFETIME")]
+    max_stream_lifetime: std::time::Duration,
+    /// Limit on open GetObjects streams per caller (by hash of the authorization header); the next one gets RESOURCE_EXHAUSTED.
+    #[arg(long, value_name = "N", env = "SCION_TENANT_STREAMS")]
+    tenant_streams: Option<usize>,
     #[command(flatten)]
     obs: ObsArgs,
 }
@@ -533,6 +540,8 @@ fn cache_config(args: &CacheArgs) -> anyhow::Result<scion_cache::CacheConfig> {
             max_blob_bytes: args.warm_blob_max,
             ..scion_cache::WarmOptions::default()
         },
+        max_stream_lifetime: Some(args.max_stream_lifetime).filter(|d| !d.is_zero()),
+        max_streams_per_tenant: args.tenant_streams,
         ..scion_cache::CacheConfig::default()
     })
 }
@@ -1040,6 +1049,25 @@ mod tests {
         // 必须有上游；--peer 需要 --advertise-url
         assert!(Cli::try_parse_from(["scion", "cache"]).is_err());
         assert!(Cli::try_parse_from(["scion", "cache", "--upstream", "http://l3", "--peer", "http://c2"]).is_err());
+    }
+
+    #[test]
+    fn cache_stream_flags() {
+        let config = |extra: &[&str]| {
+            let mut argv = vec!["scion", "cache", "--upstream", "http://l3:7080"];
+            argv.extend_from_slice(extra);
+            let Command::Cache(a) = Cli::try_parse_from(argv).expect("parse").command else {
+                panic!("cache");
+            };
+            cache_config(&a).expect("config")
+        };
+        let c = config(&[]);
+        assert_eq!(c.max_stream_lifetime, Some(std::time::Duration::from_secs(3600)));
+        assert_eq!(c.max_streams_per_tenant, None);
+        assert_eq!(config(&["--max-stream-lifetime", "0s"]).max_stream_lifetime, None);
+        let c = config(&["--max-stream-lifetime", "90s", "--tenant-streams", "4"]);
+        assert_eq!(c.max_stream_lifetime, Some(std::time::Duration::from_secs(90)));
+        assert_eq!(c.max_streams_per_tenant, Some(4));
     }
 
     #[test]
