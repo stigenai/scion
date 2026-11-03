@@ -215,16 +215,22 @@ pub struct TenantLimit<S> {
 
 /// 请求所属的租户：认证过的主体，否则为来源 IP。
 fn tenant_of<B>(req: &http::Request<B>) -> String {
-    match req.extensions().get::<scion_auth::Principal>() {
-        Some(p) if p.authenticated => format!("sub:{}", p.subject),
-        _ => match req
-            .extensions()
+    tenant_key(
+        req.extensions().get::<scion_auth::Principal>(),
+        req.extensions()
             .get::<tonic::transport::server::TcpConnectInfo>()
             .and_then(|c| c.remote_addr())
-        {
-            Some(addr) => format!("ip:{}", addr.ip()),
-            None => "anonymous".to_owned(),
-        },
+            .map(|a| a.ip()),
+    )
+}
+
+/// The tenant key: `sub:<subject>` when authenticated, else `ip:<addr>`, else `anonymous`.
+/// Stream budgets ([`crate::streams`]) use the same key.
+pub(crate) fn tenant_key(principal: Option<&scion_auth::Principal>, addr: Option<std::net::IpAddr>) -> String {
+    match (principal, addr) {
+        (Some(p), _) if p.authenticated => format!("sub:{}", p.subject),
+        (_, Some(ip)) => format!("ip:{ip}"),
+        _ => "anonymous".to_owned(),
     }
 }
 

@@ -9,6 +9,7 @@ pub mod prehook;
 pub mod redaction;
 mod service;
 pub mod status;
+pub mod streams;
 pub mod watch;
 
 use std::future::Future;
