@@ -63,7 +63,7 @@ pub struct CacheConfig {
     /// How long a GetObjects stream stays open. It then ends with UNAVAILABLE and the client
     /// reconnects. `None` or zero sets no limit.
     pub max_stream_lifetime: Option<Duration>,
-    /// How many streams one caller (by hash of the authorization header) keeps open. `None` sets no limit.
+    /// How many streams one caller (by hash of the Bearer token, else the peer IP) keeps open. `None` sets no limit.
     pub max_streams_per_tenant: Option<usize>,
 }
 

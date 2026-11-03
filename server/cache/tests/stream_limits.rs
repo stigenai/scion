@@ -256,6 +256,30 @@ async fn each_token_has_its_own_stream_budget() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn one_token_written_two_ways_has_one_budget() {
+    let _g = SERIAL.lock().await;
+    let r = start(None, Some(1)).await;
+    let ch = channel(&r).await;
+    let _held = open(&ch, &r.eng[0], want(&r.blob, 0)).await.expect("slot");
+    for header in [
+        format!("bearer {}", r.eng[0]),
+        format!("BEARER {}", r.eng[0]),
+        format!("Bearer   {}", r.eng[0]),
+    ] {
+        let mut req = tonic::Request::new(want(&r.blob, 0));
+        req.metadata_mut().insert(
+            "authorization",
+            MetadataValue::try_from(header.clone()).expect("header"),
+        );
+        let err = ObjectServiceClient::new(ch.clone())
+            .get_objects(req)
+            .await
+            .expect_err(&header);
+        assert_eq!(err.code(), Code::ResourceExhausted, "{header}: {err}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn refused_reads_take_no_slot() {
     let _g = SERIAL.lock().await;
     let r = start(None, Some(1)).await;

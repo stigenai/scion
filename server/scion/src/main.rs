@@ -447,7 +447,7 @@ struct CacheArgs {
     #[arg(long, value_name = "DURATION", default_value = "1h", value_parser = parse_duration,
         env = "SCION_MAX_STREAM_LIFETIME")]
     max_stream_lifetime: std::time::Duration,
-    /// Limit on open GetObjects streams per caller (by hash of the authorization header); the next one gets RESOURCE_EXHAUSTED.
+    /// Limit on open GetObjects streams per caller (by hash of the Bearer token, else the peer IP); the next one gets RESOURCE_EXHAUSTED.
     #[arg(long, value_name = "N", env = "SCION_TENANT_STREAMS")]
     tenant_streams: Option<usize>,
     #[command(flatten)]

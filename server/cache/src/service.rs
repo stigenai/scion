@@ -62,16 +62,31 @@ fn ctx_of<T>(req: &Request<T>) -> (RequestCtx, bool) {
 }
 
 /// The stream budget key of the caller of `request`. The cache has no auth layer and does not know
-/// the subject, so the key is a hash of the `authorization` header, else the peer address. The
-/// bearer is not in the key: the refusal message shows the key to the caller.
+/// the subject, so the key is a hash of the bearer token, else the peer address. The bearer is
+/// not in the key: the refusal message shows the key to the caller.
 fn caller_key<T>(request: &Request<T>) -> String {
-    match request.metadata().get("authorization") {
-        Some(h) => format!("tok:{}", &blake3::hash(h.as_bytes()).to_hex()[..32]),
+    match bearer_token(request) {
+        Some(t) => format!("tok:{}", &blake3::hash(t.as_bytes()).to_hex()[..32]),
         None => match request.remote_addr() {
             Some(a) => format!("ip:{}", a.ip()),
             None => "anonymous".to_owned(),
         },
     }
+}
+
+/// The bearer token as L3 reads it (`bearer_value` in server/api/src/auth.rs): the scheme matches
+/// in any case and the token is trimmed. scion-cache cannot depend on scion-api (xtask layer
+/// rule), so this is a copy: keep the two the same. A header that is not a Bearer one is
+/// anonymous at L3, so it has no token here.
+fn bearer_token<T>(request: &Request<T>) -> Option<&str> {
+    let (scheme, token) = request
+        .metadata()
+        .get("authorization")?
+        .to_str()
+        .ok()?
+        .split_once(' ')?;
+    let token = token.trim();
+    (scheme.eq_ignore_ascii_case("bearer") && !token.is_empty()).then_some(token)
 }
 
 /// The same refusal as L3: RESOURCE_EXHAUSTED with reason RATE_LIMITED, retry after 1s.
