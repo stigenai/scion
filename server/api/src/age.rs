@@ -146,6 +146,8 @@ mod tests {
         assert_eq!(write.kind(), io::ErrorKind::TimedOut);
         let flush = aged.flush().await.expect_err("flush after the age");
         assert_eq!(flush.kind(), io::ErrorKind::TimedOut);
+        let shutdown = aged.shutdown().await.expect_err("shutdown after the age");
+        assert_eq!(shutdown.kind(), io::ErrorKind::TimedOut);
     }
 
     #[tokio::test(start_paused = true)]
