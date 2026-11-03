@@ -322,7 +322,7 @@ impl Daemon {
     /// `ids` 中有 redact 过的对象时返回 REDACTED。状态过期时先用调用者的身份向服务端同步。
     ///
     /// 同步失败（包括离线）时拒绝这次读取：否则 redact 之后本地副本会一直返回，`REDACTION_TTL`
-    /// 的上限不成立。只有不支持 redaction 的旧服务端（`Unimplemented`）按没有 redaction 处理。
+    /// 的上限不成立。服务端答 `Unimplemented`（不支持或被代理丢弃该 RPC）也一样：无法确认，拒绝读取。
     pub(crate) async fn check_redactions(
         &self,
         client: &scion_client::Client,
@@ -339,15 +339,6 @@ impl Daemon {
             for _ in 0..MAX_REDACTION_PAGES {
                 let page = match client.list_redacted_objects(st.after_seq).await {
                     Ok(p) => p,
-                    // 不支持 redaction 的旧服务端
-                    Err(scion_client::Error::Rpc {
-                        code: tonic::Code::Unimplemented,
-                        ..
-                    }) => {
-                        st.synced_at = Some(std::time::Instant::now());
-                        synced = true;
-                        break;
-                    }
                     Err(e) => {
                         tracing::debug!(%repo, error = %e, "syncing redactions failed; refusing the read");
                         return Err(redaction_sync_failed(repo, e.to_status()));

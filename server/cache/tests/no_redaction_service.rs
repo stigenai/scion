@@ -12,9 +12,9 @@ use scion_proto::v1::auth_service_server::{AuthService, AuthServiceServer};
 use scion_proto::v1::object_service_server::{ObjectService, ObjectServiceServer};
 use scion_proto::v1::{
     CheckAccessRequest, CheckAccessResponse, ExchangeTokenRequest, ExchangeTokenResponse, GetObjectsRequest,
-    GetObjectsResponse, HasObjectsRequest, HasObjectsResponse, ListRedactedObjectsRequest,
-    ListRedactedObjectsResponse, PollDeviceLoginRequest, PollDeviceLoginResponse, StartDeviceLoginRequest,
-    StartDeviceLoginResponse, WhoAmIRequest, WhoAmIResponse,
+    GetObjectsResponse, HasObjectsRequest, HasObjectsResponse, ListRedactedObjectsRequest, ListRedactedObjectsResponse,
+    PollDeviceLoginRequest, PollDeviceLoginResponse, StartDeviceLoginRequest, StartDeviceLoginResponse, WhoAmIRequest,
+    WhoAmIResponse,
 };
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
@@ -65,7 +65,9 @@ impl ObjectService for Stub {
         Err(Status::unimplemented("get_objects"))
     }
     async fn has_objects(&self, _: Request<HasObjectsRequest>) -> Result<Response<HasObjectsResponse>, Status> {
-        Ok(Response::new(HasObjectsResponse { missing_ids: Vec::new() }))
+        Ok(Response::new(HasObjectsResponse {
+            missing_ids: Vec::new(),
+        }))
     }
     async fn list_redacted_objects(
         &self,
@@ -101,7 +103,10 @@ async fn node_with(redactions: bool) -> (CacheNode, ObjectId) {
     let id = ObjectId::of_blob(BLOB);
     assert!(store.insert(id, BLOB.into()));
     let pool = UpstreamPool::new(vec![up as Arc<dyn Upstream>], PoolConfig::default());
-    (CacheNode::new(store, Ring::new(Vec::new()), None, HashMap::new(), pool), id)
+    (
+        CacheNode::new(store, Ring::new(Vec::new()), None, HashMap::new(), pool),
+        id,
+    )
 }
 
 fn bearer() -> RequestCtx {

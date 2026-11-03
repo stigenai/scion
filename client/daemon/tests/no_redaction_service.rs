@@ -11,9 +11,9 @@ use scion_proto::v1::object_service_server::{ObjectService, ObjectServiceServer}
 use scion_proto::v1::server_info_service_server::{ServerInfoService, ServerInfoServiceServer};
 use scion_proto::v1::{
     CheckAccessRequest, CheckAccessResponse, ExchangeTokenRequest, ExchangeTokenResponse, GetObjectsRequest,
-    GetObjectsResponse, GetServerInfoRequest, GetServerInfoResponse, HasObjectsRequest, HasObjectsResponse, ListRedactedObjectsRequest,
-    ListRedactedObjectsResponse, PollDeviceLoginRequest, PollDeviceLoginResponse, StartDeviceLoginRequest,
-    StartDeviceLoginResponse, WhoAmIRequest, WhoAmIResponse,
+    GetObjectsResponse, GetServerInfoRequest, GetServerInfoResponse, HasObjectsRequest, HasObjectsResponse,
+    ListRedactedObjectsRequest, ListRedactedObjectsResponse, PollDeviceLoginRequest, PollDeviceLoginResponse,
+    StartDeviceLoginRequest, StartDeviceLoginResponse, WhoAmIRequest, WhoAmIResponse,
 };
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -81,7 +81,9 @@ impl ObjectService for Stub {
         Err(Status::unimplemented("get_objects"))
     }
     async fn has_objects(&self, _: Request<HasObjectsRequest>) -> Result<Response<HasObjectsResponse>, Status> {
-        Ok(Response::new(HasObjectsResponse { missing_ids: Vec::new() }))
+        Ok(Response::new(HasObjectsResponse {
+            missing_ids: Vec::new(),
+        }))
     }
     async fn list_redacted_objects(
         &self,
