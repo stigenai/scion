@@ -156,8 +156,11 @@ fn with_token<T>(msg: T, token: &str) -> tonic::Request<T> {
 }
 
 async fn channel(r: &Rig) -> Channel {
+    // Fixed small windows turn off the adaptive window, so an unread stream stays open on the server.
     Channel::from_shared(r.url.clone())
         .expect("url")
+        .initial_stream_window_size(65535)
+        .initial_connection_window_size(65535)
         .connect()
         .await
         .expect("connect")
@@ -190,11 +193,14 @@ async fn drain(mut s: Streaming<GetObjectsResponse>) -> Result<usize, tonic::Sta
 async fn a_cache_stream_ends_with_unavailable_at_its_lifetime() {
     let _g = SERIAL.lock().await;
     let r = start(Some(Duration::from_secs(2)), None).await;
-    let ch = channel(&r).await;
     let before = counter("stream_lifetime");
-    let slow = open(&ch, &r.eng[0], want(&r.blob, 0)).await.expect("open");
+    let slow = open(&channel(&r).await, &r.eng[0], want(&r.blob, 0))
+        .await
+        .expect("open");
     // A fast reader ends cleanly inside the lifetime.
-    let fast = open(&ch, &r.eng[0], want(&r.blob, 0)).await.expect("open");
+    let fast = open(&channel(&r).await, &r.eng[0], want(&r.blob, 0))
+        .await
+        .expect("open");
     assert_eq!(drain(fast).await.expect("clean end"), CHUNKS - 1);
     tokio::time::sleep(Duration::from_millis(2500)).await;
     let err = drain(slow).await.expect_err("not a clean end");
@@ -203,8 +209,9 @@ async fn a_cache_stream_ends_with_unavailable_at_its_lifetime() {
     assert!(counter("stream_lifetime") > before);
     for none in [None, Some(Duration::ZERO)] {
         let r = start(none, None).await;
-        let ch = channel(&r).await;
-        let slow = open(&ch, &r.eng[0], want(&r.blob, 0)).await.expect("open");
+        let slow = open(&channel(&r).await, &r.eng[0], want(&r.blob, 0))
+            .await
+            .expect("open");
         tokio::time::sleep(Duration::from_millis(2500)).await;
         assert_eq!(drain(slow).await.expect("clean end"), CHUNKS - 1);
     }
@@ -214,17 +221,22 @@ async fn a_cache_stream_ends_with_unavailable_at_its_lifetime() {
 async fn each_token_has_its_own_stream_budget() {
     let _g = SERIAL.lock().await;
     let r = start(None, Some(1)).await;
-    let ch = channel(&r).await;
     let before = counter("tenant_streams");
-    let a = open(&ch, &r.eng[0], want(&r.blob, 0)).await.expect("a's slot");
-    let refused = open(&ch, &r.eng[0], want(&r.blob, 0)).await.expect_err("a's second");
+    let a = open(&channel(&r).await, &r.eng[0], want(&r.blob, 0))
+        .await
+        .expect("a's slot");
+    let refused = open(&channel(&r).await, &r.eng[0], want(&r.blob, 0))
+        .await
+        .expect_err("a's second");
     assert_eq!(refused.code(), Code::ResourceExhausted, "{refused}");
     assert!(counter("tenant_streams") > before);
-    let _b = open(&ch, &r.eng[1], want(&r.blob, 0)).await.expect("b has its own budget");
+    let _b = open(&channel(&r).await, &r.eng[1], want(&r.blob, 0))
+        .await
+        .expect("b has its own budget");
     drop(a);
     let mut again = None;
     for _ in 0..50 {
-        if let Ok(s) = open(&ch, &r.eng[0], want(&r.blob, 0)).await {
+        if let Ok(s) = open(&channel(&r).await, &r.eng[0], want(&r.blob, 0)).await {
             again = Some(s);
             break;
         }
@@ -233,10 +245,13 @@ async fn each_token_has_its_own_stream_budget() {
     assert!(again.is_some(), "a's slot is free after its stream drops");
 
     let r = start(None, None).await;
-    let ch = channel(&r).await;
     let mut held = Vec::new();
     for _ in 0..20 {
-        held.push(open(&ch, &r.eng[0], want(&r.blob, 0)).await.expect("no budget"));
+        held.push(
+            open(&channel(&r).await, &r.eng[0], want(&r.blob, 0))
+                .await
+                .expect("no budget"),
+        );
     }
 }
 
@@ -244,26 +259,28 @@ async fn each_token_has_its_own_stream_budget() {
 async fn refused_reads_take_no_slot() {
     let _g = SERIAL.lock().await;
     let r = start(None, Some(1)).await;
-    let ch = channel(&r).await;
     for _ in 0..3 {
-        let e = open(&ch, &r.outsider, want(&r.blob, 0))
+        let e = open(&channel(&r).await, &r.outsider, want(&r.blob, 0))
             .await
             .expect_err("no read access");
-        assert!(matches!(e.code(), Code::PermissionDenied | Code::Unauthenticated), "{e}");
-        let e = open(&ch, "no-such-token", want(&r.blob, 0))
+        assert!(
+            matches!(e.code(), Code::PermissionDenied | Code::Unauthenticated),
+            "{e}"
+        );
+        let e = open(&channel(&r).await, "no-such-token", want(&r.blob, 0))
             .await
             .expect_err("bad token");
         assert_eq!(e.code(), Code::Unauthenticated, "{e}");
         let mut bad = want(&r.blob, 0);
         bad.wants[0].id = Bytes::from_static(b"x");
-        let e = open(&ch, &r.eng[0], bad).await.expect_err("bad id");
+        let e = open(&channel(&r).await, &r.eng[0], bad).await.expect_err("bad id");
         assert_eq!(e.code(), Code::InvalidArgument, "{e}");
-        let e = open(&ch, &r.eng[0], want(&r.blob, BLOB_LEN as u64 + 1))
+        let e = open(&channel(&r).await, &r.eng[0], want(&r.blob, BLOB_LEN as u64 + 1))
             .await
             .expect_err("offset");
         assert_eq!(e.code(), Code::OutOfRange, "{e}");
     }
-    open(&ch, &r.eng[0], want(&r.blob, 0))
+    open(&channel(&r).await, &r.eng[0], want(&r.blob, 0))
         .await
         .expect("the only slot is free");
 }
@@ -272,16 +289,22 @@ async fn refused_reads_take_no_slot() {
 async fn the_budget_key_never_holds_the_bearer() {
     let _g = SERIAL.lock().await;
     let r = start(None, Some(1)).await;
-    let ch = channel(&r).await;
-    let _a = open(&ch, &r.eng[0], want(&r.blob, 0)).await.expect("slot");
-    let e = open(&ch, &r.eng[0], want(&r.blob, 0)).await.expect_err("refused");
+    let _a = open(&channel(&r).await, &r.eng[0], want(&r.blob, 0))
+        .await
+        .expect("slot");
+    let e = open(&channel(&r).await, &r.eng[0], want(&r.blob, 0))
+        .await
+        .expect_err("refused");
     assert!(e.message().contains("tok:"), "{e}");
-    assert!(!e.message().contains(&r.eng[0]), "the bearer is not in the message: {e}");
+    assert!(
+        !e.message().contains(&r.eng[0]),
+        "the bearer is not in the message: {e}"
+    );
     // The same rule holds for a request that another cache forwards.
     let mut fwd = with_token(want(&r.blob, 0), &r.eng[0]);
     fwd.metadata_mut()
         .insert(scion_cache::CACHE_FORWARDED_HEADER, MetadataValue::from_static("1"));
-    let e = ObjectServiceClient::new(ch.clone())
+    let e = ObjectServiceClient::new(channel(&r).await)
         .get_objects(fwd)
         .await
         .expect_err("same key, same budget");

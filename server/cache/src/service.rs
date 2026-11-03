@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bytes::Bytes;
+use scion_api::streams::StreamLimits;
 use scion_object::ObjectId;
 use scion_proto::v1::object_service_client::ObjectServiceClient;
 use scion_proto::v1::object_service_server::ObjectService;
@@ -59,12 +60,23 @@ fn ctx_of<T>(req: &Request<T>) -> (RequestCtx, bool) {
     (ctx, req.metadata().contains_key(CACHE_FORWARDED_HEADER))
 }
 
+/// The stream budget key of the caller of `request`. The cache has no auth layer and does not know
+/// the subject, so the key is a hash of the `authorization` header, else the peer address. The
+/// bearer is not in the key: the refusal message shows the key to the caller.
+fn caller_key<T>(request: &Request<T>) -> String {
+    match request.metadata().get("authorization") {
+        Some(h) => format!("tok:{}", &blake3::hash(h.as_bytes()).to_hex()[..32]),
+        None => scion_api::limit::tenant_key(None, request.remote_addr().map(|a| a.ip())),
+    }
+}
+
 pub struct CacheObjectSvc {
     node: Arc<CacheNode>,
     limits: v1::Limits,
     /// HasObjects 不缓存（写路径用），直接转给上游。
     upstreams: Vec<Channel>,
     next: AtomicUsize,
+    streams: StreamLimits,
 }
 
 impl CacheObjectSvc {
@@ -74,7 +86,14 @@ impl CacheObjectSvc {
             limits,
             upstreams,
             next: AtomicUsize::new(0),
+            streams: StreamLimits::default(),
         }
+    }
+
+    /// Sets the lifetime and the per-caller budget of GetObjects streams. The default sets none.
+    pub fn with_stream_limits(mut self, streams: StreamLimits) -> Self {
+        self.streams = streams;
+        self
     }
 
     fn check_batch(&self, n: usize) -> Result<(), Status> {
@@ -94,6 +113,7 @@ impl ObjectService for CacheObjectSvc {
 
     async fn get_objects(&self, request: Request<GetObjectsRequest>) -> Result<Response<GetObjectsStream>, Status> {
         let (ctx, forwarded) = ctx_of(&request);
+        let key = caller_key(&request);
         let req = request.into_inner();
         self.check_batch(req.wants.len())?;
         if !req.accept_encodings.is_empty() && !req.accept_encodings.contains(&(Encoding::Identity as i32)) {
@@ -116,6 +136,8 @@ impl ObjectService for CacheObjectSvc {
                 )));
             }
         }
+        // After the L3 check and the offset check: a refused call takes no slot.
+        let ticket = self.streams.open(&key)?;
         let chunk = usize::try_from(self.limits.max_chunk_bytes)
             .unwrap_or(usize::MAX)
             .max(1);
@@ -126,7 +148,9 @@ impl ObjectService for CacheObjectSvc {
             .flat_map(|((id, data), want)| chunk_object(id, data, want.offset as usize, chunk))
             .map(Ok)
             .collect();
-        Ok(Response::new(Box::pin(tokio_stream::iter(parts))))
+        Ok(Response::new(Box::pin(
+            self.streams.bound(ticket, tokio_stream::iter(parts)),
+        )))
     }
 
     async fn has_objects(&self, request: Request<HasObjectsRequest>) -> Result<Response<HasObjectsResponse>, Status> {

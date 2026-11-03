@@ -60,6 +60,11 @@ pub struct CacheConfig {
     pub stats_interval: Option<Duration>,
     /// 两次向上游同步 redaction 的最长间隔（redact 之后缓存最多还返回该对象这么久）。
     pub redaction_ttl: Duration,
+    /// How long a GetObjects stream stays open. It then ends with UNAVAILABLE and the client
+    /// reconnects. `None` or zero sets no limit.
+    pub max_stream_lifetime: Option<Duration>,
+    /// How many streams one caller (by hash of the authorization header) keeps open. `None` sets no limit.
+    pub max_streams_per_tenant: Option<usize>,
 }
 
 impl Default for CacheConfig {
@@ -74,6 +79,8 @@ impl Default for CacheConfig {
             warm_options: WarmOptions::default(),
             stats_interval: Some(Duration::from_secs(60)),
             redaction_ttl: node::REDACTION_TTL,
+            max_stream_lifetime: Some(Duration::from_secs(3600)),
+            max_streams_per_tenant: None,
         }
     }
 }
@@ -284,11 +291,23 @@ pub async fn serve_node(
         .unwrap_or(usize::MAX)
         .saturating_add(64 * 1024)
         .max(4 << 20);
-    let objects = ObjectServiceServer::new(CacheObjectSvc::new(node.clone(), limits, channels))
-        .max_encoding_message_size(max_msg);
+    let streams = scion_api::streams::StreamLimits::new(config.max_stream_lifetime, config.max_streams_per_tenant);
+    let objects =
+        ObjectServiceServer::new(CacheObjectSvc::new(node.clone(), limits, channels).with_stream_limits(streams))
+            .max_encoding_message_size(max_msg);
     let infos = ServerInfoServiceServer::new(CacheInfoSvc::from_upstream(&info));
     // 抓取 /metrics 时读取本节点的统计；serve_node 返回后不再输出
     let _stats = register_stats(&node);
+    // A client that stops reading outlives the timer in `StreamLimits::bound`, because hyper does
+    // not poll a body that waits for HTTP/2 capacity. `Aged` closes the connection at the lifetime
+    // plus a grace. See `scion_api::age`.
+    let hard_age = config
+        .max_stream_lifetime
+        .filter(|l| !l.is_zero())
+        .map(|l| scion_api::age::hard_age(l, None));
+    let incoming = tokio_stream::StreamExt::map(TcpListenerStream::new(listener), move |io| {
+        io.map(|io| scion_api::age::Aged::new(io, hard_age))
+    });
     let result = tonic::transport::Server::builder()
         .layer(scion_obs::trace::TraceLayer)
         .layer(scion_obs::grpc::MetricsLayer::new(
@@ -302,7 +321,7 @@ pub async fn serve_node(
         .add_service(health_svc)
         .add_service(infos)
         .add_service(objects)
-        .serve_with_incoming_shutdown(TcpListenerStream::new(listener), shutdown)
+        .serve_with_incoming_shutdown(incoming, shutdown)
         .await;
     let _ = stop_tx.send(true);
     for t in tasks {
