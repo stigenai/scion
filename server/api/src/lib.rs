@@ -353,12 +353,10 @@ pub async fn serve(
     // longer, so a unary call that starts before the lifetime ends in time. No GOAWAY is sent:
     // tonic 0.14.5 `max_connection_age` without a grace panics after the graceful shutdown
     // (transport/server/mod.rs:891), and with a grace it only closes the connection.
-    let hard_age = app.config.max_stream_lifetime.map(|lifetime| {
-        let grace = lifetime
-            .min(std::time::Duration::from_secs(30))
-            .max(app.config.max_request_timeout.unwrap_or_default());
-        lifetime + grace
-    });
+    let hard_age = app
+        .config
+        .max_stream_lifetime
+        .map(|l| age::hard_age(l, app.config.max_request_timeout));
     let incoming = tokio_stream::StreamExt::map(TcpListenerStream::new(listener), move |io| {
         io.map(|io| age::Aged::new(io, hard_age))
     });

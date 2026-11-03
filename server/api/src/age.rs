@@ -46,6 +46,16 @@ impl<T> Aged<T> {
     }
 }
 
+/// The age at which a connection closes: the stream lifetime plus a grace of 30s (at most the
+/// lifetime) or the request timeout, whichever is longer. A unary call that starts before the
+/// lifetime ends within the request timeout, so it finishes first.
+pub fn hard_age(lifetime: Duration, request_timeout: Option<Duration>) -> Duration {
+    lifetime
+        + lifetime
+            .min(Duration::from_secs(30))
+            .max(request_timeout.unwrap_or_default())
+}
+
 fn expired() -> io::Error {
     io::Error::new(io::ErrorKind::TimedOut, "connection reached its maximum age")
 }
@@ -60,17 +70,13 @@ impl<T: AsyncRead + Unpin> AsyncRead for Aged<T> {
 }
 
 impl<T: AsyncWrite + Unpin> AsyncWrite for Aged<T> {
+    // ponytail: only reads check the age. hyper reads a connection all the time, so a failed
+    // read ends it, writes included. A user that never reads would need the check here too.
     fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
-        if self.check(cx).is_ready() {
-            return Poll::Ready(Err(expired()));
-        }
         Pin::new(&mut self.io).poll_write(cx, buf)
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        if self.check(cx).is_ready() {
-            return Poll::Ready(Err(expired()));
-        }
         Pin::new(&mut self.io).poll_flush(cx)
     }
 
@@ -102,7 +108,14 @@ mod tests {
         tokio::time::sleep(Duration::from_secs(11)).await;
         let read = aged.read(&mut buf).await.expect_err("read after the age");
         assert_eq!(read.kind(), io::ErrorKind::TimedOut);
-        let write = aged.write_all(b"x").await.expect_err("write after the age");
-        assert_eq!(write.kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[test]
+    fn the_grace_is_the_longer_of_30s_and_the_request_timeout() {
+        let s = Duration::from_secs;
+        assert_eq!(hard_age(s(3600), Some(s(60))), s(3660));
+        assert_eq!(hard_age(s(3600), Some(s(10))), s(3630));
+        assert_eq!(hard_age(s(3600), None), s(3630));
+        assert_eq!(hard_age(s(5), Some(s(1))), s(10));
     }
 }
