@@ -3440,6 +3440,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic",
+ "tonic-health",
  "tower",
  "tracing",
 ]
