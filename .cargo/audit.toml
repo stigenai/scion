@@ -1,7 +1,0 @@
-[advisories]
-ignore = [
-    # ent-a57: rsa 0.9.10 stays in Cargo.lock only through sqlx-mysql, which no build compiles.
-    # `cargo tree -i rsa -e all --target all` prints nothing. cargo-audit reads the lock, so it still reports the crate.
-    # No patched release exists. Remove this line when ent-a57 removes sqlx-mysql from the lock.
-    "RUSTSEC-2023-0071",
-]
