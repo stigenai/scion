@@ -349,8 +349,9 @@ pub async fn serve(
     let builder = tonic::transport::Server::builder();
     // hyper does not poll a response body while a chunk waits for HTTP/2 send capacity, so a
     // client that stops reading outlives the timer in `streams::Bounded`. `age::Aged` closes
-    // each connection at the lifetime plus a grace: 30s or the request timeout, whichever is
-    // longer, so a unary call that starts before the lifetime ends in time. No GOAWAY is sent:
+    // each connection at the lifetime plus a grace: the longer of the request timeout and 30s
+    // (at most the lifetime). With `--max-request-timeout 0s` the grace is 30s, so a unary call
+    // can then be cut off. No GOAWAY is sent:
     // tonic 0.14.5 `max_connection_age` without a grace panics after the graceful shutdown
     // (transport/server/mod.rs:891), and with a grace it only closes the connection.
     let hard_age = app

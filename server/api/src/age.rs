@@ -2,7 +2,7 @@
 //!
 //! A client that keeps its HTTP/2 window at zero holds a stream for ever, because hyper does not
 //! poll the body while a chunk waits for send capacity. [`Aged`] is the backstop: after the hard
-//! limit every read and write fails, so the connection drops with its streams. It sends no
+//! limit every read, write, flush and shutdown fails, so the connection drops with its streams. It sends no
 //! GOAWAY. Tonic 0.14.5 `max_connection_age` cannot do it: with no grace it panics after the
 //! graceful shutdown (transport/server/mod.rs:891), and with a grace it only closes.
 
@@ -46,9 +46,11 @@ impl<T> Aged<T> {
     }
 }
 
-/// The age at which a connection closes: the stream lifetime plus a grace of 30s (at most the
-/// lifetime) or the request timeout, whichever is longer. A unary call that starts before the
-/// lifetime ends within the request timeout, so it finishes first.
+/// The age at which a connection closes: the stream lifetime plus a grace.
+/// The grace is the longer of two values: the request timeout, and 30s (but not more than the
+/// lifetime). If a request timeout is set, a unary call that starts before the lifetime ends
+/// finishes in the grace. With no request timeout (`None`), the grace is 30s and a longer
+/// call is cut off.
 pub fn hard_age(lifetime: Duration, request_timeout: Option<Duration>) -> Duration {
     lifetime
         + lifetime
@@ -70,17 +72,26 @@ impl<T: AsyncRead + Unpin> AsyncRead for Aged<T> {
 }
 
 impl<T: AsyncWrite + Unpin> AsyncWrite for Aged<T> {
-    // ponytail: only reads check the age. hyper reads a connection all the time, so a failed
-    // read ends it, writes included. A user that never reads would need the check here too.
+    // Writes check the age too. hyper and h2 can stop reading (a full write buffer, a pending
+    // PONG, a closing state), so a check on reads alone would not end such a connection.
     fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+        if self.check(cx).is_ready() {
+            return Poll::Ready(Err(expired()));
+        }
         Pin::new(&mut self.io).poll_write(cx, buf)
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if self.check(cx).is_ready() {
+            return Poll::Ready(Err(expired()));
+        }
         Pin::new(&mut self.io).poll_flush(cx)
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if self.check(cx).is_ready() {
+            return Poll::Ready(Err(expired()));
+        }
         Pin::new(&mut self.io).poll_shutdown(cx)
     }
 }
@@ -117,5 +128,47 @@ mod tests {
         assert_eq!(hard_age(s(3600), Some(s(10))), s(3630));
         assert_eq!(hard_age(s(3600), None), s(3630));
         assert_eq!(hard_age(s(5), Some(s(1))), s(10));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pending_write_and_flush_fail_after_the_age() {
+        let (a, _b) = tokio::io::duplex(1);
+        let mut aged = Aged::new(a, Some(Duration::from_secs(10)));
+        aged.write_all(b"x").await.expect("fills the pipe");
+        let write = aged.write_all(b"y").await.expect_err("write after the age");
+        assert_eq!(write.kind(), io::ErrorKind::TimedOut);
+        let flush = aged.flush().await.expect_err("flush after the age");
+        assert_eq!(flush.kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn expiry_counts_the_connection_once() {
+        let count = || {
+            scion_obs::metrics()
+                .rejected
+                .get_or_create(&scion_obs::metrics::ReasonLabels {
+                    reason: reason::CONNECTION_AGE.to_owned(),
+                })
+                .get()
+        };
+        let before = count();
+        let (a, _b) = tokio::io::duplex(64);
+        let mut aged = Aged::new(a, Some(Duration::from_secs(1)));
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let mut buf = [0u8; 1];
+        aged.read(&mut buf).await.expect_err("read");
+        aged.write_all(b"x").await.expect_err("write");
+        aged.flush().await.expect_err("flush");
+        assert_eq!(count(), before + 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn no_age_never_expires() {
+        let (a, mut b) = tokio::io::duplex(64);
+        let mut aged = Aged::new(a, None);
+        tokio::time::sleep(Duration::from_secs(100_000)).await;
+        aged.write_all(b"hi").await.expect("write");
+        let mut buf = [0u8; 2];
+        b.read_exact(&mut buf).await.expect("peer reads");
     }
 }
