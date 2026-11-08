@@ -80,7 +80,7 @@ protox = "0.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 cargo_metadata = "0.23"
-sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "postgres", "migrate", "macros"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "sqlite", "postgres", "migrate", "macros"] }
 tempfile = "3"
 moka = { version = "0.12", features = ["sync"] }
 object_store = { version = "0.14", default-features = false, features = ["aws", "fs"] }
