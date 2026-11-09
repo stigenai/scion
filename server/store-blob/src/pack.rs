@@ -132,7 +132,7 @@ pub(crate) fn parse_tail(tail: &[u8], total: u64) -> Option<Vec<PackedObject>> {
     let index_at = tail.len() - need;
     let data_end = total - need as u64;
     let mut out = Vec::with_capacity((need - FOOTER) / INDEX_ENTRY);
-    for e in tail[index_at..count_at].chunks_exact(INDEX_ENTRY) {
+    for e in tail[index_at..count_at].as_chunks::<INDEX_ENTRY>().0 {
         let id = ObjectId::from_bytes(&e[..ID_LEN]).ok()?;
         let offset = u64::from_le_bytes(e[ID_LEN..ID_LEN + 8].try_into().ok()?);
         let len = u64::from_le_bytes(e[ID_LEN + 8..].try_into().ok()?);
