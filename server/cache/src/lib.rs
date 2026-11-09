@@ -298,17 +298,24 @@ pub async fn serve_node(
     let infos = ServerInfoServiceServer::new(CacheInfoSvc::from_upstream(&info));
     // 抓取 /metrics 时读取本节点的统计；serve_node 返回后不再输出
     let _stats = register_stats(&node);
-    // A client that stops reading outlives the timer in `StreamLimits::bound`, because hyper does
-    // not poll a body that waits for HTTP/2 capacity. `Aged` closes the connection at the lifetime
-    // plus a grace. See `scion_obs::age`.
-    let hard_age = config
-        .max_stream_lifetime
-        .filter(|l| !l.is_zero())
-        .map(|l| scion_obs::age::hard_age(l, None));
+    // At the lifetime, tonic starts a graceful shutdown of the connection: hyper sends GOAWAY,
+    // calls in flight finish, and the client opens new calls on a new connection. Do not set
+    // a connection age grace: with a grace, tonic only closes the connection and sends no
+    // GOAWAY. Hyper does not poll a body that waits for HTTP/2 capacity, so a client that stops
+    // reading outlives the timer in `StreamLimits::bound`. `Aged` closes such a connection at
+    // the lifetime plus a grace of 30s at most. A lifetime of 0s sets no limit. See
+    // `scion_obs::age`.
+    let lifetime = config.max_stream_lifetime.filter(|l| !l.is_zero());
+    let hard_age = lifetime.map(|l| scion_obs::age::hard_age(l, None));
     let incoming = tokio_stream::StreamExt::map(TcpListenerStream::new(listener), move |io| {
         io.map(|io| scion_obs::age::Aged::new(io, hard_age))
     });
-    let result = tonic::transport::Server::builder()
+    let builder = tonic::transport::Server::builder();
+    let builder = match lifetime {
+        Some(l) => builder.max_connection_age(l),
+        None => builder,
+    };
+    let result = builder
         .layer(scion_obs::trace::TraceLayer)
         .layer(scion_obs::grpc::MetricsLayer::new(
             scion_proto::METHODS
