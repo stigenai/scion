@@ -1,0 +1,12 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_server_host": "192.168.3.242",
+  "dolt_server_port": 3306,
+  "dolt_server_user": "beads",
+  "dolt_database": "nixfleet_scion",
+  "project_id": "ec2ed263-d615-4f61-9dbf-833d5d4a8223",
+  "global_dolt_database": "beads_global",
+  "global_project_id": "00000000-0000-0000-0000-000000000000"
+}
