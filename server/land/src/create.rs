@@ -155,7 +155,7 @@ impl ChangesetWriter {
     }
 
     /// 批量写入构建好的提交（按顺序，父提交在前）。写入顺序保证不变式：对象字节 → 对象索引 →
-    /// 路径索引 → 提交记录；记录存在即表示它引用的一切都已就绪。
+    /// 路径索引 → 提交记录 → git sha 映射；记录存在即表示它引用的一切都已就绪。
     pub async fn persist(&self, repo: &str, built: &[Built]) -> Result<()> {
         let objects: Vec<(ObjectId, Bytes)> = built.iter().flat_map(|b| b.objects.iter().cloned()).collect();
         self.store(repo, &objects).await?;
@@ -164,13 +164,15 @@ impl ChangesetWriter {
             .map(|b| (b.record.id, b.record.generation, b.paths.clone()))
             .collect();
         self.meta.index_paths_many(repo, &entries).await?;
+        let records: Vec<ChangesetRecord> = built.iter().map(|b| b.record.clone()).collect();
+        self.meta.put_changesets(repo, &records).await?;
+        // The git sha map comes last: a push treats a mapped commit as stored, so the record must exist
+        // first. A failure here leaves a record with no map, and the next push of that commit adds the map.
         for b in built {
             if scion_query::git_sha_of(&b.changeset).is_some() {
                 scion_query::index_git_sha(self.meta.as_ref(), repo, b.record.id, &b.changeset).await?;
             }
         }
-        let records: Vec<ChangesetRecord> = built.iter().map(|b| b.record.clone()).collect();
-        self.meta.put_changesets(repo, &records).await?;
         Ok(())
     }
 

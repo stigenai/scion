@@ -637,6 +637,7 @@ struct Hooked {
     inner: Arc<MemStore>,
     mismatches: std::sync::atomic::AtomicU32,
     backend_error: std::sync::atomic::AtomicBool,
+    fail_records: std::sync::atomic::AtomicBool,
     gate: Option<Arc<tokio::sync::Semaphore>>,
     commits: std::sync::atomic::AtomicU32,
 }
@@ -659,6 +660,7 @@ impl Hooked {
             inner,
             mismatches: 0.into(),
             backend_error: false.into(),
+            fail_records: false.into(),
             gate: None,
             commits: 0.into(),
         }
@@ -741,6 +743,9 @@ impl MetaStore for Hooked {
         self.inner.object_sizes(r, ids).await
     }
     async fn put_changeset(&self, r: &str, rec: &scion_store::ChangesetRecord) -> scion_store::Result<()> {
+        if self.fail_records.load(Ordering::SeqCst) {
+            return Err(scion_store::Error::Backend("injected".into()));
+        }
         self.inner.put_changeset(r, rec).await
     }
     async fn get_changeset(&self, r: &str, id: &ObjectId) -> scion_store::Result<Option<scion_store::ChangesetRecord>> {
@@ -791,6 +796,29 @@ impl MetaStore for Hooked {
     async fn put_derived(&self, r: &str, k: &str, v: u32, key: &[u8], val: &[u8]) -> scion_store::Result<()> {
         self.inner.put_derived(r, k, v, key, val).await
     }
+}
+
+/// A failed record write must leave the git sha unmapped: a push treats a mapped commit as stored.
+#[tokio::test]
+async fn failed_record_write_leaves_git_sha_unmapped() {
+    let fx = Fx::new().await;
+    let hooked = Arc::new(Hooked::new(fx.store.clone()));
+    let w = ChangesetWriter::new(hooked.clone(), fx.store.clone());
+    let sha = [7u8; 20];
+    let ext = BTreeMap::from([(GIT_SHA1_EXTENSION.to_owned(), sha.to_vec())]);
+    let cs = fx.changeset_ext(&[], &[("a", Some("x"))], ext).await;
+    hooked.fail_records.store(true, Ordering::SeqCst);
+    assert!(w.create(REPO, &cs).await.is_err());
+    let mapped = scion_query::lookup_git_sha(fx.store.as_ref(), REPO, &sha)
+        .await
+        .expect("lookup");
+    assert_eq!(mapped, None);
+    hooked.fail_records.store(false, Ordering::SeqCst);
+    let rec = w.create(REPO, &cs).await.expect("retry");
+    let mapped = scion_query::lookup_git_sha(fx.store.as_ref(), REPO, &sha)
+        .await
+        .expect("lookup");
+    assert_eq!(mapped, Some(rec.id));
 }
 
 #[tokio::test]

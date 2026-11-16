@@ -346,6 +346,21 @@ pub trait MetaStore: Send + Sync + 'static {
     /// 写入派生数据。派生值由输入唯一决定，重复写入保留第一次的值。
     async fn put_derived(&self, repo: &str, kind: &str, version: u32, key: &[u8], value: &[u8]) -> Result<()>;
 
+    /// Writes many derived values of one kind, like [`MetaStore::put_derived`] for each pair.
+    /// A store can override it to write them in one round trip.
+    async fn put_derived_many(
+        &self,
+        repo: &str,
+        kind: &str,
+        version: u32,
+        entries: &[(Vec<u8>, Vec<u8>)],
+    ) -> Result<()> {
+        for (k, val) in entries {
+            self.put_derived(repo, kind, version, k, val).await?;
+        }
+        Ok(())
+    }
+
     /// 登记不透明令牌（`tokens` 表，只存哈希）。`id` 已存在时返回 [`Error::Backend`]。
     async fn put_token(&self, _token: &TokenRecord) -> Result<()> {
         Err(unsupported("tokens"))

@@ -220,6 +220,16 @@ impl MetaStore for CachedMeta {
         self.inner.put_derived(repo, kind, version, key, value).await
     }
 
+    async fn put_derived_many(
+        &self,
+        repo: &str,
+        kind: &str,
+        version: u32,
+        entries: &[(Vec<u8>, Vec<u8>)],
+    ) -> Result<()> {
+        self.inner.put_derived_many(repo, kind, version, entries).await
+    }
+
     async fn put_token(&self, token: &TokenRecord) -> Result<()> {
         self.inner.put_token(token).await
     }

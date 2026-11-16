@@ -8,7 +8,8 @@ use scion_auth::Principal;
 use scion_object::git::{GitCommit, parse_commit, rebuilds};
 use scion_object::{Changeset, EntryMode, FileChange, ObjectId, Tree, validate_name};
 use scion_query::{
-    GIT_BLOB_ID_KIND, GIT_OBJECT_VERSION, GIT_SHA1_EXTENSION, GIT_TREE_ID_KIND, GITSHA_KIND, GITSHA_VERSION,
+    GIT_BLOB_ID_KIND, GIT_BLOB_KIND, GIT_OBJECT_VERSION, GIT_SHA1_EXTENSION, GIT_TREE_ID_KIND, GITSHA_KIND,
+    GITSHA_VERSION,
 };
 use scion_store::{BlobStore, ChangesetRecord, MetaStore};
 
@@ -288,6 +289,8 @@ pub struct Converter<'a> {
     pending_files: Vec<(ObjectId, Bytes)>,
     pending_bytes: usize,
     stored: HashSet<ObjectId>,
+    /// (file, git SHA) of the pushed files whose git SHA maps are not written yet.
+    blob_shas: Vec<(ObjectId, [u8; 20])>,
     /// Commits whose trees were indexed by git SHA, when a lookup missed.
     indexed: HashSet<ObjectId>,
 }
@@ -304,6 +307,7 @@ impl<'a> Converter<'a> {
             pending_files: Vec::new(),
             pending_bytes: 0,
             stored: HashSet::new(),
+            blob_shas: Vec::new(),
             indexed: HashSet::new(),
         }
     }
@@ -428,6 +432,8 @@ impl<'a> Converter<'a> {
                 .create(p, self.repo, &cs)
                 .await
                 .map_err(|e| Error::Unservable(format!("commit {}: {e}", hex::encode(sha))))?;
+            // The pack gives each new file's git SHA, so `tree_sha` need not read it back and hash it
+            self.write_blob_shas().await?;
             // The SHA git sees must be the SHA of what Scion stores
             let tree = self.objects.tree_sha(rec.root_tree).await?;
             if tree != c.tree {
@@ -473,6 +479,29 @@ impl<'a> Converter<'a> {
         parse_tree(&body)
     }
 
+    /// Writes the git SHA maps (both ways) of the files pushed so far, two round trips in all.
+    async fn write_blob_shas(&mut self) -> Result<()> {
+        if self.blob_shas.is_empty() {
+            return Ok(());
+        }
+        let shas = std::mem::take(&mut self.blob_shas);
+        let by_id: Vec<(Vec<u8>, Vec<u8>)> = shas
+            .iter()
+            .map(|(id, sha)| (id.to_bytes().to_vec(), sha.to_vec()))
+            .collect();
+        let by_sha: Vec<(Vec<u8>, Vec<u8>)> = shas
+            .iter()
+            .map(|(id, sha)| (sha.to_vec(), id.to_bytes().to_vec()))
+            .collect();
+        self.meta
+            .put_derived_many(self.repo, GIT_BLOB_KIND, GIT_OBJECT_VERSION, &by_id)
+            .await?;
+        self.meta
+            .put_derived_many(self.repo, GIT_BLOB_ID_KIND, GIT_OBJECT_VERSION, &by_sha)
+            .await?;
+        Ok(())
+    }
+
     /// Stores the pack files gathered so far.
     async fn flush(&mut self, sink: &Sink<'_>) -> Result<()> {
         let files = std::mem::take(&mut self.pending_files);
@@ -495,6 +524,7 @@ impl<'a> Converter<'a> {
             let id = ObjectId::of_blob(&content);
             let len = content.len() as u64;
             if self.stored.insert(id) {
+                self.blob_shas.push((id, sha));
                 self.pending_bytes += content.len();
                 self.pending_files.push((id, content));
                 if self.pending_bytes >= STORE_BATCH {
