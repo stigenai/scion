@@ -409,6 +409,29 @@ pub async fn derived<S: MetaStore + ?Sized>(s: &S) {
         s.put_derived("nope", "x", 1, b"k", b"v").await,
         Err(Error::RepoNotFound(_))
     ));
+    // Batch write: the first value of a key stays, like put_derived
+    let batch = vec![
+        (b"k".to_vec(), b"new".to_vec()),
+        (b"b1".to_vec(), b"x1".to_vec()),
+        (vec![], b"x2".to_vec()),
+    ];
+    s.put_derived_many("der/a", "blame", 1, &batch).await.expect("put many");
+    assert_eq!(
+        s.get_derived_many("der/a", "blame", 1, &[b"k".to_vec(), b"b1".to_vec(), vec![]])
+            .await,
+        Ok(vec![Some(b"v1".to_vec()), Some(b"x1".to_vec()), Some(b"x2".to_vec())])
+    );
+    assert_eq!(s.get_derived("der/b", "blame", 1, b"b1").await, Ok(None));
+    let wide: Vec<(Vec<u8>, Vec<u8>)> = many.iter().map(|k| (k.clone(), k.clone())).collect();
+    s.put_derived_many("der/b", "many", 1, &wide)
+        .await
+        .expect("put many, several chunks");
+    let got = s.get_derived_many("der/b", "many", 1, &many).await.expect("many");
+    assert!(many.iter().zip(&got).all(|(k, v)| v.as_ref() == Some(k)));
+    assert!(matches!(
+        s.put_derived_many("nope", "x", 1, &batch).await,
+        Err(Error::RepoNotFound(_))
+    ));
 }
 
 /// 批量读取提交记录与 PathHistory 索引。

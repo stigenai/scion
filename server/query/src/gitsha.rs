@@ -239,10 +239,29 @@ fn tree_sha<'a>(meta: &'a dyn MetaStore, blobs: &'a dyn BlobStore, repo: &'a str
             };
             shas.insert(e.id, sha);
         }
+        // One batch read for the subdirectories derived already; only the rest recurse
+        let dirs: Vec<ObjectId> = tree
+            .entries()
+            .iter()
+            .filter(|e| e.mode == EntryMode::Tree)
+            .map(|e| e.id)
+            .collect();
+        let dir_keys: Vec<Vec<u8>> = dirs.iter().map(|id| id.to_bytes().to_vec()).collect();
+        let dir_known = meta
+            .get_derived_many(repo, GIT_TREE_KIND, GIT_OBJECT_VERSION, &dir_keys)
+            .await?;
+        let dir_shas: HashMap<ObjectId, [u8; 20]> = dirs
+            .iter()
+            .zip(dir_known)
+            .filter_map(|(id, v)| Some((*id, <[u8; 20]>::try_from(v?.as_slice()).ok()?)))
+            .collect();
         let mut entries = Vec::with_capacity(tree.entries().len());
         for e in tree.entries() {
             let sha = if e.mode == EntryMode::Tree {
-                tree_sha(meta, blobs, repo, e.id).await?
+                match dir_shas.get(&e.id) {
+                    Some(sha) => *sha,
+                    None => tree_sha(meta, blobs, repo, e.id).await?,
+                }
             } else {
                 shas[&e.id]
             };
