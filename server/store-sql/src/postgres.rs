@@ -133,6 +133,9 @@ impl PgMetaStore {
         let pool = PgPoolOptions::new()
             .max_connections(32)
             .acquire_timeout(Duration::from_secs(5))
+            // The default pings before each acquire: one extra round trip per statement.
+            // A dead connection then fails one statement; callers retry (push is idempotent).
+            .test_before_acquire(false)
             .connect_with(opts)
             .await
             .map_err(|e| backend("connect postgres", e))?;
