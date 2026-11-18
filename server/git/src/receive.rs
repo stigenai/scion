@@ -222,6 +222,9 @@ fn one_line(s: &str) -> String {
     s.replace('\n', " ")
 }
 
+/// The mode of a directory in a git tree.
+const GIT_TREE_MODE: u32 = 0o40000;
+
 /// A pushed git tree's entry.
 struct GitEntry {
     name: String,
@@ -293,6 +296,8 @@ pub struct Converter<'a> {
     blob_shas: Vec<(ObjectId, [u8; 20])>,
     /// Commits whose trees were indexed by git SHA, when a lookup missed.
     indexed: HashSet<ObjectId>,
+    /// git commit SHA → its git tree SHA, for the commits converted or read as a base.
+    trees: HashMap<[u8; 20], [u8; 20]>,
 }
 
 impl<'a> Converter<'a> {
@@ -309,6 +314,7 @@ impl<'a> Converter<'a> {
             stored: HashSet::new(),
             blob_shas: Vec::new(),
             indexed: HashSet::new(),
+            trees: HashMap::new(),
         }
     }
 
@@ -411,14 +417,13 @@ impl<'a> Converter<'a> {
                     .ok_or_else(|| Error::Internal(format!("parent {} not converted", hex::encode(ps))))?;
                 parents.push(id);
             }
-            let base = match parents.first() {
-                Some(id) => Some(self.record(*id).await?),
-                None => None,
+            let root = match (c.parents.first(), parents.first()) {
+                (Some(ps), Some(id)) => Some(self.base_tree(*ps, *id).await?),
+                _ => None,
             };
             let mut delta = Vec::new();
-            let root = base.as_ref().map(|r| r.root_tree);
             let sink = Sink { p, backend };
-            self.diff(&sink, c.tree, root, "", base.as_ref().map(|r| r.id), &mut delta)
+            self.diff(&sink, c.tree, root, parents.first().copied(), &mut delta)
                 .await?;
             self.flush(&sink).await?;
             let mut ext = BTreeMap::from([(GIT_SHA1_EXTENSION.to_string(), sha.to_vec())]);
@@ -443,10 +448,23 @@ impl<'a> Converter<'a> {
                 )));
             }
             self.commits.insert(sha, rec.id);
+            self.trees.insert(sha, c.tree);
         }
         self.known(&tip)
             .await?
             .ok_or_else(|| Error::Internal("tip not converted".into()))
+    }
+
+    /// The git tree SHA of a parent commit: from the commits converted in this push, or read
+    /// from the store once for a parent the repository had before the push.
+    async fn base_tree(&mut self, sha: [u8; 20], id: ObjectId) -> Result<[u8; 20]> {
+        if let Some(t) = self.trees.get(&sha) {
+            return Ok(*t);
+        }
+        let root = self.record(id).await?.root_tree;
+        let t = self.objects.tree_sha(root).await?;
+        self.trees.insert(sha, t);
+        Ok(t)
     }
 
     async fn record(&self, id: ObjectId) -> Result<ChangesetRecord> {
@@ -571,35 +589,28 @@ impl<'a> Converter<'a> {
         )))
     }
 
-    /// The changes from the Scion directory `base` to the git tree `git`, at `prefix`.
+    /// The changes from the git tree `base` (the first parent's) to the git tree `git`. Both
+    /// come from the pack when the parent was pushed too, so equal SHAs prune the walk and no
+    /// store read is needed; a tree not in the pack is rebuilt from the store.
     async fn diff(
         &mut self,
         sink: &Sink<'_>,
         git: [u8; 20],
-        base: Option<ObjectId>,
-        prefix: &str,
+        base: Option<[u8; 20]>,
         base_commit: Option<ObjectId>,
         out: &mut Vec<FileChange>,
     ) -> Result<()> {
-        // An explicit stack of (git tree, Scion directory, path prefix)
-        let mut stack = vec![(git, base, prefix.to_string())];
+        // An explicit stack of (git tree, base git tree, path prefix)
+        let mut stack = vec![(git, base, String::new())];
         while let Some((git, base, prefix)) = stack.pop() {
-            let (base_entries, base_shas) = match base {
-                Some(b) => {
-                    if self.objects.tree_sha(b).await? == git {
-                        continue;
-                    }
-                    let t = self.load(b).await?;
-                    let shas = self.objects.entry_git_shas(b, &t).await?;
-                    (t.entries().to_vec(), shas)
-                }
-                None => (Vec::new(), Vec::new()),
+            if base == Some(git) {
+                continue;
+            }
+            let base_entries = match base {
+                Some(b) => self.git_tree(b, base_commit).await?,
+                None => Vec::new(),
             };
-            let old: HashMap<&str, (usize, &scion_object::TreeEntry)> = base_entries
-                .iter()
-                .enumerate()
-                .map(|(i, e)| (e.name.as_str(), (i, e)))
-                .collect();
+            let old: HashMap<&str, &GitEntry> = base_entries.iter().map(|e| (e.name.as_str(), e)).collect();
             let entries = self.git_tree(git, base_commit).await?;
             let mut names = HashSet::new();
             for e in &entries {
@@ -607,22 +618,21 @@ impl<'a> Converter<'a> {
                 validate_name(&e.name).map_err(|err| Error::Unsupported(format!("path {path:?}: {err}")))?;
                 names.insert(e.name.as_str());
                 let was = old.get(e.name.as_str()).copied();
-                let was_dir = was.is_some_and(|(_, w)| w.mode == EntryMode::Tree);
-                if e.mode == 0o40000 {
-                    if let Some((_, w)) = was.filter(|_| !was_dir) {
-                        let _ = w;
+                let was_dir = was.is_some_and(|w| w.mode == GIT_TREE_MODE);
+                if e.mode == GIT_TREE_MODE {
+                    if was.is_some() && !was_dir {
                         out.push(FileChange::delete(&path));
                     }
-                    stack.push((e.sha, was.filter(|_| was_dir).map(|(_, w)| w.id), format!("{path}/")));
+                    stack.push((e.sha, was.filter(|_| was_dir).map(|w| w.sha), format!("{path}/")));
                     continue;
                 }
                 let mode = entry_mode(e.mode, &path)?;
-                if let Some((i, w)) = was {
-                    if !was_dir && w.mode == mode && base_shas[i] == e.sha {
+                if let Some(w) = was {
+                    if !was_dir && w.mode == e.mode && w.sha == e.sha {
                         continue;
                     }
                     if was_dir {
-                        self.delete_all(w.id, &format!("{path}/"), out).await?;
+                        self.delete_all(w.sha, &format!("{path}/"), base_commit, out).await?;
                     }
                 }
                 let (id, size) = self.file(sink, e.sha, base_commit).await?;
@@ -633,8 +643,8 @@ impl<'a> Converter<'a> {
                     continue;
                 }
                 let path = format!("{prefix}{}", e.name);
-                if e.mode == EntryMode::Tree {
-                    self.delete_all(e.id, &format!("{path}/"), out).await?;
+                if e.mode == GIT_TREE_MODE {
+                    self.delete_all(e.sha, &format!("{path}/"), base_commit, out).await?;
                 } else {
                     out.push(FileChange::delete(&path));
                 }
@@ -643,14 +653,20 @@ impl<'a> Converter<'a> {
         Ok(())
     }
 
-    /// Deletes every file under a directory (Scion's directories exist only through their files).
-    async fn delete_all(&self, dir: ObjectId, prefix: &str, out: &mut Vec<FileChange>) -> Result<()> {
+    /// Deletes every file under a git tree (Scion's directories exist only through their files).
+    async fn delete_all(
+        &mut self,
+        dir: [u8; 20],
+        prefix: &str,
+        base_commit: Option<ObjectId>,
+        out: &mut Vec<FileChange>,
+    ) -> Result<()> {
         let mut stack = vec![(dir, prefix.to_string())];
-        while let Some((id, prefix)) = stack.pop() {
-            for e in self.load(id).await?.entries() {
+        while let Some((sha, prefix)) = stack.pop() {
+            for e in self.git_tree(sha, base_commit).await? {
                 let path = format!("{prefix}{}", e.name);
-                if e.mode == EntryMode::Tree {
-                    stack.push((e.id, format!("{path}/")));
+                if e.mode == GIT_TREE_MODE {
+                    stack.push((e.sha, format!("{path}/")));
                 } else {
                     out.push(FileChange::delete(&path));
                 }
@@ -663,6 +679,13 @@ impl<'a> Converter<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use scion_store::{
+        IdempotencyRecord, IndexedObject, LandedChange, Lease, MemStore, PathChange, PathHistoryEntry, RefExpect,
+        RefState,
+    };
 
     #[test]
     fn parses_push_requests() {
@@ -764,5 +787,335 @@ mod tests {
         };
         let s = String::from_utf8_lossy(&advertise(&empty, "scion/1")).into_owned();
         assert!(s.contains("capabilities^{}"), "{s}");
+    }
+
+    /// Reads the store through `inner` and counts the reads `diff` must not make.
+    struct Counting {
+        inner: Arc<MemStore>,
+        derived: AtomicUsize,
+        derived_many: AtomicUsize,
+        gets: AtomicUsize,
+    }
+
+    impl Counting {
+        fn reads(&self) -> [usize; 3] {
+            [&self.derived, &self.derived_many, &self.gets].map(|c| c.load(Ordering::SeqCst))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl BlobStore for Counting {
+        async fn put(&self, id: ObjectId, data: Bytes) -> scion_store::Result<()> {
+            self.inner.put(id, data).await
+        }
+        async fn get(&self, id: &ObjectId) -> scion_store::Result<Option<Bytes>> {
+            self.gets.fetch_add(1, Ordering::SeqCst);
+            BlobStore::get(self.inner.as_ref(), id).await
+        }
+        async fn exists(&self, id: &ObjectId) -> scion_store::Result<bool> {
+            self.inner.exists(id).await
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MetaStore for Counting {
+        async fn create_repo(&self, repo: &str) -> scion_store::Result<()> {
+            self.inner.create_repo(repo).await
+        }
+        async fn repo_exists(&self, repo: &str) -> scion_store::Result<bool> {
+            self.inner.repo_exists(repo).await
+        }
+        async fn list_repos(&self) -> scion_store::Result<Vec<String>> {
+            self.inner.list_repos().await
+        }
+        async fn get_ref(&self, repo: &str, name: &str) -> scion_store::Result<Option<RefState>> {
+            self.inner.get_ref(repo, name).await
+        }
+        async fn land_commit_as(
+            &self,
+            repo: &str,
+            name: &str,
+            expect: RefExpect,
+            target: ObjectId,
+            landed: &[LandedChange],
+            requests: &[IdempotencyRecord],
+            actor: &str,
+        ) -> scion_store::Result<RefState> {
+            self.inner
+                .land_commit_as(repo, name, expect, target, landed, requests, actor)
+                .await
+        }
+        async fn landed_changes(
+            &self,
+            repo: &str,
+            name: &str,
+            change_ids: &[[u8; 16]],
+        ) -> scion_store::Result<Vec<LandedChange>> {
+            self.inner.landed_changes(repo, name, change_ids).await
+        }
+        async fn get_idempotency(&self, repo: &str, id: &str) -> scion_store::Result<Option<IdempotencyRecord>> {
+            self.inner.get_idempotency(repo, id).await
+        }
+        async fn expire_idempotency(&self, before_ms: i64) -> scion_store::Result<u64> {
+            self.inner.expire_idempotency(before_ms).await
+        }
+        async fn acquire_lease(&self, scope: &str, holder: &str, ttl: i64, now: i64) -> scion_store::Result<Lease> {
+            self.inner.acquire_lease(scope, holder, ttl, now).await
+        }
+        async fn release_lease(&self, scope: &str, holder: &str) -> scion_store::Result<()> {
+            self.inner.release_lease(scope, holder).await
+        }
+        async fn index_objects(&self, repo: &str, objects: &[IndexedObject]) -> scion_store::Result<()> {
+            self.inner.index_objects(repo, objects).await
+        }
+        async fn missing_objects(&self, repo: &str, ids: &[ObjectId]) -> scion_store::Result<Vec<ObjectId>> {
+            self.inner.missing_objects(repo, ids).await
+        }
+        async fn object_sizes(&self, repo: &str, ids: &[ObjectId]) -> scion_store::Result<HashMap<ObjectId, u64>> {
+            self.inner.object_sizes(repo, ids).await
+        }
+        async fn put_changeset(&self, repo: &str, rec: &ChangesetRecord) -> scion_store::Result<()> {
+            self.inner.put_changeset(repo, rec).await
+        }
+        async fn get_changeset(&self, repo: &str, id: &ObjectId) -> scion_store::Result<Option<ChangesetRecord>> {
+            self.inner.get_changeset(repo, id).await
+        }
+        async fn list_refs(&self, repo: &str) -> scion_store::Result<Vec<(String, RefState)>> {
+            self.inner.list_refs(repo).await
+        }
+        async fn changesets_below(
+            &self,
+            repo: &str,
+            max_generation: u64,
+            limit: usize,
+        ) -> scion_store::Result<Vec<ChangesetRecord>> {
+            self.inner.changesets_below(repo, max_generation, limit).await
+        }
+        async fn repair_lineage(
+            &self,
+            repo: &str,
+            id: &ObjectId,
+            p: &[ObjectId],
+            d: u64,
+            j: Option<ObjectId>,
+        ) -> scion_store::Result<()> {
+            self.inner.repair_lineage(repo, id, p, d, j).await
+        }
+        async fn index_paths(
+            &self,
+            repo: &str,
+            cs: ObjectId,
+            generation: u64,
+            changes: &[PathChange],
+        ) -> scion_store::Result<()> {
+            self.inner.index_paths(repo, cs, generation, changes).await
+        }
+        async fn path_history(
+            &self,
+            repo: &str,
+            path: &str,
+            max_generation: u64,
+            limit: usize,
+        ) -> scion_store::Result<Vec<PathHistoryEntry>> {
+            self.inner.path_history(repo, path, max_generation, limit).await
+        }
+        async fn get_derived(
+            &self,
+            repo: &str,
+            kind: &str,
+            v: u32,
+            key: &[u8],
+        ) -> scion_store::Result<Option<Vec<u8>>> {
+            self.derived.fetch_add(1, Ordering::SeqCst);
+            self.inner.get_derived(repo, kind, v, key).await
+        }
+        async fn get_derived_many(
+            &self,
+            repo: &str,
+            kind: &str,
+            v: u32,
+            keys: &[Vec<u8>],
+        ) -> scion_store::Result<Vec<Option<Vec<u8>>>> {
+            self.derived_many.fetch_add(1, Ordering::SeqCst);
+            self.inner.get_derived_many(repo, kind, v, keys).await
+        }
+        async fn put_derived(
+            &self,
+            repo: &str,
+            kind: &str,
+            v: u32,
+            key: &[u8],
+            value: &[u8],
+        ) -> scion_store::Result<()> {
+            self.inner.put_derived(repo, kind, v, key, value).await
+        }
+        async fn put_derived_many(
+            &self,
+            repo: &str,
+            kind: &str,
+            v: u32,
+            pairs: &[(Vec<u8>, Vec<u8>)],
+        ) -> scion_store::Result<()> {
+            self.inner.put_derived_many(repo, kind, v, pairs).await
+        }
+    }
+
+    /// Writes through the store directly.
+    struct Stub(scion_land::ChangesetWriter);
+
+    #[async_trait::async_trait]
+    impl PushBackend for Stub {
+        async fn store(
+            &self,
+            _: &Principal,
+            repo: &str,
+            objects: Vec<(ObjectId, Bytes)>,
+        ) -> std::result::Result<(), String> {
+            self.0.store(repo, &objects).await.map_err(|e| e.to_string())
+        }
+        async fn create(
+            &self,
+            _: &Principal,
+            repo: &str,
+            cs: &Changeset,
+        ) -> std::result::Result<ChangesetRecord, String> {
+            self.0.create(repo, cs).await.map_err(|e| e.to_string())
+        }
+        async fn update(
+            &self,
+            _: &Principal,
+            _: Option<&str>,
+            _: &str,
+            _: RefUpdate,
+        ) -> std::result::Result<(), String> {
+            Ok(())
+        }
+    }
+
+    fn tree_of(entries: &[(&str, &str, [u8; 20])]) -> Vec<u8> {
+        let mut t = Vec::new();
+        for (mode, name, sha) in entries {
+            t.extend_from_slice(format!("{mode} {name}\0").as_bytes());
+            t.extend_from_slice(sha);
+        }
+        t
+    }
+
+    /// 50 commits that each change one file at depth 4, beside a directory that never changes:
+    /// the diff of each against its pushed parent reads nothing from the store, and a clone
+    /// gives back every pushed object.
+    #[tokio::test]
+    async fn diffs_pushed_parents_without_store_reads() {
+        use crate::pack::{Kind, PackWriter};
+        use crate::unpack::{object_sha, unpack};
+        let mem = Arc::new(MemStore::new());
+        mem.create_repo("r").await.expect("repo");
+        let counting = Counting {
+            inner: mem.clone(),
+            derived: AtomicUsize::new(0),
+            derived_many: AtomicUsize::new(0),
+            gets: AtomicUsize::new(0),
+        };
+        let mut objects: Vec<(Kind, Vec<u8>)> = Vec::new();
+        let mut add = |kind: Kind, body: Vec<u8>, t: ObjType| {
+            let sha = object_sha(t, &body);
+            objects.push((kind, body));
+            sha
+        };
+        let keep_blob = add(Kind::Blob, b"keep\n".to_vec(), ObjType::Blob);
+        let keep = add(Kind::Tree, tree_of(&[("100644", "k.txt", keep_blob)]), ObjType::Tree);
+        let (mut trees, mut commits) = (Vec::new(), Vec::new());
+        let mut parent: Option<[u8; 20]> = None;
+        for i in 0..50 {
+            let mut sha = add(Kind::Blob, format!("v{i}\n").into_bytes(), ObjType::Blob);
+            let mut name = "f.txt";
+            for dir in ["d", "c", "b", "a"] {
+                let mode = if name == "f.txt" { "100644" } else { "40000" };
+                sha = add(Kind::Tree, tree_of(&[(mode, name, sha)]), ObjType::Tree);
+                name = dir;
+            }
+            let root = add(
+                Kind::Tree,
+                tree_of(&[("40000", "a", sha), ("40000", "keep", keep)]),
+                ObjType::Tree,
+            );
+            let parent_line = parent
+                .map(|p| format!("parent {}\n", hex::encode(p)))
+                .unwrap_or_default();
+            let body = format!(
+                "tree {}\n{parent_line}author A <a@x> {t} +0000\ncommitter A <a@x> {t} +0000\n\nc{i}\n",
+                hex::encode(root),
+                t = 1_700_000_000 + i
+            );
+            let c = add(Kind::Commit, body.into_bytes(), ObjType::Commit);
+            trees.push(root);
+            commits.push(c);
+            parent = Some(c);
+        }
+        let (mut w, head) = PackWriter::new(objects.len() as u32);
+        let mut bytes = head.to_vec();
+        for (kind, body) in &objects {
+            bytes.extend_from_slice(&w.object(*kind, body));
+        }
+        bytes.extend_from_slice(&w.finish());
+        let pack = unpack(&bytes[..], 1 << 20).expect("unpack");
+        let backend = Stub(scion_land::ChangesetWriter::new(mem.clone(), mem.clone()));
+        let p = Principal::anonymous();
+        let sink = Sink {
+            p: &p,
+            backend: &backend,
+        };
+        let mut conv = Converter::new(&counting, &counting, "r", &pack);
+        for i in 1..50 {
+            let mut out = Vec::new();
+            conv.diff(&sink, trees[i], Some(trees[i - 1]), None, &mut out)
+                .await
+                .expect("diff");
+            assert_eq!(out.len(), 1, "{out:?}");
+            assert_eq!(out[0].path, "a/b/c/d/f.txt");
+        }
+        assert_eq!(counting.reads(), [0, 0, 0]);
+        // The whole push, then a clone of the tip
+        let mut conv = Converter::new(&counting, &counting, "r", &pack);
+        let tip = conv.convert(&p, &backend, commits[49]).await.expect("convert");
+        let wants = crate::upload::resolve_wants(&counting, &counting, "r", &[commits[49]])
+            .await
+            .expect("wants");
+        assert_eq!(wants.commits, vec![tip]);
+        let plan = crate::upload::plan(
+            &counting,
+            &counting,
+            "r",
+            &wants,
+            &[],
+            &Default::default(),
+            Default::default(),
+        )
+        .await
+        .expect("plan");
+        let started = crate::upload::start(&counting, &counting, "r", plan, 0)
+            .await
+            .expect("start");
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+        let out = crate::upload::Out::new(tx, false, false);
+        crate::upload::write_pack(started, &out, Default::default())
+            .await
+            .expect("pack");
+        drop(out);
+        let mut cloned = Vec::new();
+        while let Some(b) = rx.recv().await {
+            cloned.extend_from_slice(&b);
+        }
+        let cloned = unpack(&cloned[..], 1 << 20).expect("cloned pack");
+        assert_eq!(cloned.len(), pack.len());
+        for (kind, body) in &objects {
+            let t = match kind {
+                Kind::Commit => ObjType::Commit,
+                Kind::Tree => ObjType::Tree,
+                _ => ObjType::Blob,
+            };
+            let got = cloned.get(&object_sha(t, body)).expect("get").expect("cloned object");
+            assert_eq!(&got.1[..], &body[..]);
+        }
     }
 }
