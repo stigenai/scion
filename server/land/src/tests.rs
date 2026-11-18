@@ -640,6 +640,8 @@ struct Hooked {
     fail_records: std::sync::atomic::AtomicBool,
     gate: Option<Arc<tokio::sync::Semaphore>>,
     commits: std::sync::atomic::AtomicU32,
+    /// The record, index and map calls, in order.
+    calls: std::sync::Mutex<Vec<&'static str>>,
 }
 
 /// 计数大于 0 时减 1 并返回 true。
@@ -663,7 +665,16 @@ impl Hooked {
             fail_records: false.into(),
             gate: None,
             commits: 0.into(),
+            calls: Default::default(),
         }
+    }
+
+    fn log(&self, call: &'static str) {
+        self.calls.lock().expect("lock").push(call);
+    }
+
+    fn take_calls(&self) -> Vec<&'static str> {
+        std::mem::take(&mut *self.calls.lock().expect("lock"))
     }
 }
 
@@ -673,6 +684,7 @@ impl MetaStore for Hooked {
         self.inner.create_repo(r).await
     }
     async fn repo_exists(&self, r: &str) -> scion_store::Result<bool> {
+        self.log("repo_exists");
         self.inner.repo_exists(r).await
     }
     async fn list_repos(&self) -> scion_store::Result<Vec<String>> {
@@ -727,6 +739,7 @@ impl MetaStore for Hooked {
         self.inner.release_lease(s, h).await
     }
     async fn index_objects(&self, r: &str, o: &[IndexedObject]) -> scion_store::Result<()> {
+        self.log("index_objects");
         self.inner.index_objects(r, o).await
     }
     async fn missing_objects(&self, r: &str, ids: &[ObjectId]) -> scion_store::Result<Vec<ObjectId>> {
@@ -740,6 +753,7 @@ impl MetaStore for Hooked {
         r: &str,
         ids: &[ObjectId],
     ) -> scion_store::Result<std::collections::HashMap<ObjectId, u64>> {
+        self.log("object_sizes");
         self.inner.object_sizes(r, ids).await
     }
     async fn put_changeset(&self, r: &str, rec: &scion_store::ChangesetRecord) -> scion_store::Result<()> {
@@ -748,7 +762,15 @@ impl MetaStore for Hooked {
         }
         self.inner.put_changeset(r, rec).await
     }
+    async fn put_changesets(&self, r: &str, recs: &[scion_store::ChangesetRecord]) -> scion_store::Result<()> {
+        self.log("put_changesets");
+        if self.fail_records.load(Ordering::SeqCst) {
+            return Err(scion_store::Error::Backend("injected".into()));
+        }
+        self.inner.put_changesets(r, recs).await
+    }
     async fn get_changeset(&self, r: &str, id: &ObjectId) -> scion_store::Result<Option<scion_store::ChangesetRecord>> {
+        self.log("get_changeset");
         self.inner.get_changeset(r, id).await
     }
     async fn list_refs(&self, r: &str) -> scion_store::Result<Vec<(String, scion_store::RefState)>> {
@@ -781,6 +803,14 @@ impl MetaStore for Hooked {
     ) -> scion_store::Result<()> {
         self.inner.index_paths(r, cs, g, c).await
     }
+    async fn index_paths_many(
+        &self,
+        r: &str,
+        e: &[(ObjectId, u64, Vec<scion_store::PathChange>)],
+    ) -> scion_store::Result<()> {
+        self.log("index_paths_many");
+        self.inner.index_paths_many(r, e).await
+    }
     async fn path_history(
         &self,
         r: &str,
@@ -796,6 +826,99 @@ impl MetaStore for Hooked {
     async fn put_derived(&self, r: &str, k: &str, v: u32, key: &[u8], val: &[u8]) -> scion_store::Result<()> {
         self.inner.put_derived(r, k, v, key, val).await
     }
+    async fn put_derived_many(&self, r: &str, k: &str, v: u32, e: &[(Vec<u8>, Vec<u8>)]) -> scion_store::Result<()> {
+        self.log("put_derived_many");
+        self.inner.put_derived_many(r, k, v, e).await
+    }
+}
+
+/// A batch of a 3-commit chain gives the records of 3 create calls, with one write of each kind.
+#[tokio::test]
+async fn create_many_writes_a_chain_in_one_batch() {
+    let one = Fx::new().await;
+    let ext = |n: u8| BTreeMap::from([(GIT_SHA1_EXTENSION.to_owned(), vec![n; 20])]);
+    let mut css = Vec::new();
+    let mut expected = Vec::new();
+    let mut parents = Vec::new();
+    for (n, body) in [(1u8, "a"), (2, "b"), (3, "c")] {
+        let cs = one
+            .changeset_ext(&parents, &[("f", Some(body)), ("g", Some("same"))], ext(n))
+            .await;
+        let rec = one.w.create(REPO, &cs).await.expect("create");
+        parents = vec![rec.id];
+        expected.push(rec);
+        css.push(cs);
+    }
+    // The other store has none of the files: they come with the batch.
+    let many = Fx::new().await;
+    let hooked = Arc::new(Hooked::new(many.store.clone()));
+    let w = ChangesetWriter::new(hooked.clone(), many.store.clone());
+    let files: Vec<(ObjectId, Bytes)> = ["a", "b", "c", "same"]
+        .iter()
+        .map(|b| (ObjectId::of_blob(b.as_bytes()), Bytes::from_static(b.as_bytes())))
+        .collect();
+    let built = w.create_many(REPO, &files, &css).await.expect("create_many");
+    let records: Vec<_> = built.iter().map(|b| b.record.clone()).collect();
+    assert_eq!(records, expected);
+    assert!(built.iter().all(|b| !b.objects.is_empty()), "the trees come back");
+    assert_eq!(
+        hooked.take_calls(),
+        [
+            "repo_exists",
+            "index_objects",
+            "index_paths_many",
+            "put_changesets",
+            "put_derived_many"
+        ]
+    );
+    for (n, rec) in (1u8..).zip(&records) {
+        let mapped = scion_query::lookup_git_sha(many.store.as_ref(), REPO, &[n; 20]).await;
+        assert_eq!(mapped, Ok(Some(rec.id)));
+    }
+    assert_eq!(many.read(records[2].id, "f").await.as_deref(), Some("c"));
+
+    // A batch on a stored commit reads each stored record once (the parent and the two skip-list
+    // jumps that `build` reads), and the stored files in one call.
+    let next = one.changeset(&[records[2].id], &[("f", Some("d"))]).await;
+    let built = w.create_many(REPO, &files[..1], std::slice::from_ref(&next)).await;
+    assert_eq!(
+        built.map(|_| ()),
+        Err(LandError::ObjectsNotUploaded(vec![ObjectId::of_blob(b"d")]))
+    );
+    hooked.take_calls();
+    let on_top = Changeset::new(
+        vec![next.id()],
+        sig(),
+        sig(),
+        "on top",
+        [99; 16],
+        vec![FileChange::put("h", EntryMode::File, files[0].0, 1)],
+        BTreeMap::new(),
+    )
+    .expect("cs");
+    let d = (ObjectId::of_blob(b"d"), Bytes::from_static(b"d"));
+    w.create_many(REPO, &[d], &[next, on_top])
+        .await
+        .expect("on a stored commit");
+    let calls = hooked.take_calls();
+    assert_eq!(calls.iter().filter(|c| **c == "get_changeset").count(), 3, "{calls:?}");
+    assert_eq!(calls.iter().filter(|c| **c == "object_sizes").count(), 1, "{calls:?}");
+
+    // A file of the batch has the size of its bytes.
+    let wrong = Changeset::new(
+        vec![],
+        sig(),
+        sig(),
+        "wrong",
+        [98; 16],
+        vec![FileChange::put("x", EntryMode::File, files[0].0, 5)],
+        BTreeMap::new(),
+    )
+    .expect("cs");
+    assert!(matches!(
+        w.create_many(REPO, &files[..1], &[wrong]).await,
+        Err(LandError::InvalidChangeset { path, .. }) if path == "x"
+    ));
 }
 
 /// A failed record write must leave the git sha unmapped: a push treats a mapped commit as stored.

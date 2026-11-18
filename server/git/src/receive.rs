@@ -45,6 +45,14 @@ pub enum RefUpdate {
     },
 }
 
+/// A commit that [`PushBackend::create_many`] made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Created {
+    pub record: ChangesetRecord,
+    /// The Scion trees that the commit made, which the store did not have before the batch.
+    pub trees: Vec<(ObjectId, Bytes)>,
+}
+
 /// Writes what a push brings, with the pusher's permissions. The server implements it with the
 /// services `scn` uses, so the same authorization, pre-land checks and events apply.
 #[async_trait::async_trait]
@@ -58,6 +66,16 @@ pub trait PushBackend: Send + Sync {
     ) -> std::result::Result<(), String>;
     /// Creates a commit the gateway has built (it may carry `git.sha1` and `git.commit`).
     async fn create(&self, p: &Principal, repo: &str, cs: &Changeset) -> std::result::Result<ChangesetRecord, String>;
+    /// Stores `files` and creates the commits `css` (parents first) in one batch. A parent can be
+    /// an earlier commit of the batch. The paths of each commit are checked as for `create`, and
+    /// the rate limiter admits the batch one time. The result has one entry for each commit.
+    async fn create_many(
+        &self,
+        p: &Principal,
+        repo: &str,
+        files: Vec<(ObjectId, Bytes)>,
+        css: &[Changeset],
+    ) -> std::result::Result<Vec<Created>, String>;
     /// Updates one ref; the error is the reason git prints after `ng`.
     /// The request credential is retained only for a leader to reauthenticate a forwarded land.
     async fn update(

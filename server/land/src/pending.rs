@@ -24,6 +24,8 @@ pub(crate) struct Pending {
     fetched: Mutex<HashMap<ObjectId, Bytes>>,
     /// 批内新产生、尚未写入的提交记录。
     records: HashMap<ObjectId, ChangesetRecord>,
+    /// Records read from the store. A record never changes, so a batch reads each one once.
+    stored: Mutex<HashMap<ObjectId, ChangesetRecord>>,
 }
 
 impl Pending {
@@ -33,6 +35,7 @@ impl Pending {
             created: Mutex::new(HashMap::new()),
             fetched: Mutex::new(HashMap::new()),
             records: HashMap::new(),
+            stored: Mutex::new(HashMap::new()),
         }
     }
 
@@ -43,12 +46,29 @@ impl Pending {
 
     /// 读提交记录：批内的优先，其次存储。
     pub(crate) async fn record(&self, meta: &dyn MetaStore, repo: &str, id: ObjectId) -> Result<ChangesetRecord> {
-        if let Some(r) = self.records.get(&id) {
-            return Ok(r.clone());
-        }
-        meta.get_changeset(repo, &id)
+        self.find_record(meta, repo, id)
             .await?
             .ok_or_else(|| LandError::ObjectsNotUploaded(vec![id]))
+    }
+
+    /// Like [`Pending::record`], but a missing record is `None`.
+    pub(crate) async fn find_record(
+        &self,
+        meta: &dyn MetaStore,
+        repo: &str,
+        id: ObjectId,
+    ) -> Result<Option<ChangesetRecord>> {
+        if let Some(r) = self.records.get(&id) {
+            return Ok(Some(r.clone()));
+        }
+        if let Some(r) = self.stored.lock().ok().and_then(|s| s.get(&id).cloned()) {
+            return Ok(Some(r));
+        }
+        let rec = meta.get_changeset(repo, &id).await?;
+        if let (Some(r), Ok(mut s)) = (&rec, self.stored.lock()) {
+            s.insert(id, r.clone());
+        }
+        Ok(rec)
     }
 
     pub(crate) fn add_record(&mut self, rec: ChangesetRecord) {
