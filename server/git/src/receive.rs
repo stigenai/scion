@@ -353,7 +353,9 @@ impl<'a> Converter<'a> {
     }
 
     /// The pack's commits that `tip` needs, parents first. A parent outside the pack must be known.
+    /// One batched read finds which of them the repository has.
     async fn order(&mut self, tip: [u8; 20]) -> Result<Vec<[u8; 20]>> {
+        self.resolve(tip).await?;
         let mut out = Vec::new();
         let mut done: HashSet<[u8; 20]> = HashSet::new();
         // (commit, its parents pushed already)
@@ -367,7 +369,7 @@ impl<'a> Converter<'a> {
                 out.push(sha);
                 continue;
             }
-            if self.known(&sha).await?.is_some() {
+            if self.commits.contains_key(&sha) {
                 done.insert(sha);
                 continue;
             }
@@ -380,6 +382,41 @@ impl<'a> Converter<'a> {
             }
         }
         Ok(out)
+    }
+
+    /// Adds to `commits` each SHA the repository has among `tip`, the pack commits that `tip`
+    /// reaches and their parents, with one `get_derived_many`.
+    async fn resolve(&mut self, tip: [u8; 20]) -> Result<()> {
+        let mut keys = Vec::new();
+        let mut seen = HashSet::from([tip]);
+        let mut todo = vec![tip];
+        while let Some(sha) = todo.pop() {
+            if self.commits.contains_key(&sha) {
+                continue;
+            }
+            keys.push(sha.to_vec());
+            // A malformed or missing commit is reported by `git_commit` if `order` needs it
+            if let Some((ObjType::Commit, raw)) = self.pack.get(&sha)? {
+                for p in parse_commit(&raw).map(|c| c.parents).unwrap_or_default() {
+                    if seen.insert(p) {
+                        todo.push(p);
+                    }
+                }
+            }
+        }
+        if keys.is_empty() {
+            return Ok(());
+        }
+        let values = self
+            .meta
+            .get_derived_many(self.repo, GITSHA_KIND, GITSHA_VERSION, &keys)
+            .await?;
+        for (key, value) in keys.iter().zip(values) {
+            if let Some(id) = value.and_then(|v| ObjectId::from_bytes(&v).ok()) {
+                self.commits.insert(key[..].try_into().expect("20 bytes"), id);
+            }
+        }
+        Ok(())
     }
 
     fn git_commit(&self, sha: &[u8; 20]) -> Result<GitCommit> {
@@ -418,9 +455,7 @@ impl<'a> Converter<'a> {
 
     /// Makes the Scion commits for `tip` and returns its Scion commit.
     pub async fn convert(&mut self, p: &Principal, backend: &dyn PushBackend, tip: [u8; 20]) -> Result<ObjectId> {
-        if let Some(id) = self.known(&tip).await? {
-            return Ok(id);
-        }
+        // `order` also resolves `tip`: it gives no commits when the repository has it
         for sha in self.order(tip).await? {
             let raw = match self.pack.get(&sha)? {
                 Some((_, raw)) => raw,
@@ -999,6 +1034,15 @@ mod tests {
         ) -> std::result::Result<ChangesetRecord, String> {
             self.0.create(repo, cs).await.map_err(|e| e.to_string())
         }
+        async fn create_many(
+            &self,
+            _: &Principal,
+            _: &str,
+            _: Vec<(ObjectId, Bytes)>,
+            _: &[Changeset],
+        ) -> std::result::Result<Vec<Created>, String> {
+            unreachable!("the converter calls create")
+        }
         async fn update(
             &self,
             _: &Principal,
@@ -1017,6 +1061,47 @@ mod tests {
             t.extend_from_slice(sha);
         }
         t
+    }
+
+    /// The order of a pack of 50 new commits finds which commits the repository has with one
+    /// batched read.
+    #[tokio::test]
+    async fn orders_new_commits_with_one_batched_read() {
+        use crate::pack::{Kind, PackWriter};
+        use crate::unpack::{object_sha, unpack};
+        let mem = Arc::new(MemStore::new());
+        mem.create_repo("r").await.expect("repo");
+        let counting = Counting {
+            inner: mem.clone(),
+            derived: AtomicUsize::new(0),
+            derived_many: AtomicUsize::new(0),
+            gets: AtomicUsize::new(0),
+        };
+        let tree = object_sha(ObjType::Tree, b"");
+        let mut bodies = Vec::new();
+        let mut commits = Vec::new();
+        for i in 0..50 {
+            let parent_line = commits
+                .last()
+                .map(|p: &[u8; 20]| format!("parent {}\n", hex::encode(p)))
+                .unwrap_or_default();
+            let body = format!(
+                "tree {}\n{parent_line}author A <a@x> 1 +0000\ncommitter A <a@x> 1 +0000\n\nc{i}\n",
+                hex::encode(tree)
+            );
+            commits.push(object_sha(ObjType::Commit, body.as_bytes()));
+            bodies.push(body);
+        }
+        let (mut w, head) = PackWriter::new(bodies.len() as u32);
+        let mut bytes = head.to_vec();
+        for body in &bodies {
+            bytes.extend_from_slice(&w.object(Kind::Commit, body.as_bytes()));
+        }
+        bytes.extend_from_slice(&w.finish());
+        let pack = unpack(&bytes[..], 1 << 20).expect("unpack");
+        let mut conv = Converter::new(&counting, &counting, "r", &pack);
+        assert_eq!(conv.order(commits[49]).await.expect("order"), commits);
+        assert_eq!(counting.reads(), [0, 1, 0]);
     }
 
     /// 50 commits that each change one file at depth 4, beside a directory that never changes:
