@@ -117,6 +117,28 @@ impl scion_git::receive::PushBackend for PushBackend {
         self.write.create_as(p, repo, cs).await.map_err(reason)
     }
 
+    async fn create_many(
+        &self,
+        p: &scion_auth::Principal,
+        repo: &str,
+        files: Vec<(scion_object::ObjectId, Bytes)>,
+        css: &[scion_object::Changeset],
+    ) -> Result<Vec<scion_git::receive::Created>, String> {
+        let built = self.write.create_many_as(p, repo, &files, css).await.map_err(reason)?;
+        Ok(built
+            .into_iter()
+            .map(|b| scion_git::receive::Created {
+                record: b.record,
+                // The other objects are the commit itself and (on a rebase) merged files.
+                trees: b
+                    .objects
+                    .into_iter()
+                    .filter(|(id, _)| id.kind() == scion_object::ObjectKind::Tree)
+                    .collect(),
+            })
+            .collect())
+    }
+
     async fn update(
         &self,
         p: &scion_auth::Principal,

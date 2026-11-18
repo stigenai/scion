@@ -1130,6 +1130,30 @@ mod tests {
         ) -> std::result::Result<scion_store::ChangesetRecord, String> {
             self.writer.create(repo, cs).await.map_err(|e| e.to_string())
         }
+        async fn create_many(
+            &self,
+            _: &Principal,
+            repo: &str,
+            files: Vec<(ObjectId, Bytes)>,
+            css: &[scion_object::Changeset],
+        ) -> std::result::Result<Vec<receive::Created>, String> {
+            let built = self
+                .writer
+                .create_many(repo, &files, css)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(built
+                .into_iter()
+                .map(|b| receive::Created {
+                    record: b.record,
+                    trees: b
+                        .objects
+                        .into_iter()
+                        .filter(|(id, _)| id.kind() == scion_object::ObjectKind::Tree)
+                        .collect(),
+                })
+                .collect())
+        }
         async fn update(
             &self,
             _: &Principal,

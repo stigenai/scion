@@ -47,13 +47,13 @@ impl WriteSvc {
     }
 
     /// 创建提交需要对每个改动路径有写权限（有整个仓库写权限时不再逐个检查）。
-    async fn authorize_paths(&self, p: &scion_auth::Principal, repo: &str, cs: &Changeset) -> Result<(), Status> {
+    async fn authorize_paths(&self, p: &scion_auth::Principal, repo: &str, css: &[Changeset]) -> Result<(), Status> {
         let whole = AuthRequest::repo(repo, Action::Write);
         if self.guard.check(p, &whole).await.map_err(to_status)? {
             return Ok(());
         }
         authorize_any(&self.guard, p, repo, Action::Write).await?;
-        for c in &cs.delta {
+        for c in css.iter().flat_map(|cs| &cs.delta) {
             authorize(
                 &self.guard,
                 p,
@@ -179,9 +179,27 @@ impl WriteSvc {
         repo: &str,
         cs: &Changeset,
     ) -> Result<ChangesetRecord, Status> {
-        self.authorize_paths(p, repo, cs).await?;
+        self.authorize_paths(p, repo, std::slice::from_ref(cs)).await?;
         RateLimiter::admit(self.limiter.as_deref(), repo)?;
         self.create(repo, cs).await
+    }
+
+    /// Stores `files` and creates the commits `css` (parents first) that the git gateway built
+    /// for `p`, in one batch. The paths of each commit are checked as for [`WriteSvc::create_as`].
+    /// The rate limiter admits the batch one time, and the writer checks the repo one time.
+    pub(crate) async fn create_many_as(
+        &self,
+        p: &scion_auth::Principal,
+        repo: &str,
+        files: &[(ObjectId, Bytes)],
+        css: &[Changeset],
+    ) -> Result<Vec<scion_land::Built>, Status> {
+        self.authorize_paths(p, repo, css).await?;
+        RateLimiter::admit(self.limiter.as_deref(), repo)?;
+        self.writer
+            .create_many(repo, files, css)
+            .await
+            .map_err(status::from_land)
     }
 
     /// 校验并创建提交：父提交必须已存在，引用的文件必须已上传，delta 必须能应用到 first parent 上。
@@ -444,7 +462,7 @@ impl WriteService for WriteSvc {
             .ok_or_else(|| Status::invalid_argument("changeset is required"))?;
         self.resolve_edits(&p, &req.repo, &mut spec).await?;
         let cs = spec_to_changeset(spec, self.config.limits.max_changes_per_changeset)?;
-        self.authorize_paths(&p, &req.repo, &cs).await?;
+        self.authorize_paths(&p, &req.repo, std::slice::from_ref(&cs)).await?;
         // git sha 会被当作这个提交的身份（按 sha 解析版本、事件中的 git_sha），只有导入者可以声明：
         // 否则任何写者都能让任意 sha 指向自己的提交，并抢在真正的导入之前占住它
         // The raw git object decides what git clients see for the commit: the same rule
@@ -571,6 +589,85 @@ pub(crate) mod tests {
         assert!(err.message().contains("git.commit"), "{err:?}");
         assert!(w.create_changeset(raw("importer", 5)).await.is_ok());
     }
+    /// The git gateway batch refuses all commits when one of them writes a path the pusher cannot
+    /// write, and writes nothing. A batch the pusher can write is admitted one time.
+    #[tokio::test]
+    async fn create_many_checks_the_paths_of_each_commit() {
+        use scion_auth::{GuardConfig, Principal};
+        let store = Arc::new(MemStore::new());
+        store.create_repo(REPO).await.expect("repo");
+        let guard = Guard::build(
+            GuardConfig {
+                required: true,
+                ..GuardConfig::default()
+            },
+            store.clone(),
+            Arc::new(|_: &str| None),
+        )
+        .expect("guard");
+        guard
+            .set_policy(
+                r#"
+                [[rule]]
+                subjects = ["user:ui"]
+                repos = ["r"]
+                actions = ["write"]
+                paths = ["ui"]
+                "#,
+            )
+            .await
+            .expect("policy");
+        let w = WriteSvc::new(Arc::new(ServerConfig::default()), store.clone(), store.clone())
+            .with_guard(guard)
+            .with_rate_limit(Arc::new(RateLimiter::new(1, 1)));
+        let file = Bytes::from_static(b"x");
+        let id = ObjectId::of_blob(&file);
+        let sig = Signature {
+            name: "Ada".into(),
+            email: "ada@example.com".into(),
+            time_ms: 1,
+            tz_offset_minutes: 0,
+        };
+        let cs = |parents: Vec<ObjectId>, path: &str, n: u8| {
+            let put = FileChange::put(path, EntryMode::File, id, 1);
+            Changeset::new(
+                parents,
+                sig.clone(),
+                sig.clone(),
+                "m",
+                [n; 16],
+                vec![put],
+                BTreeMap::new(),
+            )
+            .expect("cs")
+        };
+        let first = cs(vec![], "ui/a", 1);
+        let second = cs(vec![first.id()], "server/b", 2);
+        let p = Principal::user("ui", vec![]);
+        let files = [(id, file.clone())];
+        let err = w
+            .create_many_as(&p, REPO, &files, &[first.clone(), second])
+            .await
+            .expect_err("refused");
+        assert_eq!(err.code(), Code::PermissionDenied);
+        assert_eq!(
+            store.get_changeset(REPO, &first.id()).await,
+            Ok(None),
+            "nothing written"
+        );
+        assert_eq!(store.object_sizes(REPO, &[id]).await.map(|s| s.len()), Ok(0));
+
+        let ok = cs(vec![first.id()], "ui/b", 3);
+        let built = w
+            .create_many_as(&p, REPO, &files, &[first.clone(), ok])
+            .await
+            .expect("allowed");
+        assert_eq!(built.len(), 2);
+        // The limiter (burst 1) admitted that batch one time; the next batch waits.
+        let err = w.create_many_as(&p, REPO, &files, &[first]).await.expect_err("limited");
+        assert_eq!(err.code(), Code::ResourceExhausted);
+    }
+
     use scion_store::MemStore;
     use tonic::Code;
 
