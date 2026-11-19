@@ -9,9 +9,9 @@ use bytes::Bytes;
 use scion_object::{ObjectId, ObjectKind};
 
 use crate::{
-    BlobStore, ChangesetRecord, Error, IdempotencyRecord, IndexedObject, LandedChange, Lease, MetaStore, OrgMember,
-    OrgRecord, PackLocation, PackedObject, PathChange, PathHistoryEntry, Redaction, RedactionFilter, RefExpect,
-    RefState,
+    BlobStore, ChangesetRecord, CommitBatch, Error, IdempotencyRecord, IndexedObject, LandedChange, Lease, MetaStore,
+    OrgMember, OrgRecord, PackLocation, PackedObject, PathChange, PathHistoryEntry, Redaction, RedactionFilter,
+    RefExpect, RefState,
 };
 
 fn cs(n: u8) -> ObjectId {
@@ -685,6 +685,50 @@ pub async fn batch_writes<S: MetaStore + ?Sized>(s: &S) {
     ] {
         assert!(matches!(r, Some(Error::RepoNotFound(_))), "{r:?}");
     }
+}
+
+/// A window's metadata in one call: all four kinds are written and readable, a second call changes
+/// nothing, and a missing repo gives RepoNotFound.
+pub async fn commit_batch<S: MetaStore + ?Sized>(s: &S) {
+    s.create_repo("window").await.expect("create");
+    let obj = ObjectId::hash(ObjectKind::Blob, b"b");
+    let rec = ChangesetRecord {
+        id: cs(1),
+        root_tree: ObjectId::hash(ObjectKind::Tree, b"t"),
+        parents: vec![],
+        generation: 1,
+        fp_depth: 0,
+        fp_jump: None,
+    };
+    let objects = [IndexedObject { id: obj, size: 1 }];
+    let paths = [(
+        rec.id,
+        1,
+        vec![PathChange {
+            path: "a/f".into(),
+            deleted: false,
+        }],
+    )];
+    let records = [rec.clone()];
+    let derived = [("k", 1, vec![(b"key".to_vec(), b"val".to_vec())]), ("empty", 1, vec![])];
+    let batch = CommitBatch {
+        objects: &objects,
+        paths: &paths,
+        records: &records,
+        derived: &derived,
+    };
+    s.put_commit_batch("window", &batch).await.expect("write");
+    s.put_commit_batch("window", &batch).await.expect("idempotent");
+    assert_eq!(
+        s.object_sizes("window", &[obj]).await.expect("sizes").get(&obj),
+        Some(&1)
+    );
+    assert_eq!(s.get_changeset("window", &rec.id).await, Ok(Some(rec.clone())));
+    let hist = s.path_history("window", "a", 10, 10).await.expect("history");
+    assert_eq!(hist.len(), 1);
+    assert_eq!(s.get_derived("window", "k", 1, b"key").await, Ok(Some(b"val".to_vec())));
+    let r = s.put_commit_batch("nope", &batch).await;
+    assert!(matches!(r, Err(Error::RepoNotFound(_))), "{r:?}");
 }
 
 /// 租约：空闲时可以申请、持有者续约不换 token、未过期时别人申请不到、过期后被接管（token 加 1）、释放后立即可被接管。

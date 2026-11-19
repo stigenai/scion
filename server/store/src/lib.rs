@@ -361,6 +361,22 @@ pub trait MetaStore: Send + Sync + 'static {
         Ok(())
     }
 
+    /// Writes the metadata of one window in this order: object index, path index, changeset records,
+    /// derived values. Call it after the object bytes are stored. A record that exists means everything
+    /// it refers to exists, and the derived values (the git sha map) come last. A store can override
+    /// this to write all of it in one transaction, so a window is all or nothing.
+    async fn put_commit_batch(&self, repo: &str, batch: &CommitBatch<'_>) -> Result<()> {
+        self.index_objects(repo, batch.objects).await?;
+        self.index_paths_many(repo, batch.paths).await?;
+        self.put_changesets(repo, batch.records).await?;
+        for (kind, version, entries) in batch.derived {
+            if !entries.is_empty() {
+                self.put_derived_many(repo, kind, *version, entries).await?;
+            }
+        }
+        Ok(())
+    }
+
     /// 登记不透明令牌（`tokens` 表，只存哈希）。`id` 已存在时返回 [`Error::Backend`]。
     async fn put_token(&self, _token: &TokenRecord) -> Result<()> {
         Err(unsupported("tokens"))
@@ -753,6 +769,20 @@ pub struct PathHistoryEntry {
 pub fn path_within(candidate: &str, path: &str) -> bool {
     candidate == path
         || (candidate.len() > path.len() && candidate.starts_with(path) && candidate.as_bytes()[path.len()] == b'/')
+}
+
+/// Derived values of one kind: (kind, version, (key, value) pairs).
+pub type DerivedWrite<'a> = (&'a str, u32, Vec<(Vec<u8>, Vec<u8>)>);
+
+/// The metadata of one write window, for [`MetaStore::put_commit_batch`].
+#[derive(Debug, Clone, Copy)]
+pub struct CommitBatch<'a> {
+    pub objects: &'a [IndexedObject],
+    /// (commit, generation, changed paths) for each commit.
+    pub paths: &'a [(ObjectId, u64, Vec<PathChange>)],
+    pub records: &'a [ChangesetRecord],
+    /// An entry with no pairs is skipped.
+    pub derived: &'a [DerivedWrite<'a>],
 }
 
 /// 对象索引中的一条记录。

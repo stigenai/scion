@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use scion_object::{Changeset, FileOp, ObjectId, ObjectKind};
-use scion_store::{BlobStore, ChangesetRecord, IndexedObject, MetaStore, PathChange, fp_skip_step};
+use scion_store::{BlobStore, ChangesetRecord, CommitBatch, IndexedObject, MetaStore, PathChange, fp_skip_step};
 use scion_tree::{BuildResult, apply_delta};
 
 use crate::pending::Pending;
@@ -195,16 +195,16 @@ impl ChangesetWriter {
             .cloned()
             .chain(built.iter().flat_map(|b| b.objects.iter().cloned()))
             .collect();
-        self.store(repo, &objects).await?;
-        let entries: Vec<(ObjectId, u64, Vec<PathChange>)> = built
+        // Object bytes first, then all the metadata in one batch (one transaction on Postgres)
+        self.blobs.put_many(&objects).await?;
+        let index = indexed(&objects);
+        let paths: Vec<(ObjectId, u64, Vec<PathChange>)> = built
             .iter()
             .map(|b| (b.record.id, b.record.generation, b.paths.clone()))
             .collect();
-        self.meta.index_paths_many(repo, &entries).await?;
         let records: Vec<ChangesetRecord> = built.iter().map(|b| b.record.clone()).collect();
-        self.meta.put_changesets(repo, &records).await?;
-        // The git sha map comes last: a push treats a mapped commit as stored, so the record must exist
-        // first. A failure here leaves a record with no map, and the next push of that commit adds the map.
+        // The git sha map is part of the batch and comes last: a push treats a mapped commit as stored,
+        // so the record must exist first. A batch that fails writes none of it.
         let shas: Vec<(Vec<u8>, Vec<u8>)> = built
             .iter()
             .filter_map(|b| {
@@ -214,25 +214,30 @@ impl ChangesetWriter {
                 ))
             })
             .collect();
-        if !shas.is_empty() {
-            self.meta
-                .put_derived_many(repo, scion_query::GITSHA_KIND, scion_query::GITSHA_VERSION, &shas)
-                .await?;
-        }
-        Ok(())
+        let derived = [(scion_query::GITSHA_KIND, scion_query::GITSHA_VERSION, shas)];
+        let batch = CommitBatch {
+            objects: &index,
+            paths: &paths,
+            records: &records,
+            derived: &derived,
+        };
+        Ok(self.meta.put_commit_batch(repo, &batch).await?)
     }
 
     /// 写入对象字节并登记到仓库索引。顺序：先字节、后索引（索引里有的对象一定可读）。
     /// The objects are written as one unit, so a store with packs keeps them in one pack.
     pub async fn store(&self, repo: &str, objects: &[(ObjectId, Bytes)]) -> Result<()> {
         self.blobs.put_many(objects).await?;
-        let index: Vec<_> = objects
-            .iter()
-            .map(|(id, b)| IndexedObject {
-                id: *id,
-                size: b.len() as u64,
-            })
-            .collect();
-        Ok(self.meta.index_objects(repo, &index).await?)
+        Ok(self.meta.index_objects(repo, &indexed(objects)).await?)
     }
+}
+
+fn indexed(objects: &[(ObjectId, Bytes)]) -> Vec<IndexedObject> {
+    objects
+        .iter()
+        .map(|(id, b)| IndexedObject {
+            id: *id,
+            size: b.len() as u64,
+        })
+        .collect()
 }

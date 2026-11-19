@@ -1701,6 +1701,12 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn conformance_commit_batch() {
+        let (_dir, s) = fresh().await;
+        testsuite::commit_batch(&s).await;
+    }
+
+    #[tokio::test]
     async fn conformance_history_index() {
         let (_dir, s) = fresh().await;
         testsuite::history_index(&s).await;

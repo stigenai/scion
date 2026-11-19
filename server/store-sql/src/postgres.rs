@@ -7,10 +7,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use scion_object::ObjectId;
 use scion_store::{
-    ChangesetRecord, Error, IdempotencyRecord, IndexedObject, LandedChange, Lease, MetaStore, OrgMember, OrgRecord,
-    PackLocation, PackedObject, PathChange, PathHistoryEntry, Redaction, RedactionFilter, RefEvent, RefExpect,
-    RefLogEntry, RefState, RepoFilter, RepoInfo, RepoPatch, Result, TagAnnotation, TokenRecord, prefix_upper_bound,
-    validate_repo_name,
+    ChangesetRecord, CommitBatch, Error, IdempotencyRecord, IndexedObject, LandedChange, Lease, MetaStore, OrgMember,
+    OrgRecord, PackLocation, PackedObject, PathChange, PathHistoryEntry, Redaction, RedactionFilter, RefEvent,
+    RefExpect, RefLogEntry, RefState, RepoFilter, RepoInfo, RepoPatch, Result, TagAnnotation, TokenRecord,
+    prefix_upper_bound, validate_repo_name,
 };
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
 
@@ -1314,21 +1314,7 @@ impl MetaStore for PgMetaStore {
     }
 
     async fn index_objects(&self, repo: &str, objects: &[IndexedObject]) -> Result<()> {
-        let ids: Vec<Vec<u8>> = objects.iter().map(|o| o.id.to_bytes().to_vec()).collect();
-        let sizes = objects.iter().map(|o| size_to_db(o.size)).collect::<Result<Vec<_>>>()?;
-        let sql = repo_insert(
-            "objects_index (repo_id, id, size)",
-            "u.id, u.size FROM r, UNNEST($2::bytea[], $3::int8[]) AS u (id, size)",
-            "ON CONFLICT (repo_id, id) DO NOTHING",
-        );
-        let n: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
-            .bind(repo)
-            .bind(ids)
-            .bind(sizes)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| backend("index objects", e))?;
-        repo_found(n, repo)
+        insert_objects(&self.pool, repo, objects).await
     }
     async fn missing_objects(&self, repo: &str, ids: &[ObjectId]) -> Result<Vec<ObjectId>> {
         let present: std::collections::HashSet<Vec<u8>> = self
@@ -1350,43 +1336,7 @@ impl MetaStore for PgMetaStore {
         self.put_changesets(repo, std::slice::from_ref(rec)).await
     }
     async fn put_changesets(&self, repo: &str, recs: &[ChangesetRecord]) -> Result<()> {
-        let (mut ids, mut roots, mut firsts, mut gens, mut parents, mut depths, mut jumps) = (
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        );
-        for r in recs {
-            ids.push(r.id.to_bytes().to_vec());
-            roots.push(r.root_tree.to_bytes().to_vec());
-            firsts.push(r.first_parent().map(|p| p.to_bytes().to_vec()));
-            gens.push(version_to_db(r.generation)?);
-            parents.push(ids_to_db(&r.parents));
-            depths.push(version_to_db(r.fp_depth)?);
-            jumps.push(r.fp_jump.map(|j| j.to_bytes().to_vec()));
-        }
-        let sql = repo_insert(
-            "changesets (repo_id, cs_id, root_tree, first_parent, generation, parents, fp_depth, fp_jump)",
-            "u.* FROM r, UNNEST($2::bytea[], $3::bytea[], $4::bytea[], $5::int8[], $6::bytea[], $7::int8[], \
-             $8::bytea[]) AS u",
-            "ON CONFLICT (repo_id, cs_id) DO NOTHING",
-        );
-        let n: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
-            .bind(repo)
-            .bind(ids)
-            .bind(roots)
-            .bind(firsts)
-            .bind(gens)
-            .bind(parents)
-            .bind(depths)
-            .bind(jumps)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| backend("put changesets", e))?;
-        repo_found(n, repo)
+        insert_changesets(&self.pool, repo, recs).await
     }
     async fn get_changeset(&self, repo: &str, id: &ObjectId) -> Result<Option<ChangesetRecord>> {
         // From `repos`: no row means no such repo, NULL columns mean no such changeset
@@ -1463,31 +1413,7 @@ impl MetaStore for PgMetaStore {
         self.index_paths_many(repo, &[(cs, generation, changes.to_vec())]).await
     }
     async fn index_paths_many(&self, repo: &str, entries: &[(ObjectId, u64, Vec<PathChange>)]) -> Result<()> {
-        let (mut paths, mut css, mut gens, mut deleted) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        for (cs, generation, changes) in entries {
-            let generation = version_to_db(*generation)?;
-            for c in changes {
-                paths.push(c.path.clone());
-                css.push(cs.to_bytes().to_vec());
-                gens.push(generation);
-                deleted.push(c.deleted);
-            }
-        }
-        let sql = repo_insert(
-            "path_changes (repo_id, path, cs_id, generation, deleted)",
-            "u.* FROM r, UNNEST($2::text[], $3::bytea[], $4::int8[], $5::bool[]) AS u",
-            "ON CONFLICT (repo_id, path, generation, cs_id) DO NOTHING",
-        );
-        let n: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
-            .bind(repo)
-            .bind(paths)
-            .bind(css)
-            .bind(gens)
-            .bind(deleted)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| backend("index paths", e))?;
-        repo_found(n, repo)
+        insert_paths(&self.pool, repo, entries).await
     }
     async fn path_history(
         &self,
@@ -1582,23 +1508,21 @@ impl MetaStore for PgMetaStore {
         version: u32,
         entries: &[(Vec<u8>, Vec<u8>)],
     ) -> Result<()> {
-        let (keys, values): (Vec<&[u8]>, Vec<&[u8]>) =
-            entries.iter().map(|(k, v)| (k.as_slice(), v.as_slice())).unzip();
-        let sql = repo_insert(
-            "derived (repo_id, kind, version, key, value)",
-            "$2, $3, u.k, u.v FROM r, UNNEST($4::bytea[], $5::bytea[]) AS u (k, v)",
-            "ON CONFLICT (repo_id, kind, version, key) DO NOTHING",
-        );
-        let n: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
-            .bind(repo)
-            .bind(kind)
-            .bind(i64::from(version))
-            .bind(keys)
-            .bind(values)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| backend("put derived", e))?;
-        repo_found(n, repo)
+        insert_derived(&self.pool, repo, kind, version, entries).await
+    }
+
+    /// One transaction for the four metadata writes of a window: one WAL flush, all or nothing.
+    async fn put_commit_batch(&self, repo: &str, batch: &CommitBatch<'_>) -> Result<()> {
+        let mut tx = self.pool.begin().await.map_err(|e| backend("begin commit batch", e))?;
+        insert_objects(&mut *tx, repo, batch.objects).await?;
+        insert_paths(&mut *tx, repo, batch.paths).await?;
+        insert_changesets(&mut *tx, repo, batch.records).await?;
+        for (kind, version, entries) in batch.derived {
+            if !entries.is_empty() {
+                insert_derived(&mut *tx, repo, kind, *version, entries).await?;
+            }
+        }
+        tx.commit().await.map_err(|e| backend("commit commit batch", e))
     }
     async fn list_refs(&self, repo: &str) -> Result<Vec<(String, RefState)>> {
         let repo_id = self.repo_id(repo).await?;
@@ -1624,6 +1548,122 @@ impl MetaStore for PgMetaStore {
         refs.sort_unstable_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
         Ok(refs)
     }
+}
+
+// The statements below take an executor, so a single call and a transaction share them.
+async fn insert_objects(ex: impl sqlx::PgExecutor<'_>, repo: &str, objects: &[IndexedObject]) -> Result<()> {
+    let ids: Vec<Vec<u8>> = objects.iter().map(|o| o.id.to_bytes().to_vec()).collect();
+    let sizes = objects.iter().map(|o| size_to_db(o.size)).collect::<Result<Vec<_>>>()?;
+    let sql = repo_insert(
+        "objects_index (repo_id, id, size)",
+        "u.id, u.size FROM r, UNNEST($2::bytea[], $3::int8[]) AS u (id, size)",
+        "ON CONFLICT (repo_id, id) DO NOTHING",
+    );
+    let n: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+        .bind(repo)
+        .bind(ids)
+        .bind(sizes)
+        .fetch_one(ex)
+        .await
+        .map_err(|e| backend("index objects", e))?;
+    repo_found(n, repo)
+}
+
+async fn insert_changesets(ex: impl sqlx::PgExecutor<'_>, repo: &str, recs: &[ChangesetRecord]) -> Result<()> {
+    let (mut ids, mut roots, mut firsts, mut gens, mut parents, mut depths, mut jumps) = (
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    for r in recs {
+        ids.push(r.id.to_bytes().to_vec());
+        roots.push(r.root_tree.to_bytes().to_vec());
+        firsts.push(r.first_parent().map(|p| p.to_bytes().to_vec()));
+        gens.push(version_to_db(r.generation)?);
+        parents.push(ids_to_db(&r.parents));
+        depths.push(version_to_db(r.fp_depth)?);
+        jumps.push(r.fp_jump.map(|j| j.to_bytes().to_vec()));
+    }
+    let sql = repo_insert(
+        "changesets (repo_id, cs_id, root_tree, first_parent, generation, parents, fp_depth, fp_jump)",
+        "u.* FROM r, UNNEST($2::bytea[], $3::bytea[], $4::bytea[], $5::int8[], $6::bytea[], $7::int8[], \
+             $8::bytea[]) AS u",
+        "ON CONFLICT (repo_id, cs_id) DO NOTHING",
+    );
+    let n: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+        .bind(repo)
+        .bind(ids)
+        .bind(roots)
+        .bind(firsts)
+        .bind(gens)
+        .bind(parents)
+        .bind(depths)
+        .bind(jumps)
+        .fetch_one(ex)
+        .await
+        .map_err(|e| backend("put changesets", e))?;
+    repo_found(n, repo)
+}
+
+async fn insert_paths(
+    ex: impl sqlx::PgExecutor<'_>,
+    repo: &str,
+    entries: &[(ObjectId, u64, Vec<PathChange>)],
+) -> Result<()> {
+    let (mut paths, mut css, mut gens, mut deleted) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for (cs, generation, changes) in entries {
+        let generation = version_to_db(*generation)?;
+        for c in changes {
+            paths.push(c.path.clone());
+            css.push(cs.to_bytes().to_vec());
+            gens.push(generation);
+            deleted.push(c.deleted);
+        }
+    }
+    let sql = repo_insert(
+        "path_changes (repo_id, path, cs_id, generation, deleted)",
+        "u.* FROM r, UNNEST($2::text[], $3::bytea[], $4::int8[], $5::bool[]) AS u",
+        "ON CONFLICT (repo_id, path, generation, cs_id) DO NOTHING",
+    );
+    let n: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+        .bind(repo)
+        .bind(paths)
+        .bind(css)
+        .bind(gens)
+        .bind(deleted)
+        .fetch_one(ex)
+        .await
+        .map_err(|e| backend("index paths", e))?;
+    repo_found(n, repo)
+}
+
+async fn insert_derived(
+    ex: impl sqlx::PgExecutor<'_>,
+    repo: &str,
+    kind: &str,
+    version: u32,
+    entries: &[(Vec<u8>, Vec<u8>)],
+) -> Result<()> {
+    let (keys, values): (Vec<&[u8]>, Vec<&[u8]>) = entries.iter().map(|(k, v)| (k.as_slice(), v.as_slice())).unzip();
+    let sql = repo_insert(
+        "derived (repo_id, kind, version, key, value)",
+        "$2, $3, u.k, u.v FROM r, UNNEST($4::bytea[], $5::bytea[]) AS u (k, v)",
+        "ON CONFLICT (repo_id, kind, version, key) DO NOTHING",
+    );
+    let n: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+        .bind(repo)
+        .bind(kind)
+        .bind(i64::from(version))
+        .bind(keys)
+        .bind(values)
+        .fetch_one(ex)
+        .await
+        .map_err(|e| backend("put derived", e))?;
+    repo_found(n, repo)
 }
 
 /// One statement that inserts rows for the live repo named by `$1` (CTE `r`) and returns the number of
@@ -1907,6 +1947,12 @@ mod tests {
     async fn conformance_batch_writes() {
         let s = pg_or_skip!();
         testsuite::batch_writes(&s).await;
+    }
+
+    #[tokio::test]
+    async fn conformance_commit_batch() {
+        let s = pg_or_skip!();
+        testsuite::commit_batch(&s).await;
     }
 
     #[tokio::test]
