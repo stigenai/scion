@@ -304,8 +304,8 @@ struct Window {
     css: Vec<Changeset>,
     /// For each changeset: its git commit SHA and the git tree SHA that was pushed.
     pushed: Vec<([u8; 20], [u8; 20])>,
-    /// The Scion ids of the changesets: they have no record yet.
-    ids: HashSet<ObjectId>,
+    /// The Scion id of each changeset (it has no record yet) → its first parent.
+    ids: HashMap<ObjectId, Option<ObjectId>>,
     /// (file, git SHA) of the files in `files`.
     blob_shas: Vec<(ObjectId, [u8; 20])>,
 }
@@ -521,7 +521,7 @@ impl<'a> Converter<'a> {
         let id = cs.id();
         self.commits.insert(sha, id);
         self.trees.insert(sha, c.tree);
-        self.win.ids.insert(id);
+        self.win.ids.insert(id, cs.parents.first().copied());
         self.win.pushed.push((sha, c.tree));
         self.win.css.push(cs);
         Ok(())
@@ -710,6 +710,16 @@ impl<'a> Converter<'a> {
     /// An object the push did not send because the repository has it. Its git SHA maps back
     /// through derived data; when that was derived before the reverse mapping existed, the base
     /// commit's tree is indexed once and the lookup retried.
+    /// The nearest first-parent ancestor of `c` (or `c`) that has a record: a commit of the
+    /// window has none yet. A window commit's tree is its parent's tree with the pushed changes,
+    /// so an object the pack did not send is in that ancestor's tree too.
+    fn stored_base(&self, mut c: Option<ObjectId>) -> Option<ObjectId> {
+        while let Some(parent) = c.and_then(|id| self.win.ids.get(&id)) {
+            c = *parent;
+        }
+        c
+    }
+
     async fn lookup(&mut self, kind: &str, sha: [u8; 20], base_commit: Option<ObjectId>) -> Result<ObjectId> {
         for attempt in 0..2 {
             let found = self
@@ -720,9 +730,8 @@ impl<'a> Converter<'a> {
             if let Some(id) = found {
                 return Ok(id);
             }
-            match base_commit {
-                // A commit of the window has no record yet
-                Some(c) if attempt == 0 && !self.win.ids.contains(&c) && self.indexed.insert(c) => {
+            match self.stored_base(base_commit) {
+                Some(c) if attempt == 0 && self.indexed.insert(c) => {
                     let root = self.record(c).await?.root_tree;
                     self.objects.index_reverse(root).await?;
                 }
