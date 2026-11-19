@@ -53,7 +53,7 @@ impl<'a> Objects<'a> {
         Ok(())
     }
 
-    async fn cached_many(&self, kind: &str, ids: &[ObjectId]) -> Result<Vec<(ObjectId, [u8; 20])>> {
+    pub(crate) async fn cached_many(&self, kind: &str, ids: &[ObjectId]) -> Result<Vec<(ObjectId, [u8; 20])>> {
         let mut out = Vec::new();
         for chunk in ids.chunks(BATCH) {
             let keys: Vec<Vec<u8>> = chunk.iter().map(|id| id.to_bytes().to_vec()).collect();
