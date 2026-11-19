@@ -14,9 +14,9 @@ use moka::sync::Cache;
 use scion_object::ObjectId;
 
 use crate::{
-    ChangesetRecord, IdempotencyRecord, IndexedObject, LandedChange, Lease, MetaStore, OrgMember, OrgRecord,
-    PackLocation, PackedObject, PathChange, PathHistoryEntry, Redaction, RedactionFilter, RefEvent, RefExpect,
-    RefLogEntry, RefState, RepoFilter, RepoInfo, RepoPatch, Result, TagAnnotation, TokenRecord,
+    ChangesetRecord, CommitBatch, IdempotencyRecord, IndexedObject, LandedChange, Lease, MetaStore, OrgMember,
+    OrgRecord, PackLocation, PackedObject, PathChange, PathHistoryEntry, Redaction, RedactionFilter, RefEvent,
+    RefExpect, RefLogEntry, RefState, RepoFilter, RepoInfo, RepoPatch, Result, TagAnnotation, TokenRecord,
 };
 
 /// 提交记录在缓存中的最长保留时间。
@@ -228,6 +228,11 @@ impl MetaStore for CachedMeta {
         entries: &[(Vec<u8>, Vec<u8>)],
     ) -> Result<()> {
         self.inner.put_derived_many(repo, kind, version, entries).await
+    }
+
+    async fn put_commit_batch(&self, repo: &str, batch: &CommitBatch<'_>) -> Result<()> {
+        // Like put_changesets: nothing is cached on write
+        self.inner.put_commit_batch(repo, batch).await
     }
 
     async fn put_token(&self, token: &TokenRecord) -> Result<()> {
@@ -486,6 +491,11 @@ mod tests {
     #[tokio::test]
     async fn conformance_batch_writes() {
         testsuite::batch_writes(&cached()).await;
+    }
+
+    #[tokio::test]
+    async fn conformance_commit_batch() {
+        testsuite::commit_batch(&cached()).await;
     }
 
     #[tokio::test]
