@@ -15,6 +15,7 @@ mod redacted;
 mod repo;
 #[cfg(any(test, feature = "testsuite"))]
 pub mod testsuite;
+mod timing;
 
 use std::collections::HashMap;
 
@@ -27,6 +28,7 @@ pub use cached::{CachedMeta, RECORD_TTL};
 pub use error::{Error, Result};
 pub use mem::MemStore;
 pub use redacted::{RedactedBlobs, redactable, redacted_error};
+pub use timing::{CountedBlobs, PushStats, scope as push_scope, timed};
 
 pub use repo::{MAX_REPO_NAME_LEN, validate_repo_name};
 

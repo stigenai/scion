@@ -192,7 +192,10 @@ pub async fn serve(
         tokio::spawn(warm(cached.clone()));
     }
     // 对象读取：小对象缓存、合并并发读、限制后端并发（§7.3）
-    let blobs: Arc<dyn BlobStore> = Arc::new(scion_store::CachedBlobs::new(app.blobs, app.config.blob_cache));
+    let blobs: Arc<dyn BlobStore> = Arc::new(scion_store::CachedBlobs::new(
+        Arc::new(scion_store::CountedBlobs(app.blobs)),
+        app.config.blob_cache,
+    ));
     let app = App {
         meta: cached,
         blobs,

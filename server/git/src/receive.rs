@@ -477,7 +477,7 @@ impl<'a> Converter<'a> {
     /// in windows, one `create_many` call for each.
     pub async fn convert(&mut self, p: &Principal, backend: &dyn PushBackend, tip: [u8; 20]) -> Result<ObjectId> {
         // `order` also resolves `tip`: it gives no commits when the repository has it
-        for sha in self.order(tip).await? {
+        for sha in scion_store::timed("order", self.order(tip)).await? {
             self.add_commit(sha).await?;
             if self.win.css.len() >= self.max_commits || self.win.bytes >= self.max_bytes {
                 self.close_window(p, backend).await?;
@@ -534,8 +534,7 @@ impl<'a> Converter<'a> {
         if win.css.is_empty() {
             return Ok(());
         }
-        let created = backend
-            .create_many(p, self.repo, win.files, &win.css)
+        let created = scion_store::timed("create_many", backend.create_many(p, self.repo, win.files, &win.css))
             .await
             .map_err(Error::Unservable)?;
         if created.len() != win.css.len() || created.iter().zip(&win.css).any(|(c, cs)| c.record.id != cs.id()) {
@@ -543,7 +542,7 @@ impl<'a> Converter<'a> {
         }
         let new = decode_trees(&created)?;
         let roots: Vec<ObjectId> = created.iter().map(|c| c.record.root_tree).collect();
-        self.tree_shas_of(&new, &roots).await?;
+        scion_store::timed("tree_shas", self.tree_shas_of(&new, &roots)).await?;
         // The SHA git sees must be the SHA of what Scion stores
         for ((sha, pushed), c) in win.pushed.iter().zip(&created) {
             if self.tree_shas.get(&c.record.root_tree) != Some(pushed) {
@@ -553,7 +552,7 @@ impl<'a> Converter<'a> {
                 )));
             }
         }
-        self.write_maps(&win.blob_shas, new.keys()).await
+        scion_store::timed("write_maps", self.write_maps(&win.blob_shas, new.keys())).await
     }
 
     /// Writes the git SHA maps (both ways) of the new files and trees, one call for each map.
