@@ -180,16 +180,23 @@ impl Gateway {
             };
         }
         if push {
-            let file = match spool_body(&parts.headers, body, MAX_PUSH).await {
-                Ok(f) => f,
-                Err(r) => return *r,
-            };
-            let credential = credentials(&parts.headers);
-            let identity = PushIdentity {
-                principal: &principal,
-                credential: credential.as_deref(),
-            };
-            return self.receive_pack(&identity, &repo, &default, file).await;
+            let stats = Arc::new(scion_store::PushStats::default());
+            let response = scion_store::push_scope(stats.clone(), async {
+                let spooled = scion_store::timed("spool", spool_body(&parts.headers, body, MAX_PUSH)).await;
+                let file = match spooled {
+                    Ok(f) => f,
+                    Err(r) => return *r,
+                };
+                let credential = credentials(&parts.headers);
+                let identity = PushIdentity {
+                    principal: &principal,
+                    credential: credential.as_deref(),
+                };
+                self.receive_pack(&identity, &repo, &default, file).await
+            })
+            .await;
+            tracing::info!(%repo, "push timing {}", stats.summary());
+            return response;
         }
         let body = match read_body(&parts.headers, body, MAX_REQUEST).await {
             Ok(b) => b,
@@ -270,18 +277,21 @@ impl Gateway {
         };
         // Reading the pack is blocking work: files and inflating
         let max_file = *max_file;
-        let parsed = tokio::task::spawn_blocking(move || {
-            use std::io::BufRead;
-            let mut r = std::io::BufReader::with_capacity(1 << 16, body);
-            let req = receive::parse_request(&mut r)?;
-            let empty = r.fill_buf().map(|b| b.is_empty()).unwrap_or(true);
-            let unpacked = if empty && req.commands.iter().all(|c| c.new == receive::ZERO) {
-                Ok(unpack::Unpacked::default())
-            } else {
-                unpack::unpack(r, max_file)
-            };
-            Ok::<_, Error>((req, unpacked))
-        })
+        let parsed = scion_store::timed(
+            "unpack",
+            tokio::task::spawn_blocking(move || {
+                use std::io::BufRead;
+                let mut r = std::io::BufReader::with_capacity(1 << 16, body);
+                let req = receive::parse_request(&mut r)?;
+                let empty = r.fill_buf().map(|b| b.is_empty()).unwrap_or(true);
+                let unpacked = if empty && req.commands.iter().all(|c| c.new == receive::ZERO) {
+                    Ok(unpack::Unpacked::default())
+                } else {
+                    unpack::unpack(r, max_file)
+                };
+                Ok::<_, Error>((req, unpacked))
+            }),
+        )
         .await;
         let (req, unpacked) = match parsed {
             Ok(Ok(p)) => p,
@@ -396,9 +406,11 @@ impl Gateway {
                 }
             }
         };
-        backend
-            .update(identity.principal, identity.credential, repo, update)
-            .await
+        scion_store::timed(
+            "ref_update",
+            backend.update(identity.principal, identity.credential, repo, update),
+        )
+        .await
     }
 
     async fn upload_pack(&self, repo: String, default: String, v2: bool, body: Bytes) -> Response<Body> {
