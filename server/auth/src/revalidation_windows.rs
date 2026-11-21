@@ -1,17 +1,18 @@
 //! One test per revalidation window. Each test revokes a credential or changes a policy.
 //! It then reads inside the window and after it. ADR 0003 in the stek repo records the windows.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
+use moka::Expiry;
 use scion_store::{MemStore, MetaStore};
 use serde_json::{Value, json};
 
 use crate::config::{AuthConfig, ClientAuth, IntrospectionConfig, Secret, WebhookConfig};
 use crate::guard::{AuthError, Guard, GuardConfig};
 use crate::policy::{Action, Principal, Request};
-use crate::remote::{AuthzWebhook, Introspection, env_lookup};
+use crate::remote::{AuthzWebhook, Introspection, Ttl, env_lookup};
 use crate::testing::FakeIdp;
 
 fn now_secs() -> i64 {
@@ -32,17 +33,17 @@ fn basic() -> ClientAuth {
 }
 
 fn introspection(idp: &FakeIdp, ttl: Duration) -> Introspection {
-    Introspection::new(
-        IntrospectionConfig {
-            url: idp.url("/introspect"),
-            auth: basic(),
-            cache_ttl: ttl,
-            subject_claim: "username".into(),
-            groups_claim: None,
-        },
-        reqwest::Client::new(),
-        env_lookup(),
-    )
+    Introspection::new(introspection_config(idp, ttl), reqwest::Client::new(), env_lookup())
+}
+
+fn introspection_config(idp: &FakeIdp, ttl: Duration) -> IntrospectionConfig {
+    IntrospectionConfig {
+        url: idp.url("/introspect"),
+        auth: basic(),
+        cache_ttl: ttl,
+        subject_claim: "username".into(),
+        groups_claim: None,
+    }
 }
 
 fn active(exp: Option<i64>) -> Value {
@@ -82,14 +83,48 @@ async fn introspection_cache_ttl_zero_turns_the_cache_off() {
 
 #[tokio::test]
 async fn introspection_entry_ends_at_token_expiry() {
+    const EXP: i64 = 1_000_000;
+    const EXP_MS: i64 = EXP * 1000;
+    let ttl = Duration::from_secs(60);
     let idp = FakeIdp::start().await;
-    idp.set_introspection("t1", active(Some(now_secs() + 1)));
-    let i = introspection(&idp, Duration::from_secs(60));
-    assert!(i.verify("t1").await.expect("ok").is_some());
+    idp.set_introspection("t1", active(Some(EXP)));
+    let samples = Mutex::new([EXP_MS - 1000, EXP_MS, EXP_MS].into_iter());
+    let i = Introspection::new_with_clock(
+        introspection_config(&idp, ttl),
+        reqwest::Client::new(),
+        env_lookup(),
+        Arc::new(move || {
+            samples
+                .lock()
+                .expect("clock samples")
+                .next()
+                .expect("unexpected clock read")
+        }),
+    );
+    let principal = i.verify("t1").await.expect("ok").expect("active token");
+    assert!(principal.authenticated);
+    assert_eq!(principal.subject, "alice");
+    assert_eq!(idp.calls("/introspect"), 1);
     idp.set_introspection("t1", json!({"active": false}));
-    tokio::time::sleep(Duration::from_millis(1300)).await;
     assert_eq!(i.verify("t1").await, Ok(None), "the entry did not outlive exp");
     assert_eq!(idp.calls("/introspect"), 2);
+
+    let entry = Some(principal);
+    for (now, expected) in [
+        (EXP_MS - 1000, 1000),
+        (EXP_MS, 0),
+        (EXP_MS + 1, 0),
+        (EXP_MS - 61_000, 60_000),
+    ] {
+        let expiry = Ttl {
+            positive: ttl,
+            now_ms: Arc::new(move || now),
+        };
+        assert_eq!(
+            expiry.expire_after_create(&(), &entry, Instant::now()),
+            Some(Duration::from_millis(expected)),
+        );
+    }
 }
 
 #[tokio::test]
