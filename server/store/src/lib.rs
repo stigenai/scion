@@ -832,6 +832,12 @@ pub trait BlobStore: Send + Sync + 'static {
 
     async fn get(&self, id: &ObjectId) -> Result<Option<Bytes>>;
 
+    /// Prepares to read these objects soon, for example by finding where they are in a few
+    /// batched calls. Only an optimisation: the default does nothing.
+    async fn prefetch(&self, _ids: &[ObjectId]) -> Result<()> {
+        Ok(())
+    }
+
     async fn exists(&self, id: &ObjectId) -> Result<bool>;
 
     /// 物理删除对象（redaction 清除）。对象不存在时不是错误。

@@ -704,6 +704,9 @@ pub async fn plan(
     filter: Filter,
 ) -> Result<Plan> {
     let commits = commits(meta, repo, &wants.commits, haves, cut).await?;
+    // The packs of the commits and their root trees mostly hold the rest of what they changed
+    let ids: Vec<ObjectId> = commits.iter().flat_map(|c| [c.id, c.root_tree]).collect();
+    blobs.prefetch(&ids).await?;
     let mut roots: HashMap<ObjectId, ObjectId> = HashMap::new();
     let mut plan = Plan {
         tags: wants.tags.clone(),
@@ -1082,6 +1085,13 @@ pub async fn write_pack(started: Started<'_>, out: &Out, opts: PackOptions) -> R
             return Ok(());
         }
     }
+    let ids: Vec<ObjectId> = plan
+        .trees
+        .iter()
+        .chain(&plan.files)
+        .flat_map(|(id, base)| std::iter::once(*id).chain(*base))
+        .collect();
+    blobs.prefetch(&ids).await?;
     let mut d = Deltas {
         opts,
         planned: plan.trees.iter().chain(&plan.files).map(|(id, _)| *id).collect(),
