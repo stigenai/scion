@@ -30,6 +30,7 @@ pub struct Objects<'a> {
     pub repo: &'a str,
     commits: HashMap<ObjectId, [u8; 20]>,
     trees: HashMap<ObjectId, [u8; 20]>,
+    files: HashMap<ObjectId, [u8; 20]>,
 }
 
 impl<'a> Objects<'a> {
@@ -40,6 +41,7 @@ impl<'a> Objects<'a> {
             repo,
             commits: HashMap::new(),
             trees: HashMap::new(),
+            files: HashMap::new(),
         }
     }
 
@@ -50,6 +52,42 @@ impl<'a> Objects<'a> {
         self.commits.extend(found);
         let found = self.cached_many(GIT_TREE_KIND, trees).await?;
         self.trees.extend(found);
+        Ok(())
+    }
+
+    /// Looks up the cached SHAs of the entries of these trees, and of the trees in `more`, in
+    /// one batched query for each kind, so [`Objects::tree`] needs no query of its own for them.
+    pub async fn prefetch_entries(&mut self, trees: &[&Tree], more: &[ObjectId]) -> Result<()> {
+        let mut dirs: Vec<ObjectId> = more.to_vec();
+        let mut files: Vec<ObjectId> = Vec::new();
+        for e in trees.iter().flat_map(|t| t.entries()) {
+            if e.mode == EntryMode::Tree {
+                dirs.push(e.id);
+            } else {
+                files.push(e.id);
+            }
+        }
+        self.lookup_trees(dirs).await?;
+        self.lookup_files(files).await
+    }
+
+    /// Adds the cached SHAs of the trees not known yet.
+    async fn lookup_trees(&mut self, mut ids: Vec<ObjectId>) -> Result<()> {
+        ids.retain(|id| !self.trees.contains_key(id));
+        ids.sort_unstable();
+        ids.dedup();
+        let found = self.cached_many(GIT_TREE_KIND, &ids).await?;
+        self.trees.extend(found);
+        Ok(())
+    }
+
+    /// Adds the cached SHAs of the files not known yet.
+    async fn lookup_files(&mut self, mut ids: Vec<ObjectId>) -> Result<()> {
+        ids.retain(|id| !self.files.contains_key(id));
+        ids.sort_unstable();
+        ids.dedup();
+        let found = self.cached_many(GIT_BLOB_KIND, &ids).await?;
+        self.files.extend(found);
         Ok(())
     }
 
@@ -179,22 +217,23 @@ impl<'a> Objects<'a> {
         Ok(())
     }
 
-    /// The cached git SHAs of a tree's entries, in order; `None` when any is missing.
-    async fn entry_shas(&self, tree: &Tree) -> Result<Option<Vec<[u8; 20]>>> {
+    /// The cached git SHAs of a tree's entries, in order; `None` when any is missing. Only the
+    /// entries not known yet are looked up.
+    async fn entry_shas(&mut self, tree: &Tree) -> Result<Option<Vec<[u8; 20]>>> {
         let (dirs, files): (Vec<_>, Vec<_>) = tree.entries().iter().partition(|e| e.mode == EntryMode::Tree);
-        let dir_ids: Vec<ObjectId> = dirs.iter().map(|e| e.id).collect();
-        let file_ids: Vec<ObjectId> = files.iter().map(|e| e.id).collect();
-        let mut known: HashMap<(bool, ObjectId), [u8; 20]> = HashMap::new();
-        for (id, sha) in self.cached_many(GIT_TREE_KIND, &dir_ids).await? {
-            known.insert((true, id), sha);
-        }
-        for (id, sha) in self.cached_many(GIT_BLOB_KIND, &file_ids).await? {
-            known.insert((false, id), sha);
-        }
+        self.lookup_trees(dirs.iter().map(|e| e.id).collect()).await?;
+        self.lookup_files(files.iter().map(|e| e.id).collect()).await?;
         Ok(tree
             .entries()
             .iter()
-            .map(|e| known.get(&(e.mode == EntryMode::Tree, e.id)).copied())
+            .map(|e| {
+                let known = if e.mode == EntryMode::Tree {
+                    &self.trees
+                } else {
+                    &self.files
+                };
+                known.get(&e.id).copied()
+            })
             .collect())
     }
 }
