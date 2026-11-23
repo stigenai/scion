@@ -329,6 +329,10 @@ const REPACK_TARGET: usize = 64 << 20;
 const REPACK_PARALLEL: usize = 32;
 /// Loose objects written at the same time.
 const PARALLEL_PUTS: usize = 16;
+/// How many ids one pack location lookup of [`BlobStore::prefetch`] asks for.
+const PREFETCH_LOOKUP: usize = 1000;
+/// How many pack trailers [`BlobStore::prefetch`] reads at once.
+const PREFETCH_PARALLEL: usize = 8;
 
 /// The bytes to store for `data`: a zstd frame when it saves at least 10%, else `data` itself.
 fn encode(data: &Bytes) -> Bytes {
@@ -1334,6 +1338,39 @@ impl BlobStore for ObjectBlobStore {
         self.get_at(id, 0).await
     }
 
+    /// Looks up the locations not cached yet in batches, then reads the trailer of each pack
+    /// they are in, [`PREFETCH_PARALLEL`] at a time: reads of the objects then need no lookup.
+    async fn prefetch(&self, ids: &[ObjectId]) -> Result<()> {
+        let Some(p) = &self.packs else { return Ok(()) };
+        let mut missing: Vec<ObjectId> = ids
+            .iter()
+            .filter(|id| !p.locations.contains_key(*id))
+            .copied()
+            .collect();
+        missing.sort_unstable();
+        missing.dedup();
+        let mut packs = std::collections::HashSet::new();
+        for chunk in missing.chunks(PREFETCH_LOOKUP) {
+            for (id, l) in p.index.pack_locations(chunk).await? {
+                p.locations.insert(id, l);
+                if !p.learned.contains_key(&l.pack) {
+                    packs.insert(l.pack);
+                }
+            }
+        }
+        futures::stream::iter(packs)
+            .map(|name| async move {
+                // Only an optimisation: each object's own location is already known
+                if let Err(e) = self.learn(p, &name).await {
+                    tracing::warn!(error = %e, "could not read a pack trailer");
+                }
+            })
+            .buffer_unordered(PREFETCH_PARALLEL)
+            .collect::<()>()
+            .await;
+        Ok(())
+    }
+
     async fn exists(&self, id: &ObjectId) -> Result<bool> {
         if self.location(id, false).await?.is_some() {
             return Ok(true);
@@ -1362,6 +1399,11 @@ impl BlobStore for ObjectBlobStore {
 mod tests {
     use super::*;
     use scion_store::testsuite;
+    use scion_store::{
+        ChangesetRecord, IdempotencyRecord, IndexedObject, LandedChange, Lease, PathChange, PathHistoryEntry,
+        RefExpect, RefState,
+    };
+    use std::sync::atomic::Ordering;
 
     #[test]
     fn repack_marker_round_trips_and_reads_old_ones() {
@@ -1824,6 +1866,283 @@ mod tests {
     }
 
     /// The in-memory backend compresses and packs like the others.
+    /// Counts the pack location lookups of a store.
+    struct CountingIndex {
+        inner: Arc<scion_store::MemStore>,
+        lookups: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl MetaStore for CountingIndex {
+        async fn create_repo(&self, repo: &str) -> scion_store::Result<()> {
+            self.inner.create_repo(repo).await
+        }
+        async fn repo_exists(&self, repo: &str) -> scion_store::Result<bool> {
+            self.inner.repo_exists(repo).await
+        }
+        async fn list_repos(&self) -> scion_store::Result<Vec<String>> {
+            self.inner.list_repos().await
+        }
+        async fn get_ref(&self, repo: &str, name: &str) -> scion_store::Result<Option<RefState>> {
+            self.inner.get_ref(repo, name).await
+        }
+        async fn land_commit_as(
+            &self,
+            repo: &str,
+            name: &str,
+            expect: RefExpect,
+            target: ObjectId,
+            landed: &[LandedChange],
+            requests: &[IdempotencyRecord],
+            actor: &str,
+        ) -> scion_store::Result<RefState> {
+            self.inner
+                .land_commit_as(repo, name, expect, target, landed, requests, actor)
+                .await
+        }
+        async fn landed_changes(
+            &self,
+            repo: &str,
+            name: &str,
+            change_ids: &[[u8; 16]],
+        ) -> scion_store::Result<Vec<LandedChange>> {
+            self.inner.landed_changes(repo, name, change_ids).await
+        }
+        async fn get_idempotency(&self, repo: &str, id: &str) -> scion_store::Result<Option<IdempotencyRecord>> {
+            self.inner.get_idempotency(repo, id).await
+        }
+        async fn expire_idempotency(&self, before_ms: i64) -> scion_store::Result<u64> {
+            self.inner.expire_idempotency(before_ms).await
+        }
+        async fn acquire_lease(&self, scope: &str, holder: &str, ttl: i64, now: i64) -> scion_store::Result<Lease> {
+            self.inner.acquire_lease(scope, holder, ttl, now).await
+        }
+        async fn release_lease(&self, scope: &str, holder: &str) -> scion_store::Result<()> {
+            self.inner.release_lease(scope, holder).await
+        }
+        async fn index_objects(&self, repo: &str, objects: &[IndexedObject]) -> scion_store::Result<()> {
+            self.inner.index_objects(repo, objects).await
+        }
+        async fn missing_objects(&self, repo: &str, ids: &[ObjectId]) -> scion_store::Result<Vec<ObjectId>> {
+            self.inner.missing_objects(repo, ids).await
+        }
+        async fn object_sizes(&self, repo: &str, ids: &[ObjectId]) -> scion_store::Result<HashMap<ObjectId, u64>> {
+            self.inner.object_sizes(repo, ids).await
+        }
+        async fn put_changesets(&self, repo: &str, recs: &[ChangesetRecord]) -> scion_store::Result<()> {
+            self.inner.put_changesets(repo, recs).await
+        }
+        async fn put_changeset(&self, repo: &str, rec: &ChangesetRecord) -> scion_store::Result<()> {
+            self.inner.put_changeset(repo, rec).await
+        }
+        async fn get_changeset(&self, repo: &str, id: &ObjectId) -> scion_store::Result<Option<ChangesetRecord>> {
+            self.inner.get_changeset(repo, id).await
+        }
+        async fn list_refs(&self, repo: &str) -> scion_store::Result<Vec<(String, RefState)>> {
+            self.inner.list_refs(repo).await
+        }
+        async fn changesets_below(
+            &self,
+            repo: &str,
+            max_generation: u64,
+            limit: usize,
+        ) -> scion_store::Result<Vec<ChangesetRecord>> {
+            self.inner.changesets_below(repo, max_generation, limit).await
+        }
+        async fn repair_lineage(
+            &self,
+            repo: &str,
+            id: &ObjectId,
+            p: &[ObjectId],
+            d: u64,
+            j: Option<ObjectId>,
+        ) -> scion_store::Result<()> {
+            self.inner.repair_lineage(repo, id, p, d, j).await
+        }
+        async fn index_paths(
+            &self,
+            repo: &str,
+            cs: ObjectId,
+            generation: u64,
+            changes: &[PathChange],
+        ) -> scion_store::Result<()> {
+            self.inner.index_paths(repo, cs, generation, changes).await
+        }
+        async fn index_paths_many(
+            &self,
+            repo: &str,
+            entries: &[(ObjectId, u64, Vec<PathChange>)],
+        ) -> scion_store::Result<()> {
+            self.inner.index_paths_many(repo, entries).await
+        }
+        async fn path_history(
+            &self,
+            repo: &str,
+            path: &str,
+            max_generation: u64,
+            limit: usize,
+        ) -> scion_store::Result<Vec<PathHistoryEntry>> {
+            self.inner.path_history(repo, path, max_generation, limit).await
+        }
+        async fn get_derived(
+            &self,
+            repo: &str,
+            kind: &str,
+            v: u32,
+            key: &[u8],
+        ) -> scion_store::Result<Option<Vec<u8>>> {
+            self.inner.get_derived(repo, kind, v, key).await
+        }
+        async fn get_derived_many(
+            &self,
+            repo: &str,
+            kind: &str,
+            v: u32,
+            keys: &[Vec<u8>],
+        ) -> scion_store::Result<Vec<Option<Vec<u8>>>> {
+            self.inner.get_derived_many(repo, kind, v, keys).await
+        }
+        async fn put_derived(
+            &self,
+            repo: &str,
+            kind: &str,
+            v: u32,
+            key: &[u8],
+            value: &[u8],
+        ) -> scion_store::Result<()> {
+            self.inner.put_derived(repo, kind, v, key, value).await
+        }
+        async fn put_derived_many(
+            &self,
+            repo: &str,
+            kind: &str,
+            v: u32,
+            pairs: &[(Vec<u8>, Vec<u8>)],
+        ) -> scion_store::Result<()> {
+            self.inner.put_derived_many(repo, kind, v, pairs).await
+        }
+        async fn put_pack_locations(&self, pack: &[u8; 32], objects: &[PackedObject]) -> scion_store::Result<()> {
+            self.inner.put_pack_locations(pack, objects).await
+        }
+        async fn pack_locations(&self, ids: &[ObjectId]) -> scion_store::Result<HashMap<ObjectId, PackLocation>> {
+            self.lookups.fetch_add(1, Ordering::SeqCst);
+            self.inner.pack_locations(ids).await
+        }
+    }
+
+    /// Counts the pack trailer reads (suffix range reads) of an object store.
+    #[derive(Debug)]
+    struct CountingObjects {
+        inner: Arc<dyn ObjectStore>,
+        trailers: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl std::fmt::Display for CountingObjects {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "counting({})", self.inner)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ObjectStore for CountingObjects {
+        async fn put_opts(
+            &self,
+            location: &Path,
+            payload: PutPayload,
+            opts: object_store::PutOptions,
+        ) -> object_store::Result<object_store::PutResult> {
+            self.inner.put_opts(location, payload, opts).await
+        }
+        async fn put_multipart_opts(
+            &self,
+            location: &Path,
+            opts: object_store::PutMultipartOptions,
+        ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
+            self.inner.put_multipart_opts(location, opts).await
+        }
+        async fn get_opts(
+            &self,
+            location: &Path,
+            options: object_store::GetOptions,
+        ) -> object_store::Result<object_store::GetResult> {
+            if matches!(options.range, Some(object_store::GetRange::Suffix(_))) {
+                self.trailers.fetch_add(1, Ordering::SeqCst);
+            }
+            self.inner.get_opts(location, options).await
+        }
+        fn delete_stream(
+            &self,
+            locations: futures::stream::BoxStream<'static, object_store::Result<Path>>,
+        ) -> futures::stream::BoxStream<'static, object_store::Result<Path>> {
+            self.inner.delete_stream(locations)
+        }
+        fn list(
+            &self,
+            prefix: Option<&Path>,
+        ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>> {
+            self.inner.list(prefix)
+        }
+        async fn list_with_delimiter(&self, prefix: Option<&Path>) -> object_store::Result<object_store::ListResult> {
+            self.inner.list_with_delimiter(prefix).await
+        }
+        async fn copy_opts(
+            &self,
+            from: &Path,
+            to: &Path,
+            options: object_store::CopyOptions,
+        ) -> object_store::Result<()> {
+            self.inner.copy_opts(from, to, options).await
+        }
+    }
+
+    /// A cold read of 400 objects in 4 packs, 16 at a time, after one prefetch: one location
+    /// lookup and one trailer read for each pack at most.
+    #[tokio::test]
+    async fn prefetch_reads_each_pack_trailer_once() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (s, index) = packed(dir.path());
+        let mut all = Vec::new();
+        for p in 0..4 {
+            let objects: Vec<(ObjectId, Bytes)> = (0..100)
+                .map(|i| {
+                    let d = noise(1_000 + p * 100 + i);
+                    (ObjectId::of_blob(&d), d)
+                })
+                .collect();
+            s.put_many(&objects).await.expect("pack");
+            all.extend(objects);
+        }
+        let counting = Arc::new(CountingIndex {
+            inner: index,
+            lookups: Default::default(),
+        });
+        let trailers = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut fresh = ObjectBlobStore::local(dir.path())
+            .expect("open")
+            .with_packs(counting.clone());
+        fresh.store = Arc::new(CountingObjects {
+            inner: fresh.store.clone(),
+            trailers: trailers.clone(),
+        });
+        let ids: Vec<ObjectId> = all.iter().map(|(id, _)| *id).collect();
+        fresh.prefetch(&ids).await.expect("prefetch");
+        let fresh = &fresh;
+        let got: Vec<Option<Bytes>> = futures::stream::iter(&ids)
+            .map(|id| async move { fresh.get(id).await.expect("get") })
+            .buffered(16)
+            .collect()
+            .await;
+        for ((_, d), g) in all.iter().zip(got) {
+            assert_eq!(g.as_ref(), Some(d));
+        }
+        let (lookups, trailers) = (counting.lookups.load(Ordering::SeqCst), trailers.load(Ordering::SeqCst));
+        eprintln!("400 objects in 4 packs: {lookups} location lookups, {trailers} trailer reads");
+        assert!(
+            lookups <= 4 && trailers <= 4,
+            "{lookups} lookups, {trailers} trailer reads"
+        );
+    }
+
     #[tokio::test]
     async fn memory_store_packs_and_compresses() {
         let index = Arc::new(scion_store::MemStore::new());

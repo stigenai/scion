@@ -115,6 +115,10 @@ impl BlobStore for CountedBlobs {
         count(|s| &s.get, self.0.get(id)).await
     }
 
+    async fn prefetch(&self, ids: &[ObjectId]) -> Result<()> {
+        self.0.prefetch(ids).await
+    }
+
     async fn exists(&self, id: &ObjectId) -> Result<bool> {
         count(|s| &s.head, self.0.exists(id)).await
     }

@@ -115,6 +115,11 @@ impl BlobStore for CachedBlobs {
         self.flight.run(*id, || self.load(*id)).await
     }
 
+    async fn prefetch(&self, ids: &[ObjectId]) -> Result<()> {
+        let missing: Vec<ObjectId> = ids.iter().filter(|id| self.cached(id).is_none()).copied().collect();
+        self.inner.prefetch(&missing).await
+    }
+
     async fn exists(&self, id: &ObjectId) -> Result<bool> {
         if self.cached(id).is_some() {
             return Ok(true);

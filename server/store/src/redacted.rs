@@ -60,6 +60,10 @@ impl BlobStore for RedactedBlobs {
         self.inner.get(id).await
     }
 
+    async fn prefetch(&self, ids: &[ObjectId]) -> Result<()> {
+        self.inner.prefetch(ids).await
+    }
+
     async fn exists(&self, id: &ObjectId) -> Result<bool> {
         self.inner.exists(id).await
     }
