@@ -1614,6 +1614,37 @@ mod tests {
         assert_same_objects(&h, &cloned);
     }
 
+    /// A clone reads the git SHAs of the trees' entries in batches: the number of batched reads
+    /// does not grow with the number of trees.
+    #[tokio::test]
+    async fn clones_400_trees_in_few_derived_reads() {
+        let mut h = History::default();
+        let mut files = BTreeMap::new();
+        let mut commits: Vec<[u8; 20]> = Vec::new();
+        // Each commit changes four directories: 100 commits make 400 trees
+        for i in 0..100 {
+            for dir in ["", "a/", "a/b/", "a/b/c/"] {
+                files.insert(format!("{dir}f{i}.txt"), format!("content {i}\n").into_bytes());
+            }
+            let parents: Vec<[u8; 20]> = commits.last().copied().into_iter().collect();
+            commits.push(h.snapshot(&files, &parents, i));
+        }
+        let pack = h.pack_from(0);
+        let mem = Arc::new(MemStore::new());
+        mem.create_repo("r").await.expect("repo");
+        let backend = Stub(scion_land::ChangesetWriter::new(mem.clone(), mem.clone()));
+        let mut conv = Converter::new(mem.as_ref(), mem.as_ref(), "r", &pack);
+        conv.convert(&Principal::anonymous(), &backend, commits[99])
+            .await
+            .expect("convert");
+        let counting = Counting::new(mem.clone());
+        let (cloned, _) = clone_of(&counting, &counting, commits[99]).await;
+        assert_same_objects(&h, &cloned);
+        let [single, many, _] = counting.reads();
+        eprintln!("clone of 400 trees: {single} get_derived, {many} get_derived_many");
+        assert!(many <= 8, "{many} get_derived_many calls");
+    }
+
     /// The clone has every object of the history, byte for byte, and no other.
     fn assert_same_objects(h: &History, cloned: &Unpacked) {
         assert_eq!(cloned.len(), h.objects.len());

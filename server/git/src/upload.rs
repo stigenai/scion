@@ -21,6 +21,8 @@ pub const TAG_PREFIX: &str = "tags/";
 const GIVE_UP_HAVES: usize = 256;
 /// How many file contents are read at once while writing a pack.
 const READ_AHEAD: usize = 16;
+/// How many trees of a pack share one batched lookup of their entries' git SHAs.
+const TREE_BATCH: usize = 1000;
 /// How many bytes of compressed commits a fetch builds before it answers: enough for every
 /// commit of most repositories, at a few hundred bytes each.
 pub const COMMIT_BUFFER: usize = 16 << 20;
@@ -1044,6 +1046,33 @@ pub async fn start<'a>(
     })
 }
 
+/// Writes one tree of the pack, a delta against its base when that pays off. `false` when the
+/// client went away.
+async fn write_tree(
+    objects: &mut Objects<'_>,
+    d: &mut Deltas,
+    w: &mut PackWriter,
+    out: &Out,
+    t: ObjectId,
+    base: Option<ObjectId>,
+    tree: &Tree,
+) -> Result<bool> {
+    let blobs = objects.blobs;
+    let body = Bytes::from(objects.tree(t, tree).await?);
+    let base = match base.filter(|b| d.can_name(*b)) {
+        Some(b) => {
+            let bytes = match d.recent.map.get(&b) {
+                Some((_, c)) => c.clone(),
+                None => Bytes::from(objects.tree(b, &load_tree(blobs, b).await?).await?),
+            };
+            Some((b, bytes, objects.tree_sha(b).await?))
+        }
+        None => None,
+    };
+    let entry = d.entry(w, Kind::Tree, t, &body, base.as_ref().map(|(b, c, s)| (*b, &c[..], *s)));
+    Ok(out.data(entry).await)
+}
+
 /// Writes a started pack. Trees and files go in the plan's order, oldest first, so that a
 /// delta's base comes before it. Returns early, with no error, when the client goes away.
 pub async fn write_pack(started: Started<'_>, out: &Out, opts: PackOptions) -> Result<()> {
@@ -1088,28 +1117,22 @@ pub async fn write_pack(started: Started<'_>, out: &Out, opts: PackOptions) -> R
         written: HashMap::new(),
         recent: Recent::new(),
     };
-    for (t, base) in &plan.trees {
-        let tree = load_tree(blobs, *t).await?;
-        let body = Bytes::from(objects.tree(*t, &tree).await?);
-        let base = match base.filter(|b| d.can_name(*b)) {
-            Some(b) => {
-                let bytes = match d.recent.map.get(&b) {
-                    Some((_, c)) => c.clone(),
-                    None => Bytes::from(objects.tree(b, &load_tree(blobs, b).await?).await?),
-                };
-                Some((b, bytes, objects.tree_sha(b).await?))
+    for chunk in plan.trees.chunks(TREE_BATCH) {
+        // One batched SHA lookup for each kind covers the entries of every tree in the chunk
+        let ids: Vec<ObjectId> = chunk.iter().map(|(t, _)| *t).collect();
+        let loaded: Vec<Tree> = futures::stream::iter(ids)
+            .map(|t| load_tree(blobs, t))
+            .buffered(READ_AHEAD)
+            .try_collect()
+            .await?;
+        let bases: Vec<ObjectId> = chunk.iter().filter_map(|(_, b)| *b).collect();
+        objects
+            .prefetch_entries(&loaded.iter().collect::<Vec<_>>(), &bases)
+            .await?;
+        for ((t, base), tree) in chunk.iter().zip(loaded) {
+            if !write_tree(&mut objects, &mut d, &mut w, out, *t, *base, &tree).await? {
+                return Ok(());
             }
-            None => None,
-        };
-        let entry = d.entry(
-            &mut w,
-            Kind::Tree,
-            *t,
-            &body,
-            base.as_ref().map(|(b, c, s)| (*b, &c[..], *s)),
-        );
-        if !out.data(entry).await {
-            return Ok(());
         }
     }
     // Each read also fetches the base and its SHA: the loop below must not touch storage while
