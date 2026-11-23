@@ -70,6 +70,10 @@ pub(crate) fn pack_range_to_db(v: u64) -> Result<i32> {
 pub(crate) const LOCATION_SELECT: &str = "SELECT l.id, p.name, CAST(l.pack_offset AS BIGINT), CAST(l.len AS BIGINT) \
      FROM pack_locations l JOIN packs p ON p.pack_id = l.pack_id WHERE l.id IN (";
 
+/// [`LOCATION_SELECT`] for Postgres, with the ids as one `bytea[]` parameter.
+pub(crate) const LOCATION_SELECT_ANY: &str = "SELECT l.id, p.name, CAST(l.pack_offset AS BIGINT), CAST(l.len AS BIGINT) \
+     FROM pack_locations l JOIN packs p ON p.pack_id = l.pack_id WHERE l.id = ANY($1)";
+
 /// A pack location row: `(id, pack, pack_offset, len)`.
 pub(crate) type LocationRow = (Vec<u8>, Vec<u8>, i64, i64);
 

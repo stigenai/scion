@@ -15,11 +15,11 @@ use scion_store::{
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
 
 use crate::common::{
-    CHANGESET_COLUMNS, ChangesetRow, FORK_TABLES, LOCATION_SELECT, LocationRow, MAX_IDS_PER_QUERY, REDACTION_COLUMNS,
-    REF_EVENT_COLUMNS, REPO_COLUMNS, REPO_TABLES, RedactionRow, RefEventRow, RepoRow, backend, id_from_db, ids_to_db,
-    is_unique_violation, list_limit, location_from_db, now_ms, pack_range_to_db, purge_limit, record_from_row,
-    redaction_from_row, ref_event_from_row, repo_from_row, size_to_db, subtract_present, version_from_db,
-    version_to_db,
+    CHANGESET_COLUMNS, ChangesetRow, FORK_TABLES, LOCATION_SELECT_ANY, LocationRow, MAX_IDS_PER_QUERY,
+    REDACTION_COLUMNS, REF_EVENT_COLUMNS, REPO_COLUMNS, REPO_TABLES, RedactionRow, RefEventRow, RepoRow, backend,
+    id_from_db, ids_to_db, is_unique_violation, list_limit, location_from_db, now_ms, pack_range_to_db, purge_limit,
+    record_from_row, redaction_from_row, ref_event_from_row, repo_from_row, size_to_db, subtract_present,
+    version_from_db, version_to_db,
 };
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/postgres");
@@ -1246,25 +1246,17 @@ impl MetaStore for PgMetaStore {
         Ok(())
     }
     async fn pack_locations(&self, ids: &[ObjectId]) -> Result<HashMap<ObjectId, PackLocation>> {
-        let mut out = HashMap::new();
-        for chunk in ids.chunks(MAX_IDS_PER_QUERY) {
-            let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new(LOCATION_SELECT);
-            let mut sep = qb.separated(", ");
-            for id in chunk {
-                sep.push_bind(id.to_bytes().to_vec());
-            }
-            qb.push(")");
-            let rows: Vec<LocationRow> = qb
-                .build_query_as()
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| backend("pack locations", e))?;
-            for row in rows {
-                let (id, loc) = location_from_db(row)?;
-                out.insert(id, loc);
-            }
+        if ids.is_empty() {
+            return Ok(HashMap::new());
         }
-        Ok(out)
+        // One fixed SQL text for any number of ids: the statement cache prepares it once
+        let keys: Vec<Vec<u8>> = ids.iter().map(|id| id.to_bytes().to_vec()).collect();
+        let rows: Vec<LocationRow> = sqlx::query_as(LOCATION_SELECT_ANY)
+            .bind(keys)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| backend("pack locations", e))?;
+        rows.into_iter().map(location_from_db).collect()
     }
 
     async fn delta_dependents(&self, base: &ObjectId) -> Result<Vec<ObjectId>> {
@@ -1278,18 +1270,15 @@ impl MetaStore for PgMetaStore {
     }
 
     async fn delete_packs(&self, packs: &[[u8; 32]]) -> Result<()> {
-        for chunk in packs.chunks(MAX_IDS_PER_QUERY) {
-            let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("DELETE FROM packs WHERE name IN (");
-            let mut sep = qb.separated(", ");
-            for name in chunk {
-                sep.push_bind(name.to_vec());
-            }
-            qb.push(")");
-            qb.build()
-                .execute(&self.pool)
-                .await
-                .map_err(|e| backend("forget packs", e))?;
+        if packs.is_empty() {
+            return Ok(());
         }
+        let names: Vec<Vec<u8>> = packs.iter().map(|n| n.to_vec()).collect();
+        sqlx::query("DELETE FROM packs WHERE name = ANY($1)")
+            .bind(names)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| backend("forget packs", e))?;
         Ok(())
     }
 
@@ -1298,18 +1287,15 @@ impl MetaStore for PgMetaStore {
     }
 
     async fn delete_pack_locations(&self, ids: &[ObjectId]) -> Result<()> {
-        for chunk in ids.chunks(MAX_IDS_PER_QUERY) {
-            let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("DELETE FROM pack_locations WHERE id IN (");
-            let mut sep = qb.separated(", ");
-            for id in chunk {
-                sep.push_bind(id.to_bytes().to_vec());
-            }
-            qb.push(")");
-            qb.build()
-                .execute(&self.pool)
-                .await
-                .map_err(|e| backend("forget pack locations", e))?;
+        if ids.is_empty() {
+            return Ok(());
         }
+        let keys: Vec<Vec<u8>> = ids.iter().map(|id| id.to_bytes().to_vec()).collect();
+        sqlx::query("DELETE FROM pack_locations WHERE id = ANY($1)")
+            .bind(keys)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| backend("forget pack locations", e))?;
         Ok(())
     }
 
