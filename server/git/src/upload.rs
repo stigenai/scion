@@ -959,6 +959,9 @@ impl Recent {
     }
 }
 
+/// A delta base: its id, its content and, for a ref-delta, its git SHA.
+type DeltaBase<'a> = (ObjectId, &'a [u8], Option<[u8; 20]>);
+
 /// One tree or file entry: a delta when it pays off and the base can be named, else whole.
 struct Deltas {
     opts: PackOptions,
@@ -969,14 +972,15 @@ struct Deltas {
 }
 
 impl Deltas {
-    /// The pack entry for `content`, given its base's content and git SHA when known.
+    /// The pack entry for `content`, given its base's content, and the base's git SHA when
+    /// [`Deltas::by_ref`] says a delta would name it by SHA.
     fn entry(
         &mut self,
         w: &mut PackWriter,
         kind: Kind,
         id: ObjectId,
         content: &Bytes,
-        base: Option<(ObjectId, &[u8], [u8; 20])>,
+        base: Option<DeltaBase<'_>>,
     ) -> Bytes {
         let at = w.offset();
         let entry = base
@@ -990,7 +994,7 @@ impl Deltas {
                 let d = crate::delta::delta(bytes, content)?;
                 match written {
                     Some(off) if self.opts.ofs => Some(w.ofs_delta(off, &d)),
-                    _ => Some(w.ref_delta(&sha, &d)),
+                    _ => Some(w.ref_delta(&sha?, &d)),
                 }
             })
             .unwrap_or_else(|| w.object(kind, content));
@@ -1003,6 +1007,12 @@ impl Deltas {
     /// checks), or the client has it and takes a thin pack.
     fn can_name(&self, base: ObjectId) -> bool {
         self.planned.contains(&base) || self.opts.thin
+    }
+
+    /// Whether a delta against `base` names it by git SHA: a base in the pack is named by
+    /// offset when the client takes ofs-deltas, so its SHA is not needed.
+    fn by_ref(&self, base: ObjectId) -> bool {
+        !(self.opts.ofs && self.planned.contains(&base))
     }
 }
 
@@ -1068,7 +1078,11 @@ async fn write_tree(
                 Some((_, c)) => c.clone(),
                 None => Bytes::from(objects.tree(b, &load_tree(blobs, b).await?).await?),
             };
-            Some((b, bytes, objects.tree_sha(b).await?))
+            let sha = match d.by_ref(b) {
+                true => Some(objects.tree_sha(b).await?),
+                false => None,
+            };
+            Some((b, bytes, sha))
         }
         None => None,
     };
@@ -1145,13 +1159,12 @@ pub async fn write_pack(started: Started<'_>, out: &Out, opts: PackOptions) -> R
             }
         }
     }
-    // Each read also fetches the base and its SHA: the loop below must not touch storage while
-    // reads are in flight, or they could hold every connection it needs
-    let can_name = |b: &ObjectId| d.can_name(*b);
-    let wanted: Vec<(ObjectId, Option<ObjectId>)> = plan
+    // Each read also fetches the base, and its SHA for a ref-delta: the loop below must not
+    // touch storage while reads are in flight, or they could hold every connection it needs
+    let wanted: Vec<(ObjectId, Option<(ObjectId, bool)>)> = plan
         .files
         .iter()
-        .map(|(id, base)| (*id, base.filter(|b| can_name(b))))
+        .map(|(id, base)| (*id, base.filter(|b| d.can_name(*b)).map(|b| (b, d.by_ref(b)))))
         .collect();
     let files = futures::stream::iter(wanted)
         .map(|(id, base)| async move {
@@ -1160,9 +1173,12 @@ pub async fn write_pack(started: Started<'_>, out: &Out, opts: PackOptions) -> R
                 .await?
                 .ok_or_else(|| Error::Unservable(format!("the content of file {id} is missing (purged?)")))?;
             let base = match base.filter(|_| content.len() <= crate::delta::MAX_DELTA_INPUT) {
-                Some(b) => match blobs.get(&b).await? {
+                Some((b, by_ref)) => match blobs.get(&b).await? {
                     Some(bytes) => {
-                        let sha = blob_sha(meta, repo, b, &bytes).await?;
+                        let sha = match by_ref {
+                            true => Some(blob_sha(meta, repo, b, &bytes).await?),
+                            false => None,
+                        };
                         Some((b, bytes, sha))
                     }
                     None => None,
@@ -1211,10 +1227,10 @@ mod tests {
         };
         let (mut w, _) = PackWriter::new(2);
         // The base comes later in the pack: whole (type 3, a blob)
-        let first = d.entry(&mut w, Kind::Blob, b, &new, Some((a, &old, [0; 20])));
+        let first = d.entry(&mut w, Kind::Blob, b, &new, Some((a, &old, None)));
         assert_eq!(first[0] >> 4 & 7, 3);
         // Now written: an ofs-delta (type 6)
-        let second = d.entry(&mut w, Kind::Blob, a, &old, Some((b, &new, [0; 20])));
+        let second = d.entry(&mut w, Kind::Blob, a, &old, Some((b, &new, None)));
         assert_eq!(second[0] >> 4 & 7, 6);
     }
 

@@ -1468,6 +1468,16 @@ mod tests {
 
     /// What a clone of `tip` sends, and the Scion commits it wants.
     async fn clone_of(meta: &dyn MetaStore, blobs: &dyn BlobStore, tip: [u8; 20]) -> (Unpacked, Vec<ObjectId>) {
+        clone_with(meta, blobs, tip, Default::default()).await
+    }
+
+    /// [`clone_of`] with these pack options.
+    async fn clone_with(
+        meta: &dyn MetaStore,
+        blobs: &dyn BlobStore,
+        tip: [u8; 20],
+        opts: crate::upload::PackOptions,
+    ) -> (Unpacked, Vec<ObjectId>) {
         let wants = crate::upload::resolve_wants(meta, blobs, "r", &[tip])
             .await
             .expect("wants");
@@ -1477,9 +1487,7 @@ mod tests {
         let started = crate::upload::start(meta, blobs, "r", plan, 0).await.expect("start");
         let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
         let out = crate::upload::Out::new(tx, false, false);
-        crate::upload::write_pack(started, &out, Default::default())
-            .await
-            .expect("pack");
+        crate::upload::write_pack(started, &out, opts).await.expect("pack");
         drop(out);
         let mut cloned = Vec::new();
         while let Some(b) = rx.recv().await {
@@ -1643,6 +1651,43 @@ mod tests {
         let [single, many, _] = counting.reads();
         eprintln!("clone of 400 trees: {single} get_derived, {many} get_derived_many");
         assert!(many <= 8, "{many} get_derived_many calls");
+    }
+
+    /// A clone that takes ofs-deltas names every delta base by offset: it reads no git SHA of a
+    /// base. A clone without them still reads the SHAs its ref-deltas name.
+    #[tokio::test]
+    async fn clones_with_ofs_deltas_without_base_sha_reads() {
+        let mut h = History::default();
+        let mut text = String::new();
+        let mut commits: Vec<[u8; 20]> = Vec::new();
+        // One file and its directory change in each commit: every version after the first is a
+        // delta against the one before
+        for i in 0..20 {
+            text.push_str(&format!("line {i} of a file long enough for a delta to pay off\n"));
+            let files = BTreeMap::from([("dir/f.txt".to_string(), text.clone().into_bytes())]);
+            let parents: Vec<[u8; 20]> = commits.last().copied().into_iter().collect();
+            commits.push(h.snapshot(&files, &parents, i));
+        }
+        let pack = h.pack_from(0);
+        let mem = Arc::new(MemStore::new());
+        mem.create_repo("r").await.expect("repo");
+        let backend = Stub(scion_land::ChangesetWriter::new(mem.clone(), mem.clone()));
+        let mut conv = Converter::new(mem.as_ref(), mem.as_ref(), "r", &pack);
+        conv.convert(&Principal::anonymous(), &backend, commits[19])
+            .await
+            .expect("convert");
+        // The first clone derives the commits' git SHAs (scion-u2b.4 writes them at push)
+        clone_of(mem.as_ref(), mem.as_ref(), commits[19]).await;
+        let ofs = crate::upload::PackOptions { thin: false, ofs: true };
+        let counting = Counting::new(mem.clone());
+        let (cloned, _) = clone_with(&counting, &counting, commits[19], ofs).await;
+        assert_same_objects(&h, &cloned);
+        eprintln!("ofs-delta clone: {} get_derived", counting.reads()[0]);
+        assert_eq!(counting.reads()[0], 0, "get_derived calls with ofs-deltas");
+        let counting = Counting::new(mem.clone());
+        let (cloned, _) = clone_with(&counting, &counting, commits[19], Default::default()).await;
+        assert_same_objects(&h, &cloned);
+        assert!(counting.reads()[0] > 0, "ref-deltas name their bases by SHA");
     }
 
     /// The clone has every object of the history, byte for byte, and no other.
