@@ -571,8 +571,7 @@ const HAVE: u8 = 2;
 /// popped only after every commit of a higher generation, so by then any path from a have has
 /// marked it.
 async fn commits(
-    meta: &dyn MetaStore,
-    repo: &str,
+    recs: &mut Records<'_>,
     wants: &[ObjectId],
     haves: &[ObjectId],
     cut: &HashSet<ObjectId>,
@@ -586,7 +585,7 @@ async fn commits(
         for id in ids {
             let f = flags.entry(*id).or_insert(0);
             if *f == 0 {
-                let rec = record(meta, repo, *id).await?;
+                let rec = recs.get(*id).await?;
                 queue.push((rec.generation, *id));
                 records.insert(*id, rec);
             }
@@ -612,7 +611,8 @@ async fn commits(
             flags.insert(*p, new);
             match old {
                 None => {
-                    let prec = record(meta, repo, *p).await?;
+                    // A parent is a generation below its child
+                    let prec = recs.below(*p, rec.generation.saturating_sub(1)).await?;
                     queue.push((prec.generation, *p));
                     records.insert(*p, prec);
                     if new == WANTED {
@@ -629,6 +629,52 @@ async fn commits(
         }
     }
     Ok(out)
+}
+
+/// Commit records of one fetch. A walk down the history reads them in windows of
+/// [`scion_query::PREFETCH_WINDOW`] (`changesets_below`), not one at a time.
+struct Records<'a> {
+    meta: &'a dyn MetaStore,
+    repo: &'a str,
+    map: HashMap<ObjectId, ChangesetRecord>,
+}
+
+impl<'a> Records<'a> {
+    fn new(meta: &'a dyn MetaStore, repo: &'a str) -> Self {
+        Self {
+            meta,
+            repo,
+            map: HashMap::new(),
+        }
+    }
+
+    async fn get(&mut self, id: ObjectId) -> Result<ChangesetRecord> {
+        if let Some(rec) = self.map.get(&id) {
+            return Ok(rec.clone());
+        }
+        let rec = record(self.meta, self.repo, id).await?;
+        self.map.insert(id, rec.clone());
+        Ok(rec)
+    }
+
+    /// The record of `id`, whose generation is at most `below`: on a miss, reads the window of
+    /// records from `below` down, unless the store has it cached.
+    async fn below(&mut self, id: ObjectId, below: u64) -> Result<ChangesetRecord> {
+        if !self.map.contains_key(&id) {
+            if let Some(rec) = self.meta.cached_changeset(self.repo, &id) {
+                self.map.insert(id, rec);
+            } else {
+                let window = self
+                    .meta
+                    .changesets_below(self.repo, below, scion_query::PREFETCH_WINDOW)
+                    .await?;
+                for rec in window {
+                    self.map.entry(rec.id).or_insert(rec);
+                }
+            }
+        }
+        self.get(id).await
+    }
 }
 
 async fn record(meta: &dyn MetaStore, repo: &str, id: ObjectId) -> Result<ChangesetRecord> {
@@ -705,7 +751,8 @@ pub async fn plan(
     cut: &HashSet<ObjectId>,
     filter: Filter,
 ) -> Result<Plan> {
-    let commits = commits(meta, repo, &wants.commits, haves, cut).await?;
+    let mut recs = Records::new(meta, repo);
+    let commits = commits(&mut recs, &wants.commits, haves, cut).await?;
     // The packs of the commits and their root trees mostly hold the rest of what they changed
     let ids: Vec<ObjectId> = commits.iter().flat_map(|c| [c.id, c.root_tree]).collect();
     blobs.prefetch(&ids).await?;
@@ -733,7 +780,7 @@ pub async fn plan(
         for p in parents {
             let root = match roots.get(p) {
                 Some(r) => *r,
-                None => record(meta, repo, *p).await?.root_tree,
+                None => recs.get(*p).await?.root_tree,
             };
             parent_trees.push(root);
         }

@@ -996,6 +996,8 @@ mod tests {
         derived: AtomicUsize,
         derived_many: AtomicUsize,
         gets: AtomicUsize,
+        /// Commit record reads: `get_changeset` and `changesets_below`.
+        records: AtomicUsize,
         /// Every MetaStore call: what a Postgres store serves one round trip for.
         total: AtomicUsize,
     }
@@ -1007,6 +1009,7 @@ mod tests {
                 derived: AtomicUsize::new(0),
                 derived_many: AtomicUsize::new(0),
                 gets: AtomicUsize::new(0),
+                records: AtomicUsize::new(0),
                 total: AtomicUsize::new(0),
             }
         }
@@ -1118,6 +1121,7 @@ mod tests {
         }
         async fn get_changeset(&self, repo: &str, id: &ObjectId) -> scion_store::Result<Option<ChangesetRecord>> {
             self.tick();
+            self.records.fetch_add(1, Ordering::SeqCst);
             self.inner.get_changeset(repo, id).await
         }
         async fn list_refs(&self, repo: &str) -> scion_store::Result<Vec<(String, RefState)>> {
@@ -1131,6 +1135,7 @@ mod tests {
             limit: usize,
         ) -> scion_store::Result<Vec<ChangesetRecord>> {
             self.tick();
+            self.records.fetch_add(1, Ordering::SeqCst);
             self.inner.changesets_below(repo, max_generation, limit).await
         }
         async fn repair_lineage(
@@ -1688,6 +1693,27 @@ mod tests {
         let (cloned, _) = clone_with(&counting, &counting, commits[19], Default::default()).await;
         assert_same_objects(&h, &cloned);
         assert!(counting.reads()[0] > 0, "ref-deltas name their bases by SHA");
+    }
+
+    /// A clone walks the history with records read in windows, not one at a time.
+    #[tokio::test]
+    async fn clones_100_commits_in_two_record_reads() {
+        let (pack, commits) = chain(100);
+        let mem = Arc::new(MemStore::new());
+        mem.create_repo("r").await.expect("repo");
+        let backend = Stub(scion_land::ChangesetWriter::new(mem.clone(), mem.clone()));
+        let mut conv = Converter::new(mem.as_ref(), mem.as_ref(), "r", &pack);
+        conv.convert(&Principal::anonymous(), &backend, commits[99])
+            .await
+            .expect("convert");
+        // The first clone derives the commits' git SHAs (scion-u2b.4 writes them at push)
+        let (first, _) = clone_of(mem.as_ref(), mem.as_ref(), commits[99]).await;
+        let counting = Counting::new(mem.clone());
+        let (cloned, _) = clone_of(&counting, &counting, commits[99]).await;
+        assert_eq!(cloned.len(), first.len());
+        let reads = counting.records.load(Ordering::SeqCst);
+        eprintln!("clone of 100 commits: {reads} commit record reads");
+        assert!(reads <= 2, "{reads} commit record reads");
     }
 
     /// The clone has every object of the history, byte for byte, and no other.
