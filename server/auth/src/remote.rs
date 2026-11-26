@@ -38,6 +38,7 @@ fn apply_auth(
 
 /// 读环境变量的函数（测试可替换）。
 pub type Lookup = std::sync::Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+pub(super) type Clock = std::sync::Arc<dyn Fn() -> i64 + Send + Sync>;
 
 pub fn env_lookup() -> Lookup {
     std::sync::Arc::new(|k: &str| std::env::var(k).ok())
@@ -48,20 +49,31 @@ pub struct Introspection {
     config: IntrospectionConfig,
     http: reqwest::Client,
     lookup: Lookup,
+    now_ms: Clock,
     /// key 为令牌的 SHA-256（不在内存里保存令牌本身）。
     cache: Cache<[u8; 32], Option<Principal>>,
 }
 
 impl Introspection {
     pub fn new(config: IntrospectionConfig, http: reqwest::Client, lookup: Lookup) -> Self {
+        Self::new_with_clock(config, http, lookup, std::sync::Arc::new(crate::guard::now_ms))
+    }
+
+    pub(super) fn new_with_clock(
+        config: IntrospectionConfig,
+        http: reqwest::Client,
+        lookup: Lookup,
+        now_ms: Clock,
+    ) -> Self {
         let ttl = config.cache_ttl;
         Self {
             config,
             http,
             lookup,
+            now_ms: now_ms.clone(),
             cache: Cache::builder()
                 .max_capacity(100_000)
-                .expire_after(crate::remote::Ttl { positive: ttl })
+                .expire_after(Ttl { positive: ttl, now_ms })
                 .build(),
         }
     }
@@ -103,7 +115,7 @@ impl Introspection {
     /// Ask the server now and skip the cache, so a revoke shows at once.
     /// An active answer with an `exp` that is not in the future gives `Ok(None)`.
     pub async fn verify_uncached(&self, token: &str) -> Result<Option<Principal>, VerifyError> {
-        let now = crate::guard::now_ms();
+        let now = (self.now_ms)();
         Ok(self
             .call(token)
             .await?
@@ -130,8 +142,9 @@ impl Introspection {
 }
 
 /// 允许的结果缓存 `positive`，但不超过令牌的 `exp`；拒绝的缓存 [`NEGATIVE_TTL`]。
-struct Ttl {
-    positive: Duration,
+pub(super) struct Ttl {
+    pub(super) positive: Duration,
+    pub(super) now_ms: Clock,
 }
 
 impl<K> moka::Expiry<K, Option<Principal>> for Ttl {
@@ -141,7 +154,7 @@ impl<K> moka::Expiry<K, Option<Principal>> for Ttl {
         };
         let left = p
             .expires_at_ms
-            .map(|e| Duration::from_millis(u64::try_from(e - crate::guard::now_ms()).unwrap_or(0)));
+            .map(|e| Duration::from_millis(u64::try_from(e - (self.now_ms)()).unwrap_or(0)));
         Some(left.map_or(self.positive, |l| l.min(self.positive)))
     }
 }
