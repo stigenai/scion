@@ -112,14 +112,14 @@ fn credential_path(b: &Backend) -> &Path {
     }
 }
 
-fn sibling_path(b: &Backend, suffix: &str) -> PathBuf {
-    let mut path = credential_path(b).as_os_str().to_owned();
+fn sibling_path(path: &Path, suffix: &str) -> PathBuf {
+    let mut path = path.as_os_str().to_owned();
     path.push(suffix);
     path.into()
 }
 
 fn endpoint_path(b: &Backend) -> PathBuf {
-    sibling_path(b, ".endpoint")
+    sibling_path(credential_path(b), ".endpoint")
 }
 
 pub fn saved_endpoint(b: &Backend) -> Option<String> {
@@ -142,12 +142,31 @@ fn parent_dir(path: &Path) -> &Path {
         .unwrap_or(Path::new("."))
 }
 
-fn lock_credentials(b: &Backend) -> io::Result<File> {
-    let path = sibling_path(b, ".lock");
+fn lock_credentials(path: &Path) -> io::Result<File> {
+    let path = sibling_path(path, ".lock");
     std::fs::create_dir_all(parent_dir(&path))?;
     let file = File::options().write(true).create(true).truncate(false).open(path)?;
     file.lock()?;
     Ok(file)
+}
+
+fn lock_profile(b: &Backend) -> io::Result<(File, File)> {
+    let credentials = lock_credentials(credential_path(b))?;
+    let path = endpoint_path(b);
+    // This lock also protects the file if another profile uses it for credentials.
+    let preference = lock_credentials(&path)?;
+    match std::fs::read_to_string(&path) {
+        Ok(value) if value.is_empty() || origin(&value).is_some() => (),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => (),
+        Err(e) => return Err(e),
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("{} contains data that is not an endpoint preference", path.display()),
+            ));
+        }
+    }
+    Ok((credentials, preference))
 }
 
 fn write_atomic(path: &Path, body: &[u8]) -> io::Result<()> {
@@ -194,7 +213,7 @@ pub fn load(b: &Backend, endpoint: &str) -> Option<String> {
 pub fn store(b: &Backend, endpoint: &str, secret: &str) -> std::io::Result<String> {
     let endpoint = origin(endpoint)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "expected an HTTP(S) server origin"))?;
-    let _lock = lock_credentials(b)?;
+    let _locks = lock_profile(b)?;
     let location = store_secret(b, endpoint, secret)?;
     write_atomic(&endpoint_path(b), endpoint.as_bytes())?;
     Ok(location)
@@ -222,7 +241,7 @@ fn store_secret(b: &Backend, endpoint: &str, secret: &str) -> io::Result<String>
 
 /// Delete the credentials. Clear the default if it selects this server.
 pub fn remove(b: &Backend, endpoint: &str) -> std::io::Result<bool> {
-    let _lock = lock_credentials(b)?;
+    let _locks = lock_profile(b)?;
     let active_endpoint = saved_endpoint(b);
     let (file, mut found) = match b {
         Backend::Keyring(file) => {
@@ -397,7 +416,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let b = Backend::File(dir.path().join("creds.json"));
         store(&b, "http://a", "alice").expect("login");
-        let lock = lock_credentials(&b).expect("lock");
+        let lock = lock_credentials(credential_path(&b)).expect("lock");
         let (started, attempts) = mpsc::channel();
         let (finished, results) = mpsc::channel();
         std::thread::scope(|scope| {
