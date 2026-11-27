@@ -32,7 +32,7 @@ use crate::output::{CliError, Render, error_out, render, version_out};
 #[derive(Debug, Parser)]
 #[command(name = "scn", version, about = "Scion command line client")]
 struct Cli {
-    /// Server address; defaults to the working copy's, then http://127.0.0.1:7080.
+    /// Server address. The CLI uses the working copy, saved login, or http://127.0.0.1:7080 in that order.
     #[arg(
         long,
         global = true,
@@ -726,7 +726,7 @@ enum Command {
     )]
     Login {
         /// The server, http(s)://host[:port], and/or a token (scn_pat_…), in either order.
-        /// Without a server: --endpoint, then the working copy's.
+        /// If you omit the server, the CLI uses the default endpoint rules.
         #[arg(num_args = 0..=2, value_name = "SERVER | TOKEN")]
         args: Vec<String>,
         /// Log in with this token instead of a browser (same as giving it as an argument).

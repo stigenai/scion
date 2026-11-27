@@ -9,16 +9,24 @@ use scion_store::{MemStore, MetaStore};
 use serde_json::Value;
 use tokio::net::TcpListener;
 
-async fn server(subject: &str) -> (String, String) {
+async fn server(subject: &str, oidc_issuer: Option<String>) -> (String, String) {
     let store = Arc::new(MemStore::new());
     store.create_repo("mono").await.expect("repo");
+    let config = oidc_issuer
+        .map(|issuer| {
+            format!("[oidc]\nissuer = \"{issuer}\"\nclient_id = \"scn\"\nsubject_claim = \"preferred_username\"\n")
+        })
+        .unwrap_or_default();
     let auth = GuardConfig {
         required: true,
-        auth: AuthConfig::parse("").expect("auth"),
+        auth: AuthConfig::parse(&config).expect("auth"),
         signing_key_pem: Some(scion_api::scion_auth::token::generate_signing_key()),
     };
     let guard = Guard::build(auth.clone(), store.clone(), Arc::new(|_: &str| None)).expect("guard");
-    let (pat, _) = guard.create_token("pat", subject, vec![], "", None).await.expect("pat");
+    let (pat, _) = guard
+        .create_token("pat", subject, vec!["admins".into()], "", None)
+        .await
+        .expect("pat");
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let url = format!("http://{}", listener.local_addr().expect("addr"));
     let app = App {
@@ -75,8 +83,8 @@ fn whoami(command: &mut Command, args: &[&str], endpoint: &str, subject: &str) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn last_successful_login_sets_the_default() {
-    let (a, pat_a) = server("alice").await;
-    let (b, pat_b) = server("bob").await;
+    let (a, pat_a) = server("alice", None).await;
+    let (b, pat_b) = server("bob", None).await;
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
 
@@ -90,8 +98,8 @@ async fn last_successful_login_sets_the_default() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn endpoint_overrides_and_credential_scope() {
-    let (a, pat_a) = server("alice").await;
-    let (b, pat_b) = server("bob").await;
+    let (a, pat_a) = server("alice", None).await;
+    let (b, pat_b) = server("bob", None).await;
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     json(login(root, &a, &pat_a));
@@ -120,4 +128,65 @@ async fn endpoint_overrides_and_credential_scope() {
         "alice",
     );
     whoami(&mut scn(root, root), &["--endpoint", &a, &b], &b, "bob");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn device_login_sets_the_default() {
+    let idp = scion_api::scion_auth::testing::FakeIdp::start().await;
+    let (url, _) = server("unused", Some(idp.base())).await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let mut child = scn(root, root)
+        .args(["login", &url, "--json"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("login");
+    use std::io::BufRead;
+    let mut prompt = String::new();
+    let mut stderr = std::io::BufReader::new(child.stderr.take().expect("stderr"));
+    stderr.read_line(&mut prompt).expect("read device prompt");
+    assert!(prompt.contains("ABCD-EFGH"), "{prompt}");
+    idp.approve("dc-1");
+    assert_eq!(json(child.wait_with_output().expect("login"))["subject"], "alice");
+    whoami(&mut scn(root, root), &[], &url, "alice");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clone_and_import_use_the_saved_server() {
+    let (url, pat) = server("alice", None).await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    json(login(root, &url, &pat));
+    json(
+        scn(root, root)
+            .args(["clone", "mono", "--json"])
+            .output()
+            .expect("clone"),
+    );
+    whoami(&mut scn(root, &root.join("mono")), &[], &url, "alice");
+
+    let git = |args: &[&str]| {
+        assert!(
+            Command::new("git")
+                .args(["-c", "user.name=Test", "-c", "user.email=test@example.invalid"])
+                .args(args)
+                .current_dir(root)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", root.join("empty-config"))
+                .status()
+                .expect("git")
+                .success()
+        );
+    };
+    git(&["init", "-q", "-b", "main", "source"]);
+    git(&["-C", "source", "commit", "-q", "--allow-empty", "-m", "First commit"]);
+    let imported = json(
+        scn(root, root)
+            .env("PATH", std::env::var_os("PATH").expect("PATH"))
+            .args(["import", "git", "source", "--repo", "mono", "--json"])
+            .output()
+            .expect("import"),
+    );
+    assert_eq!(imported["commits"], 1);
 }

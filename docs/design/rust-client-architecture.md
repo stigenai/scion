@@ -53,10 +53,14 @@ The client binary `scn` and the server binary `scion` **ship separately**: the c
 
 ## 2. Connections and endpoint discovery
 
-In order of precedence:
-1. The command-line option `--endpoint`, or the environment variable `SCION_ENDPOINT`
-2. The endpoint recorded in the working copy's `.scion/state.toml`
-3. The global configuration `~/.config/scion/config.toml`
+The CLI uses the first available endpoint in this order:
+
+1. The endpoint in a positional URL.
+2. The `--endpoint` option.
+3. The `SCION_ENDPOINT` variable.
+4. The endpoint in the working copy's `.scion/state.toml`.
+5. The endpoint from the saved login.
+6. `http://127.0.0.1:7080`.
 
 **Splitting reads from writes** (done by `scion-client`):
 - When a daemon socket exists (`$XDG_RUNTIME_DIR/scion/daemon.sock`, or `~/Library/Caches/scion/daemon.sock` on macOS), **every request goes to the daemon**, which answers it or forwards it.

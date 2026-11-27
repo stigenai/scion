@@ -9,7 +9,10 @@
 //! keychain that does not answer within [`KEYCHAIN_WAIT`] counts as unavailable.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+
+use tonic::codegen::http::uri::Authority;
 
 /// 钥匙串条目的服务名。
 #[cfg(target_os = "macos")]
@@ -80,7 +83,67 @@ fn key(endpoint: &str) -> String {
     endpoint.trim_end_matches('/').to_owned()
 }
 
-fn read_file(path: &PathBuf) -> std::io::Result<BTreeMap<String, String>> {
+fn origin(endpoint: &str) -> Option<&str> {
+    let endpoint = endpoint.strip_suffix('/').unwrap_or(endpoint);
+    let authority = endpoint
+        .strip_prefix("http://")
+        .or_else(|| endpoint.strip_prefix("https://"))?;
+    if authority.contains(['/', '@', '?', '#']) {
+        return None;
+    }
+    let authority: Authority = authority.parse().ok()?;
+    let host = authority.host();
+    let port = &authority.as_str()[host.len()..];
+    if host.is_empty() || (!port.is_empty() && (!port.starts_with(':') || authority.port_u16().is_none())) {
+        return None;
+    }
+    if let Some(ip) = host.strip_prefix('[') {
+        ip.strip_suffix(']')?.parse::<std::net::Ipv6Addr>().ok()?;
+    } else if host.contains(['[', ']']) {
+        return None;
+    }
+    Some(endpoint)
+}
+
+fn credential_path(b: &Backend) -> &Path {
+    match b {
+        Backend::File(path) | Backend::Keyring(path) => path,
+    }
+}
+
+fn endpoint_path(b: &Backend) -> PathBuf {
+    let mut path = credential_path(b).as_os_str().to_owned();
+    path.push(".endpoint");
+    path.into()
+}
+
+pub fn saved_endpoint(b: &Backend) -> Option<String> {
+    match std::fs::read_to_string(endpoint_path(b)) {
+        Ok(value) => origin(&value).map(str::to_owned),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            let map = read_file(credential_path(b)).ok()?;
+            if map.len() != 1 {
+                return None;
+            }
+            origin(map.first_key_value()?.0).map(str::to_owned)
+        }
+        Err(_) => None,
+    }
+}
+
+fn write_atomic(path: &Path, body: &[u8]) -> io::Result<()> {
+    let dir = path
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir)?;
+    let mut temp = tempfile::NamedTempFile::new_in(dir)?;
+    temp.write_all(body)?;
+    temp.persist(path)?;
+    Ok(())
+}
+
+fn read_file(path: &Path) -> std::io::Result<BTreeMap<String, String>> {
     match std::fs::read(path) {
         Ok(b) => serde_json::from_slice(&b).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
@@ -88,25 +151,9 @@ fn read_file(path: &PathBuf) -> std::io::Result<BTreeMap<String, String>> {
     }
 }
 
-fn write_file(path: &PathBuf, map: &BTreeMap<String, String>) -> std::io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let tmp = path.with_extension("tmp");
+fn write_file(path: &Path, map: &BTreeMap<String, String>) -> std::io::Result<()> {
     let body = serde_json::to_vec_pretty(map).map_err(std::io::Error::other)?;
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    {
-        use std::io::Write;
-        let mut f = opts.open(&tmp)?;
-        f.write_all(&body)?;
-    }
-    std::fs::rename(&tmp, path)
+    write_atomic(path, &body)
 }
 
 #[cfg(target_os = "macos")]
@@ -129,8 +176,16 @@ pub fn load(b: &Backend, endpoint: &str) -> Option<String> {
     }
 }
 
-/// 保存凭据，返回保存的位置（用于提示）。
+/// Save the credentials and select this server for future commands.
 pub fn store(b: &Backend, endpoint: &str, secret: &str) -> std::io::Result<String> {
+    let endpoint = origin(endpoint)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "expected an HTTP(S) server origin"))?;
+    let location = store_secret(b, endpoint, secret)?;
+    write_atomic(&endpoint_path(b), endpoint.as_bytes())?;
+    Ok(location)
+}
+
+fn store_secret(b: &Backend, endpoint: &str, secret: &str) -> io::Result<String> {
     let file = match b {
         Backend::Keyring(file) => {
             #[cfg(target_os = "macos")]
@@ -150,8 +205,9 @@ pub fn store(b: &Backend, endpoint: &str, secret: &str) -> std::io::Result<Strin
     Ok(file.display().to_string())
 }
 
-/// 删除凭据，返回是否存在。
+/// Delete the credentials. Clear the default if it selects this server.
 pub fn remove(b: &Backend, endpoint: &str) -> std::io::Result<bool> {
+    let clear_endpoint = saved_endpoint(b).is_some_and(|saved| saved == key(endpoint));
     let (file, mut found) = match b {
         Backend::Keyring(file) => {
             #[cfg(target_os = "macos")]
@@ -169,6 +225,10 @@ pub fn remove(b: &Backend, endpoint: &str) -> std::io::Result<bool> {
     if map.remove(&key(endpoint)).is_some() {
         write_file(file, &map)?;
         found = true;
+    }
+    if clear_endpoint {
+        // An empty preference prevents a fallback to an older account.
+        write_atomic(&endpoint_path(b), b"")?;
     }
     Ok(found)
 }
@@ -217,8 +277,91 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let b = Backend::Keyring(dir.path().join("credentials.json"));
         assert_eq!(store(&b, "http://k", "s").expect("store"), "the system keychain");
+        assert_eq!(
+            std::fs::read_to_string(endpoint_path(&b)).expect("preference"),
+            "http://k"
+        );
+        assert!(!credential_path(&b).exists());
         assert_eq!(load(&b, "http://k"), None);
         assert!(!remove(&b, "http://k").expect("remove"));
+        assert_eq!(saved_endpoint(&b), None);
+    }
+
+    #[test]
+    fn legacy_and_malformed_preferences() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("credentials.json");
+        let b = Backend::File(file.clone());
+        assert_eq!(saved_endpoint(&b), None);
+        std::fs::write(&file, br#"{"https://[::1]:7080":"older"}"#).expect("legacy account");
+        assert_eq!(saved_endpoint(&b).as_deref(), Some("https://[::1]:7080"));
+        for invalid in [
+            "",
+            "http://a\nhttp://b",
+            "ftp://a",
+            "http://",
+            "http://:80",
+            "http://user@a",
+            "http://a/path",
+            "http://a//",
+            "http://a?",
+            "http://a#",
+            "http://a:65536",
+            "http://a:",
+            "http://[invalid]",
+            "http://[::1]x:80",
+            "http://a[x]:80",
+        ] {
+            std::fs::write(endpoint_path(&b), invalid).expect("preference");
+            assert_eq!(saved_endpoint(&b), None, "{invalid:?}");
+        }
+        std::fs::remove_file(endpoint_path(&b)).expect("remove preference");
+        std::fs::write(&file, br#"{"http://a":"older","http://b":"old"}"#).expect("legacy accounts");
+        assert_eq!(saved_endpoint(&b), None);
+        std::fs::write(&file, br#"{"http://a/path":"older"}"#).expect("invalid legacy endpoint");
+        assert_eq!(saved_endpoint(&b), None);
+    }
+
+    #[test]
+    fn logout_only_clears_the_selected_server() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let b = Backend::File(dir.path().join("creds.json"));
+        store(&b, "http://b", "bob").expect("login");
+        store(&b, "https://a/", "alice").expect("login");
+        assert_eq!(
+            std::fs::read_to_string(endpoint_path(&b)).expect("preference"),
+            "https://a"
+        );
+        let other = Backend::File(dir.path().join("creds-other.json"));
+        assert_eq!(saved_endpoint(&other), None);
+        assert!(remove(&b, "http://b").expect("logout"));
+        assert_eq!(saved_endpoint(&b).as_deref(), Some("https://a"));
+
+        store(&b, "http://b", "bob").expect("login");
+        assert!(remove(&b, "http://b/").expect("logout"));
+        assert_eq!(saved_endpoint(&b), None);
+        assert_eq!(load(&b, "https://a").as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn failed_store_keeps_the_previous_server() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let b = Backend::File(dir.path().join("creds.json"));
+        store(&b, "http://a", "alice").expect("login");
+        assert!(store(&b, "http://b/path", "bob").is_err());
+        assert_eq!(load(&b, "http://b/path"), None);
+        std::fs::write(credential_path(&b), "invalid json").expect("corrupt credentials");
+        assert!(store(&b, "http://b", "bob").is_err());
+        assert_eq!(saved_endpoint(&b).as_deref(), Some("http://a"));
+    }
+
+    #[test]
+    fn preference_write_error_reaches_the_caller() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let b = Backend::File(dir.path().join("creds.json"));
+        std::fs::create_dir(endpoint_path(&b)).expect("block preference write");
+        assert!(store(&b, "http://a", "alice").is_err());
+        assert_eq!(saved_endpoint(&b), None);
     }
 
     #[test]
