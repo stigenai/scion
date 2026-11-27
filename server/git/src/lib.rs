@@ -989,6 +989,133 @@ mod tests {
         assert_eq!(&sent[4..9], b"\x01PACK", "{sent:?}");
     }
 
+    /// A blob store that takes a moment per read and notes how many reads are at once.
+    struct Slow {
+        inner: Arc<dyn BlobStore>,
+        now: std::sync::atomic::AtomicUsize,
+        peak: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Slow {
+        /// The most reads at once since the last call.
+        fn take_peak(&self) -> usize {
+            self.peak.swap(0, std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl BlobStore for Slow {
+        async fn put(&self, id: ObjectId, data: Bytes) -> scion_store::Result<()> {
+            self.inner.put(id, data).await
+        }
+        async fn get(&self, id: &ObjectId) -> scion_store::Result<Option<Bytes>> {
+            use std::sync::atomic::Ordering::SeqCst;
+            let n = self.now.fetch_add(1, SeqCst) + 1;
+            self.peak.fetch_max(n, SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            let got = self.inner.get(id).await;
+            self.now.fetch_sub(1, SeqCst);
+            got
+        }
+        async fn exists(&self, id: &ObjectId) -> scion_store::Result<bool> {
+            self.inner.exists(id).await
+        }
+    }
+
+    /// A pack of a long history reads its commits, trees and files a few at a time, and holds
+    /// every object of the history with the SHAs git expects.
+    #[tokio::test]
+    async fn reads_a_history_in_parallel() {
+        use scion_object::{Changeset, EntryMode, FileChange, Signature};
+        let (g, stub) = pushing().await;
+        let sig = Signature {
+            name: "A".into(),
+            email: "a@x".into(),
+            time_ms: 1_700_000_000_000,
+            tz_offset_minutes: 0,
+        };
+        let mut parents = vec![];
+        let mut tip = None;
+        for i in 0..24u8 {
+            // One new file in its own directory, and one file that grows
+            let new = format!("file {i}\n").into_bytes();
+            let grown: Vec<u8> = (0..=i)
+                .flat_map(|n| format!("line number {n} of the shared file\n").into_bytes())
+                .collect();
+            let mut changes = vec![];
+            let mut blobs = vec![];
+            for (path, bytes) in [
+                (format!("d{}/sub/f{i}.txt", i % 4), new),
+                ("shared/s.txt".to_string(), grown),
+            ] {
+                let id = ObjectId::of_blob(&bytes);
+                changes.push(FileChange::put(path, EntryMode::File, id, bytes.len() as u64));
+                blobs.push((id, Bytes::from(bytes)));
+            }
+            stub.writer.store("r", &blobs).await.expect("store");
+            let cs = Changeset::new(
+                parents.clone(),
+                sig.clone(),
+                sig.clone(),
+                format!("c{i}\n"),
+                [i; 16],
+                changes,
+                Default::default(),
+            )
+            .expect("cs");
+            let rec = stub.writer.create("r", &cs).await.expect("create");
+            parents = vec![rec.id];
+            tip = Some(rec.id);
+        }
+        let tip = tip.expect("tip");
+        let slow = Arc::new(Slow {
+            inner: g.blobs.clone(),
+            now: Default::default(),
+            peak: Default::default(),
+        });
+        let wants = upload::Wants {
+            commits: vec![tip],
+            ..Default::default()
+        };
+        let plan = upload::plan(
+            g.meta.as_ref(),
+            slow.as_ref(),
+            "r",
+            &wants,
+            &[],
+            &Default::default(),
+            upload::Filter::None,
+        )
+        .await
+        .expect("plan");
+        assert!(slow.take_peak() > 1, "the plan read one tree at a time");
+        let (commits, trees, files) = (plan.commits.len(), plan.trees.len(), plan.files.len());
+        assert_eq!((commits, files), (24, 48));
+        let started = upload::start(g.meta.as_ref(), slow.as_ref(), "r", plan, upload::COMMIT_BUFFER)
+            .await
+            .expect("start");
+        assert!(slow.take_peak() > 1, "the commits were read one at a time");
+        let (tx, mut rx) = mpsc::channel(1024);
+        let out = Out::new(tx, false, false);
+        upload::write_pack(started, &out, upload::PackOptions { thin: false, ofs: true })
+            .await
+            .expect("pack");
+        assert!(slow.take_peak() > 1, "the trees or files were read one at a time");
+        drop(out);
+        let mut sent = Vec::new();
+        while let Some(b) = rx.recv().await {
+            sent.extend_from_slice(&b);
+        }
+        let unpacked = unpack::unpack(std::io::Cursor::new(sent), 1 << 20).expect("a pack git can read");
+        assert_eq!(unpacked.len(), commits + trees + files);
+        // The tip is there under its git SHA
+        let tip_sha = scion_query::derive_git_sha(g.meta.as_ref(), g.blobs.as_ref(), "r", tip)
+            .await
+            .expect("sha");
+        let (kind, body) = unpacked.get(&tip_sha).expect("read").expect("the tip commit");
+        assert!(matches!(kind, unpack::ObjType::Commit) && body.starts_with(b"tree "));
+    }
+
     /// Writes through the store directly and records ref updates.
     struct Stub {
         writer: scion_land::ChangesetWriter,
