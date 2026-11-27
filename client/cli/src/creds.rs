@@ -186,7 +186,12 @@ fn read_file(path: &Path) -> std::io::Result<BTreeMap<String, String>> {
 
 fn write_file(path: &Path, map: &BTreeMap<String, String>) -> std::io::Result<()> {
     let body = serde_json::to_vec_pretty(map).map_err(std::io::Error::other)?;
-    write_atomic(path, &body)
+    write_atomic(path, &body)?;
+    #[cfg(test)]
+    if tests::INTERRUPT_CREDENTIAL_UPDATE.take() {
+        return Err(io::ErrorKind::StorageFull.into());
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -271,6 +276,10 @@ pub fn remove(b: &Backend, endpoint: &str) -> std::io::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        pub(super) static INTERRUPT_CREDENTIAL_UPDATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
 
     #[test]
     fn backend_selection() {
@@ -406,6 +415,40 @@ mod tests {
         assert!(remove(&b, "http://b").expect("logout"));
         assert_eq!(saved_endpoint(&b), None);
         assert_eq!(load(&b, "http://a").as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn interrupted_login_preserves_the_default_without_a_preference() {
+        for legacy_endpoint in [None, Some("http://a")] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let b = Backend::File(dir.path().join("credentials.json"));
+            if legacy_endpoint.is_some() {
+                std::fs::write(credential_path(&b), br#"{"http://a":"alice"}"#).expect("legacy account");
+            }
+            assert!(!endpoint_path(&b).exists());
+            assert_eq!(saved_endpoint(&b).as_deref(), legacy_endpoint);
+
+            INTERRUPT_CREDENTIAL_UPDATE.set(true);
+            let error = store(&b, "http://b", "bob").expect_err("interrupted login");
+            assert_eq!(error.kind(), io::ErrorKind::StorageFull);
+            assert_eq!(load(&b, "http://b").as_deref(), Some("bob"));
+            assert_eq!(saved_endpoint(&b).as_deref(), legacy_endpoint);
+        }
+    }
+
+    #[test]
+    fn interrupted_logout_preserves_the_default_without_a_preference() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let b = Backend::File(dir.path().join("credentials.json"));
+        std::fs::write(credential_path(&b), br#"{"http://a":"alice","http://b":"bob"}"#).expect("legacy accounts");
+        assert!(!endpoint_path(&b).exists());
+        assert_eq!(saved_endpoint(&b), None);
+
+        INTERRUPT_CREDENTIAL_UPDATE.set(true);
+        let error = remove(&b, "http://b").expect_err("interrupted logout");
+        assert_eq!(error.kind(), io::ErrorKind::StorageFull);
+        assert_eq!(load(&b, "http://b"), None);
+        assert_eq!(saved_endpoint(&b), None);
     }
 
     #[test]
