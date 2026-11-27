@@ -317,6 +317,7 @@ mod tests {
             "ftp://a",
             "http://",
             "http://:80",
+            "http://a b",
             "http://user@a",
             "http://u:pw@a:80",
             "http://a/path",
