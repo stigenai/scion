@@ -1,0 +1,123 @@
+use std::io::Write;
+use std::path::Path;
+use std::process::{Command, Output, Stdio};
+use std::sync::Arc;
+
+use scion_api::scion_auth::{AuthConfig, Guard, GuardConfig};
+use scion_api::{App, ServerConfig, serve};
+use scion_store::{MemStore, MetaStore};
+use serde_json::Value;
+use tokio::net::TcpListener;
+
+async fn server(subject: &str) -> (String, String) {
+    let store = Arc::new(MemStore::new());
+    store.create_repo("mono").await.expect("repo");
+    let auth = GuardConfig {
+        required: true,
+        auth: AuthConfig::parse("").expect("auth"),
+        signing_key_pem: Some(scion_api::scion_auth::token::generate_signing_key()),
+    };
+    let guard = Guard::build(auth.clone(), store.clone(), Arc::new(|_: &str| None)).expect("guard");
+    let (pat, _) = guard.create_token("pat", subject, vec![], "", None).await.expect("pat");
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let url = format!("http://{}", listener.local_addr().expect("addr"));
+    let app = App {
+        config: Arc::new(ServerConfig {
+            auth,
+            ..ServerConfig::default()
+        }),
+        meta: store.clone(),
+        blobs: store,
+    };
+    tokio::spawn(serve(listener, app, std::future::pending()));
+    (url, pat)
+}
+
+fn scn(root: &Path, cwd: &Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_scn"));
+    command
+        .env_clear()
+        .env("HOME", root)
+        .env("XDG_CONFIG_HOME", root)
+        .env("SCION_CREDENTIALS_FILE", root.join("credentials.json"))
+        .env("SCION_NO_DAEMON", "1")
+        .current_dir(cwd);
+    command
+}
+
+fn login(root: &Path, endpoint: &str, token: &str) -> Output {
+    let mut child = scn(root, root)
+        .args(["login", endpoint, "--with-token", "--json"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn");
+    writeln!(child.stdin.take().expect("stdin"), "{token}").expect("write token");
+    child.wait_with_output().expect("login")
+}
+
+fn json(output: Output) -> Value {
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("json")
+}
+
+fn whoami(command: &mut Command, args: &[&str], endpoint: &str, subject: &str) {
+    let out = json(command.args(["whoami", "--json"]).args(args).output().expect("whoami"));
+    assert_eq!(out["endpoint"], endpoint);
+    assert_eq!(out["subject"], subject);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn last_successful_login_sets_the_default() {
+    let (a, pat_a) = server("alice").await;
+    let (b, pat_b) = server("bob").await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    assert_eq!(json(login(root, &a, &pat_a))["subject"], "alice");
+    whoami(&mut scn(root, root), &[], &a, "alice");
+    assert_eq!(json(login(root, &b, &pat_b))["subject"], "bob");
+    whoami(&mut scn(root, root), &[], &b, "bob");
+    assert_eq!(login(root, &a, "scn_pat_nope").status.code(), Some(5));
+    whoami(&mut scn(root, root), &[], &b, "bob");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn endpoint_overrides_and_credential_scope() {
+    let (a, pat_a) = server("alice").await;
+    let (b, pat_b) = server("bob").await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    json(login(root, &a, &pat_a));
+    let anonymous = json(scn(root, root).args(["whoami", &b, "--json"]).output().expect("whoami"));
+    assert_eq!(anonymous["endpoint"], b);
+    assert_eq!(anonymous["subject"], "anonymous");
+    assert_eq!(anonymous["auth_required"], true);
+    assert_eq!(login(root, &b, &pat_a).status.code(), Some(5));
+
+    json(login(root, &b, &pat_b));
+    json(login(root, &a, &pat_a));
+    for (url, wc) in [(&a, "a"), (&b, "b")] {
+        json(
+            scn(root, root)
+                .args(["clone", &format!("{url}/mono"), wc, "--json"])
+                .output()
+                .expect("clone"),
+        );
+    }
+    whoami(&mut scn(root, &root.join("b")), &[], &b, "bob");
+    whoami(scn(root, &root.join("a")).env("SCION_ENDPOINT", &b), &[], &b, "bob");
+    whoami(
+        scn(root, root).env("SCION_ENDPOINT", &b),
+        &["--endpoint", &a],
+        &a,
+        "alice",
+    );
+    whoami(&mut scn(root, root), &["--endpoint", &a, &b], &b, "bob");
+}
