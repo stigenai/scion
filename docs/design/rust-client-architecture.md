@@ -53,7 +53,7 @@ The client binary `scn` and the server binary `scion` **ship separately**: the c
 
 ## 2. Connections and endpoint discovery
 
-The CLI uses the first available endpoint in this order:
+The CLI uses the first available endpoint in the order below.
 
 1. The endpoint in a positional URL.
 2. The `--endpoint` option.

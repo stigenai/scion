@@ -207,7 +207,7 @@ fn store_secret(b: &Backend, endpoint: &str, secret: &str) -> io::Result<String>
 
 /// Delete the credentials. Clear the default if it selects this server.
 pub fn remove(b: &Backend, endpoint: &str) -> std::io::Result<bool> {
-    let clear_endpoint = saved_endpoint(b).is_some_and(|saved| saved == key(endpoint));
+    let active_endpoint = saved_endpoint(b);
     let (file, mut found) = match b {
         Backend::Keyring(file) => {
             #[cfg(target_os = "macos")]
@@ -226,7 +226,7 @@ pub fn remove(b: &Backend, endpoint: &str) -> std::io::Result<bool> {
         write_file(file, &map)?;
         found = true;
     }
-    if clear_endpoint {
+    if active_endpoint.map_or(found, |saved| saved == endpoint.trim_end_matches('/')) {
         // An empty preference prevents a fallback to an older account.
         write_atomic(&endpoint_path(b), b"")?;
     }
@@ -302,6 +302,7 @@ mod tests {
             "http://",
             "http://:80",
             "http://user@a",
+            "http://u:pw@a:80",
             "http://a/path",
             "http://a//",
             "http://a?",
@@ -341,6 +342,17 @@ mod tests {
         assert!(remove(&b, "http://b/").expect("logout"));
         assert_eq!(saved_endpoint(&b), None);
         assert_eq!(load(&b, "https://a").as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn logout_does_not_select_a_remaining_legacy_account() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("creds.json");
+        let b = Backend::File(file.clone());
+        std::fs::write(&file, br#"{"http://a":"alice","http://b":"bob"}"#).expect("legacy accounts");
+        assert!(remove(&b, "http://b").expect("logout"));
+        assert_eq!(saved_endpoint(&b), None);
+        assert_eq!(load(&b, "http://a").as_deref(), Some("alice"));
     }
 
     #[test]

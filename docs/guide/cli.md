@@ -88,7 +88,7 @@ A repository can be named in two ways:
 - **A URL, as with git:** `http(s)://host[:port]/REPO`, such as `scn clone http://scion.example.com:7080/org/app`. It works wherever a repository is named: `clone`, `--repo` (`scn cat README.md --repo http://host/org/app`), and `repo create / info / set / rm / restore / fork / ls`. Commands about the server alone take its address: `scn login URL`, `scn logout URL`, `scn whoami URL`, `scn doctor URL`.
 - **A name and a server:** `scn --endpoint http://host:7080 clone org/app`, or `SCION_ENDPOINT` set once.
 
-A working copy records its server for commands such as `status`, `commit`, `land`, `sync`, and `log`. The CLI uses the first available address in this order:
+A working copy records its server for commands such as `status`, `commit`, `land`, `sync`, and `log`. The CLI uses the first available address in the order below.
 
 1. The address in a positional URL.
 2. The `--endpoint` option.
