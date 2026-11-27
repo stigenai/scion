@@ -9,6 +9,7 @@
 //! keychain that does not answer within [`KEYCHAIN_WAIT`] counts as unavailable.
 
 use std::collections::BTreeMap;
+use std::fs::File;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -111,10 +112,14 @@ fn credential_path(b: &Backend) -> &Path {
     }
 }
 
-fn endpoint_path(b: &Backend) -> PathBuf {
+fn sibling_path(b: &Backend, suffix: &str) -> PathBuf {
     let mut path = credential_path(b).as_os_str().to_owned();
-    path.push(".endpoint");
+    path.push(suffix);
     path.into()
+}
+
+fn endpoint_path(b: &Backend) -> PathBuf {
+    sibling_path(b, ".endpoint")
 }
 
 pub fn saved_endpoint(b: &Backend) -> Option<String> {
@@ -131,13 +136,22 @@ pub fn saved_endpoint(b: &Backend) -> Option<String> {
     }
 }
 
-fn write_atomic(path: &Path, body: &[u8]) -> io::Result<()> {
-    let dir = path
-        .parent()
+fn parent_dir(path: &Path) -> &Path {
+    path.parent()
         .filter(|dir| !dir.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    std::fs::create_dir_all(dir)?;
-    let mut temp = tempfile::NamedTempFile::new_in(dir)?;
+        .unwrap_or(Path::new("."))
+}
+
+fn lock_credentials(b: &Backend) -> io::Result<File> {
+    let path = sibling_path(b, ".lock");
+    std::fs::create_dir_all(parent_dir(&path))?;
+    let file = File::options().write(true).create(true).truncate(false).open(path)?;
+    file.lock()?;
+    Ok(file)
+}
+
+fn write_atomic(path: &Path, body: &[u8]) -> io::Result<()> {
+    let mut temp = tempfile::NamedTempFile::new_in(parent_dir(path))?;
     temp.write_all(body)?;
     temp.persist(path)?;
     Ok(())
@@ -180,6 +194,7 @@ pub fn load(b: &Backend, endpoint: &str) -> Option<String> {
 pub fn store(b: &Backend, endpoint: &str, secret: &str) -> std::io::Result<String> {
     let endpoint = origin(endpoint)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "expected an HTTP(S) server origin"))?;
+    let _lock = lock_credentials(b)?;
     let location = store_secret(b, endpoint, secret)?;
     write_atomic(&endpoint_path(b), endpoint.as_bytes())?;
     Ok(location)
@@ -207,6 +222,7 @@ fn store_secret(b: &Backend, endpoint: &str, secret: &str) -> io::Result<String>
 
 /// Delete the credentials. Clear the default if it selects this server.
 pub fn remove(b: &Backend, endpoint: &str) -> std::io::Result<bool> {
+    let _lock = lock_credentials(b)?;
     let active_endpoint = saved_endpoint(b);
     let (file, mut found) = match b {
         Backend::Keyring(file) => {
@@ -353,6 +369,40 @@ mod tests {
         assert!(remove(&b, "http://b").expect("logout"));
         assert_eq!(saved_endpoint(&b), None);
         assert_eq!(load(&b, "http://a").as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn login_and_logout_use_the_same_lock() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let b = Backend::File(dir.path().join("creds.json"));
+        store(&b, "http://a", "alice").expect("login");
+        let lock = lock_credentials(&b).expect("lock");
+        let (started, attempts) = mpsc::channel();
+        let (finished, results) = mpsc::channel();
+        std::thread::scope(|scope| {
+            let login = scope.spawn(|| {
+                started.send(()).expect("start");
+                store(&b, "http://b", "bob").expect("login");
+                finished.send(()).expect("finish");
+            });
+            let logout = scope.spawn(|| {
+                started.send(()).expect("start");
+                assert!(remove(&b, "http://a").expect("logout"));
+                finished.send(()).expect("finish");
+            });
+            attempts.recv().expect("login or logout start");
+            attempts.recv().expect("login and logout start");
+            let blocked = results.recv_timeout(Duration::from_millis(100));
+            drop(lock);
+            login.join().expect("login");
+            logout.join().expect("logout");
+            assert_eq!(blocked, Err(mpsc::RecvTimeoutError::Timeout));
+        });
+        assert_eq!(saved_endpoint(&b).as_deref(), Some("http://b"));
+        assert_eq!(load(&b, "http://b").as_deref(), Some("bob"));
     }
 
     #[test]
