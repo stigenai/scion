@@ -123,17 +123,28 @@ fn endpoint_path(b: &Backend) -> PathBuf {
 }
 
 pub fn saved_endpoint(b: &Backend) -> Option<String> {
-    match std::fs::read_to_string(endpoint_path(b)) {
+    let path = endpoint_path(b);
+    match std::fs::read_to_string(&path) {
         Ok(value) => origin(&value).map(str::to_owned),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            let map = read_file(credential_path(b)).ok()?;
-            if map.len() != 1 {
-                return None;
+            let legacy = legacy_endpoint(b);
+            // A writer can install the preference before it changes the credential map.
+            match std::fs::read_to_string(&path) {
+                Ok(value) => origin(&value).map(str::to_owned),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => legacy,
+                Err(_) => None,
             }
-            origin(map.first_key_value()?.0).map(str::to_owned)
         }
         Err(_) => None,
     }
+}
+
+fn legacy_endpoint(b: &Backend) -> Option<String> {
+    let map = read_file(credential_path(b)).ok()?;
+    if map.len() != 1 {
+        return None;
+    }
+    origin(map.first_key_value()?.0).map(str::to_owned)
 }
 
 fn parent_dir(path: &Path) -> &Path {
@@ -150,14 +161,19 @@ fn lock_credentials(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
-fn lock_profile(b: &Backend) -> io::Result<(File, File)> {
+fn lock_profile(b: &Backend) -> io::Result<(File, File, Option<String>)> {
     let credentials = lock_credentials(credential_path(b))?;
     let path = endpoint_path(b);
     // This lock also protects the file if another profile uses it for credentials.
     let preference = lock_credentials(&path)?;
-    match std::fs::read_to_string(&path) {
-        Ok(value) if value.is_empty() || origin(&value).is_some() => (),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => (),
+    let active = match std::fs::read_to_string(&path) {
+        Ok(value) if value.is_empty() || origin(&value).is_some() => origin(&value).map(str::to_owned),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            let legacy = legacy_endpoint(b);
+            // Record the old default before a credential change can affect legacy fallback.
+            write_atomic(&path, legacy.as_deref().unwrap_or_default().as_bytes())?;
+            legacy
+        }
         Err(e) => return Err(e),
         Ok(_) => {
             return Err(io::Error::new(
@@ -165,8 +181,8 @@ fn lock_profile(b: &Backend) -> io::Result<(File, File)> {
                 format!("{} contains data that is not an endpoint preference", path.display()),
             ));
         }
-    }
-    Ok((credentials, preference))
+    };
+    Ok((credentials, preference, active))
 }
 
 fn write_atomic(path: &Path, body: &[u8]) -> io::Result<()> {
@@ -246,8 +262,7 @@ fn store_secret(b: &Backend, endpoint: &str, secret: &str) -> io::Result<String>
 
 /// Delete the credentials. Clear the default if it selects this server.
 pub fn remove(b: &Backend, endpoint: &str) -> std::io::Result<bool> {
-    let _locks = lock_profile(b)?;
-    let active_endpoint = saved_endpoint(b);
+    let (_credentials, _preference, active_endpoint) = lock_profile(b)?;
     let (file, mut found) = match b {
         Backend::Keyring(file) => {
             #[cfg(target_os = "macos")]
@@ -266,7 +281,7 @@ pub fn remove(b: &Backend, endpoint: &str) -> std::io::Result<bool> {
         write_file(file, &map)?;
         found = true;
     }
-    if active_endpoint.map_or(found, |saved| saved == endpoint.trim_end_matches('/')) {
+    if active_endpoint.is_some_and(|saved| saved == endpoint.trim_end_matches('/')) {
         // An empty preference prevents a fallback to an older account.
         write_atomic(&endpoint_path(b), b"")?;
     }
