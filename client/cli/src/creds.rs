@@ -362,6 +362,23 @@ mod tests {
     }
 
     #[test]
+    fn login_and_logout_preserve_a_colliding_credential_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let first = Backend::File(dir.path().join("c"));
+        let second = Backend::File(endpoint_path(&first));
+        std::fs::write(credential_path(&first), br#"{"http://a":"alice"}"#).expect("legacy account");
+        store(&second, "http://b", "bob").expect("login to the second profile");
+
+        assert!(store(&first, "http://a", "new").is_err());
+        assert_eq!(load(&second, "http://b").as_deref(), Some("bob"));
+        assert!(remove(&first, "http://a").is_err());
+        assert_eq!(load(&first, "http://a").as_deref(), Some("alice"));
+        assert_eq!(load(&second, "http://b").as_deref(), Some("bob"));
+        assert!(remove(&second, "http://b").expect("logout from the second profile"));
+        assert_eq!(load(&first, "http://a").as_deref(), Some("alice"));
+    }
+
+    #[test]
     fn logout_does_not_select_a_remaining_legacy_account() {
         let dir = tempfile::tempdir().expect("tempdir");
         let file = dir.path().join("creds.json");
