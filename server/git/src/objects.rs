@@ -93,13 +93,19 @@ impl<'a> Objects<'a> {
     /// A commit's git object.
     pub async fn commit(&mut self, rec: &ChangesetRecord) -> Result<Vec<u8>> {
         let cs = load_changeset(self.blobs, rec.id).await?;
+        self.commit_of(rec, &cs).await
+    }
+
+    /// A commit's git object, given its loaded changeset: the part of [`Objects::commit`] that
+    /// reads no changeset, so a caller can read many of them at once.
+    pub async fn commit_of(&mut self, rec: &ChangesetRecord, cs: &Changeset) -> Result<Vec<u8>> {
         let sha = self.commit_sha(rec.id).await?;
         let tree = self.tree_sha(rec.root_tree).await?;
         let mut parents = Vec::with_capacity(rec.parents.len());
         for p in &rec.parents {
             parents.push(self.commit_sha(*p).await?);
         }
-        commit_object(rec.id, &cs, sha, &tree, &parents)
+        commit_object(rec.id, cs, sha, &tree, &parents)
     }
 
     /// A directory's git tree object.

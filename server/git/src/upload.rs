@@ -4,7 +4,7 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use bytes::{Bytes, BytesMut};
 use futures::{StreamExt, TryStreamExt};
-use scion_object::{EntryMode, ObjectId, Tree, TreeEntry};
+use scion_object::{Changeset, EntryMode, ObjectId, Tree, TreeEntry};
 use scion_query::{GITSHA_KIND, GITSHA_VERSION};
 use scion_store::{BlobStore, ChangesetRecord, MetaStore, RefState};
 use tokio::sync::mpsc;
@@ -643,9 +643,33 @@ async fn load_tree(blobs: &dyn BlobStore, id: ObjectId) -> Result<Tree> {
     Tree::decode(&bytes).map_err(|e| Error::Internal(format!("tree {id}: {e}")))
 }
 
+/// The trees one walk has read, so a base is not read again.
+struct Trees<'a> {
+    blobs: &'a dyn BlobStore,
+    loaded: HashMap<ObjectId, std::sync::Arc<Tree>>,
+}
+
+impl<'a> Trees<'a> {
+    fn new(blobs: &'a dyn BlobStore) -> Self {
+        Self {
+            blobs,
+            loaded: HashMap::new(),
+        }
+    }
+
+    async fn get(&mut self, id: ObjectId) -> Result<std::sync::Arc<Tree>> {
+        if let Some(t) = self.loaded.get(&id) {
+            return Ok(t.clone());
+        }
+        let t = std::sync::Arc::new(load_tree(self.blobs, id).await?);
+        self.loaded.insert(id, t.clone());
+        Ok(t)
+    }
+}
+
 /// Adds a tree and what it holds that the bases (the same path's trees in the parents) do not.
 async fn walk_tree(
-    blobs: &dyn BlobStore,
+    trees: &mut Trees<'_>,
     root: ObjectId,
     root_bases: Vec<ObjectId>,
     filter: Filter,
@@ -659,10 +683,10 @@ async fn walk_tree(
             continue;
         }
         plan.trees.push((tree, bases.first().copied()));
-        let t = load_tree(blobs, tree).await?;
+        let t = trees.get(tree).await?;
         let mut base_entries: Vec<HashMap<String, TreeEntry>> = Vec::with_capacity(bases.len());
         for b in &bases {
-            let bt = load_tree(blobs, *b).await?;
+            let bt = trees.get(*b).await?;
             base_entries.push(bt.entries().iter().map(|e| (e.name.clone(), e.clone())).collect());
         }
         for e in t.entries() {
@@ -713,7 +737,7 @@ pub async fn plan(
     // Trees a partial clone asks for go whole, as roots without parents
     let roots_wanted: Vec<(ObjectId, Vec<ObjectId>)> = wants.trees.iter().map(|t| (*t, Vec::new())).collect();
     for (tree, bases) in roots_wanted {
-        walk_tree(blobs, tree, bases, filter, &mut seen, &mut plan).await?;
+        walk_tree(&mut Trees::new(blobs), tree, bases, filter, &mut seen, &mut plan).await?;
     }
     for f in &wants.files {
         if seen.insert(*f) {
@@ -721,6 +745,7 @@ pub async fn plan(
             plan.files.push((*f, None));
         }
     }
+    let mut jobs: Vec<(ObjectId, Vec<ObjectId>)> = Vec::with_capacity(commits.len());
     for c in commits.iter().rev() {
         // A shallow commit's parents are not on the client: its whole tree goes
         let parents: &[ObjectId] = if cut.contains(&c.id) { &[] } else { &c.parents };
@@ -733,7 +758,32 @@ pub async fn plan(
             parent_trees.push(root);
         }
         roots.insert(c.id, c.root_tree);
-        walk_tree(blobs, c.root_tree, parent_trees, filter, &mut seen, &mut plan).await?;
+        jobs.push((c.root_tree, parent_trees));
+    }
+    // Reading a commit's trees takes a few reads one after the other (a tree names the next),
+    // and the walk below needs the commits in order. So the reads of the next commits run ahead
+    // of it, each commit's own walk in its own task of the stream. Its result is the trees it
+    // read: the real walk, which skips what is seen, reads only a part of them.
+    let mut ahead = std::pin::pin!(
+        futures::stream::iter(jobs.iter().cloned())
+            .map(|(root, bases)| async move {
+                let mut trees = Trees::new(blobs);
+                walk_tree(
+                    &mut trees,
+                    root,
+                    bases,
+                    filter,
+                    &mut HashSet::new(),
+                    &mut Plan::default(),
+                )
+                .await?;
+                Ok::<_, Error>(trees)
+            })
+            .buffered(READ_AHEAD)
+    );
+    for (root, bases) in &jobs {
+        let mut trees = ahead.try_next().await?.expect("a read for each commit");
+        walk_tree(&mut trees, *root, bases.clone(), filter, &mut seen, &mut plan).await?;
     }
     plan.commits = commits;
     Ok(plan)
@@ -1001,6 +1051,16 @@ impl Deltas {
     }
 }
 
+/// The changesets of these commits, in order, read a few at a time.
+fn changesets<'a>(
+    blobs: &'a dyn BlobStore,
+    commits: &'a [ChangesetRecord],
+) -> impl futures::Stream<Item = Result<Changeset>> + 'a {
+    futures::stream::iter(commits)
+        .map(move |c| async move { Ok(scion_query::load_changeset(blobs, c.id).await?) })
+        .buffered(READ_AHEAD)
+}
+
 /// A pack whose commits are built, up to a budget, before anything is
 /// sent: a commit git cannot be given then fails the fetch with a plain error, not a broken pack.
 pub struct Started<'a> {
@@ -1027,13 +1087,17 @@ pub async fn start<'a>(
     objects.prefetch(&ids, &roots).await?;
     let mut commits = Vec::new();
     let mut size = 0;
-    for c in &plan.commits {
-        if size >= budget {
-            break;
+    {
+        let mut sets = std::pin::pin!(changesets(blobs, &plan.commits));
+        for c in &plan.commits {
+            if size >= budget {
+                break;
+            }
+            let cs = sets.try_next().await?.expect("a changeset for each commit");
+            let entry = writer.object(Kind::Commit, &objects.commit_of(c, &cs).await?);
+            size += entry.len();
+            commits.push(entry);
         }
-        let entry = writer.object(Kind::Commit, &objects.commit(c).await?);
-        size += entry.len();
-        commits.push(entry);
     }
     Ok(Started {
         plan,
@@ -1071,10 +1135,14 @@ pub async fn write_pack(started: Started<'_>, out: &Out, opts: PackOptions) -> R
             return Ok(());
         }
     }
-    for c in &plan.commits[built..] {
-        let body = objects.commit(c).await?;
-        if !out.data(w.object(Kind::Commit, &body)).await {
-            return Ok(());
+    {
+        let mut sets = std::pin::pin!(changesets(blobs, &plan.commits[built..]));
+        for c in &plan.commits[built..] {
+            let cs = sets.try_next().await?.expect("a changeset for each commit");
+            let body = objects.commit_of(c, &cs).await?;
+            if !out.data(w.object(Kind::Commit, &body)).await {
+                return Ok(());
+            }
         }
     }
     for t in &plan.tags {
@@ -1088,23 +1156,46 @@ pub async fn write_pack(started: Started<'_>, out: &Out, opts: PackOptions) -> R
         written: HashMap::new(),
         recent: Recent::new(),
     };
-    for (t, base) in &plan.trees {
-        let tree = load_tree(blobs, *t).await?;
-        let body = Bytes::from(objects.tree(*t, &tree).await?);
-        let base = match base.filter(|b| d.can_name(*b)) {
-            Some(b) => {
-                let bytes = match d.recent.map.get(&b) {
-                    Some((_, c)) => c.clone(),
-                    None => Bytes::from(objects.tree(b, &load_tree(blobs, b).await?).await?),
-                };
-                Some((b, bytes, objects.tree_sha(b).await?))
-            }
-            None => None,
-        };
+    // The trees are read a few at a time, ahead of the writing. A delta's base is the tree
+    // written before it, or, for a thin pack, one the client has and that is read here too.
+    // The loop below does not touch storage: reads in flight could hold every connection it needs.
+    let outside: Vec<(ObjectId, Option<ObjectId>)> = plan
+        .trees
+        .iter()
+        .map(|(t, base)| (*t, base.filter(|b| d.opts.thin && !d.planned.contains(b))))
+        .collect();
+    let reads = futures::stream::iter(outside)
+        .map(|(t, outside)| async move {
+            let mut o = Objects::new(meta, blobs, repo);
+            let body = Bytes::from(o.tree(t, &load_tree(blobs, t).await?).await?);
+            let outside = match outside {
+                Some(b) => {
+                    let bytes = Bytes::from(o.tree(b, &load_tree(blobs, b).await?).await?);
+                    Some((b, bytes, o.tree_sha(b).await?))
+                }
+                None => None,
+            };
+            Ok::<_, Error>((t, body, outside))
+        })
+        .buffered(READ_AHEAD);
+    let mut reads = std::pin::pin!(reads);
+    let mut tree_shas: HashMap<ObjectId, [u8; 20]> = HashMap::new();
+    let mut bases = plan.trees.iter().map(|(_, base)| *base);
+    while let Some((t, body, outside)) = reads.try_next().await? {
+        let base = bases
+            .next()
+            .flatten()
+            .filter(|b| d.can_name(*b))
+            .and_then(|b| match outside {
+                Some(o) if o.0 == b => Some(o),
+                // A base the cache of written contents no longer holds goes without a delta
+                _ => Some((b, d.recent.map.get(&b)?.1.clone(), *tree_shas.get(&b)?)),
+            });
+        tree_shas.insert(t, scion_query::git_hash("tree", &body));
         let entry = d.entry(
             &mut w,
             Kind::Tree,
-            *t,
+            t,
             &body,
             base.as_ref().map(|(b, c, s)| (*b, &c[..], *s)),
         );
