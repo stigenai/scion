@@ -515,6 +515,37 @@ mod tests {
     }
 
     #[test]
+    fn profile_locks_do_not_alias_credential_files() {
+        for suffix in [".lock", ".endpoint.lock"] {
+            for second_first in [true, false] {
+                let dir = tempfile::tempdir().expect("tempdir");
+                let first = Backend::File(dir.path().join("c"));
+                let second = Backend::File(sibling_path(credential_path(&first), suffix));
+                if second_first {
+                    store(&second, "http://b", "old").expect("login to second profile first");
+                }
+                store(&first, "http://a", "alice").expect("login to first profile");
+                store(&second, "http://b", "bob").expect("save second profile");
+
+                let path = if suffix == ".lock" {
+                    credential_path(&first).to_owned()
+                } else {
+                    endpoint_path(&first)
+                };
+                let lock = lock_credentials(&path).expect("lock first profile");
+                File::open(credential_path(&second))
+                    .expect("open second profile")
+                    .try_lock()
+                    .expect("second profile data has no lock");
+                drop(lock);
+
+                assert_eq!(load(&first, "http://a").as_deref(), Some("alice"));
+                assert_eq!(load(&second, "http://b").as_deref(), Some("bob"));
+            }
+        }
+    }
+
+    #[test]
     fn login_and_logout_use_the_same_lock() {
         use std::sync::mpsc;
         use std::time::Duration;
