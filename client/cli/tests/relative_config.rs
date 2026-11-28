@@ -110,7 +110,11 @@ async fn login_without_an_absolute_config_dir_writes_nothing() {
         .await;
         for out in outs {
             assert_eq!(out.status.code(), Some(2), "{name}: {}", stderr(&out));
-            assert!(stderr(&out).contains("SCION_CREDENTIALS_FILE"), "{name}: {}", stderr(&out));
+            assert!(
+                stderr(&out).contains("SCION_CREDENTIALS_FILE"),
+                "{name}: {}",
+                stderr(&out)
+            );
         }
         assert_eq!(entries(dir.path()), 0, "{name}: the directory must stay empty");
     }

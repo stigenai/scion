@@ -17,10 +17,15 @@ pub fn auth_for(endpoint: &str, env: impl Fn(&str) -> Option<String>) -> Auth {
     {
         return Auth::Exchange(t);
     }
-    match creds::load(&creds::backend(&env), endpoint) {
+    match creds::backend(&env).ok().and_then(|b| creds::load(&b, endpoint)) {
         Some(secret) => Auth::Exchange(secret),
         None => Auth::None,
     }
+}
+
+/// Where login saves credentials. Login checks this before it connects to the server.
+fn save_backend() -> Result<creds::Backend, CliError> {
+    creds::backend(|k| std::env::var(k).ok()).map_err(|e| CliError::Usage(format!("saving credentials: {e}")))
 }
 
 #[derive(Debug, Serialize)]
@@ -58,6 +63,7 @@ async fn direct(endpoint: &str, auth: Auth) -> Result<Client, CliError> {
 /// 用已有的令牌登录：校验后保存。
 pub async fn login_with_token(ctx: &Ctx, token: &str) -> Result<LoginOut, CliError> {
     let endpoint = ctx.endpoint_or_default();
+    let store = save_backend()?;
     let token = token.trim();
     if token.is_empty() {
         return Err(CliError::Usage("empty token".into()));
@@ -67,8 +73,8 @@ pub async fn login_with_token(ctx: &Ctx, token: &str) -> Result<LoginOut, CliErr
     if me.subject == "anonymous" {
         return Err(CliError::Usage("the server did not accept the token".into()));
     }
-    let stored_in = creds::store(&creds::backend(|k| std::env::var(k).ok()), &endpoint, token)
-        .map_err(|e| CliError::Usage(format!("saving credentials: {e}")))?;
+    let stored_in =
+        creds::store(&store, &endpoint, token).map_err(|e| CliError::Usage(format!("saving credentials: {e}")))?;
     Ok(LoginOut {
         schema: "scion.cli.login/v1",
         endpoint,
@@ -80,6 +86,7 @@ pub async fn login_with_token(ctx: &Ctx, token: &str) -> Result<LoginOut, CliErr
 /// OIDC device flow：提示用户在浏览器中完成登录，轮询到完成后保存刷新令牌。
 pub async fn login_device(ctx: &Ctx, mut prompt: impl FnMut(&str)) -> Result<LoginOut, CliError> {
     let endpoint = ctx.endpoint_or_default();
+    let store = save_backend()?;
     let c = direct(&endpoint, Auth::None).await?;
     if !c.has_feature(scion_proto::features::AUTH_DEVICE) {
         return Err(CliError::Usage(
@@ -106,7 +113,7 @@ pub async fn login_device(ctx: &Ctx, mut prompt: impl FnMut(&str)) -> Result<Log
                 return Err(CliError::Usage("login code expired; run `scn login` again".into()));
             }
             DeviceLoginPoll::Complete { subject, refresh_token } => {
-                let stored_in = creds::store(&creds::backend(|k| std::env::var(k).ok()), &endpoint, &refresh_token)
+                let stored_in = creds::store(&store, &endpoint, &refresh_token)
                     .map_err(|e| CliError::Usage(format!("saving credentials: {e}")))?;
                 return Ok(LoginOut {
                     schema: "scion.cli.login/v1",
@@ -140,8 +147,10 @@ impl Render for LogoutOut {
 
 pub fn logout(ctx: &Ctx) -> Result<LogoutOut, CliError> {
     let endpoint = ctx.endpoint_or_default();
-    let removed = creds::remove(&creds::backend(|k| std::env::var(k).ok()), &endpoint)
-        .map_err(|e| CliError::Usage(format!("removing credentials: {e}")))?;
+    let store =
+        creds::backend(|k| std::env::var(k).ok()).map_err(|e| CliError::Usage(format!("removing credentials: {e}")))?;
+    let removed =
+        creds::remove(&store, &endpoint).map_err(|e| CliError::Usage(format!("removing credentials: {e}")))?;
     Ok(LogoutOut {
         schema: "scion.cli.logout/v1",
         endpoint,
