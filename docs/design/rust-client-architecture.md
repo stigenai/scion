@@ -58,9 +58,11 @@ The CLI uses the first available endpoint in the order below.
 1. The endpoint in a positional URL.
 2. The `--endpoint` option.
 3. The `SCION_ENDPOINT` variable.
-4. The endpoint in the working copy's `.scion/state.toml`.
+4. The endpoint in `.scion/state.toml` if the command uses a working copy.
 5. The endpoint from the saved login.
 6. `http://127.0.0.1:7080`.
+
+`scn clone` and `scn import git` skip step 4.
 
 **Splitting reads from writes** (done by `scion-client`):
 - When a daemon socket exists (`$XDG_RUNTIME_DIR/scion/daemon.sock`, or `~/Library/Caches/scion/daemon.sock` on macOS), **every request goes to the daemon**, which answers it or forwards it.
