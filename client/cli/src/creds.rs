@@ -195,6 +195,10 @@ fn lock_profile(b: &Backend) -> io::Result<(File, Option<String>)> {
 fn write_atomic(path: &Path, body: &[u8]) -> io::Result<()> {
     let mut temp = tempfile::NamedTempFile::new_in(parent_dir(path))?;
     temp.write_all(body)?;
+    #[cfg(test)]
+    if tests::FAIL_PREFERENCE_WRITE.with_borrow(|target| target.as_deref() == Some(path)) {
+        return Err(io::ErrorKind::StorageFull.into());
+    }
     temp.persist(path)?;
     Ok(())
 }
@@ -301,6 +305,7 @@ mod tests {
 
     thread_local! {
         pub(super) static INTERRUPT_CREDENTIAL_UPDATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        pub(super) static FAIL_PREFERENCE_WRITE: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
     }
 
     #[test]
@@ -593,13 +598,39 @@ mod tests {
     }
 
     #[test]
-    fn preference_write_error_reaches_the_caller() {
+    fn preference_read_error_reaches_the_caller() {
         let dir = tempfile::tempdir().expect("tempdir");
         let b = Backend::File(dir.path().join("creds.json"));
-        std::fs::create_dir(endpoint_path(&b)).expect("block preference write");
+        std::fs::create_dir(endpoint_path(&b)).expect("block preference read");
         assert!(store(&b, "http://a", "alice").is_err());
         assert_eq!(saved_endpoint(&b), None);
         assert_eq!(load(&b, "http://a"), None);
+    }
+
+    #[test]
+    fn final_login_preference_write_error_preserves_the_default() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let b = Backend::File(dir.path().join("creds.json"));
+        store(&b, "http://a", "alice").expect("login to a");
+
+        FAIL_PREFERENCE_WRITE.replace(Some(endpoint_path(&b)));
+        let error = store(&b, "http://b", "bob").expect_err("preference write error");
+        assert_eq!(error.kind(), io::ErrorKind::StorageFull);
+        assert_eq!(load(&b, "http://b").as_deref(), Some("bob"));
+        assert_eq!(saved_endpoint(&b).as_deref(), Some("http://a"));
+    }
+
+    #[test]
+    fn final_logout_preference_write_error_preserves_the_default() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let b = Backend::File(dir.path().join("creds.json"));
+        store(&b, "http://a", "alice").expect("login to a");
+
+        FAIL_PREFERENCE_WRITE.replace(Some(endpoint_path(&b)));
+        let error = remove(&b, "http://a").expect_err("preference write error");
+        assert_eq!(error.kind(), io::ErrorKind::StorageFull);
+        assert_eq!(load(&b, "http://a"), None);
+        assert_eq!(saved_endpoint(&b).as_deref(), Some("http://a"));
     }
 
     #[test]
