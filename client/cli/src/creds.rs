@@ -122,7 +122,16 @@ fn endpoint_path(b: &Backend) -> PathBuf {
     sibling_path(credential_path(b), ".endpoint")
 }
 
-pub fn saved_endpoint(b: &Backend) -> Option<String> {
+pub fn saved_endpoint_from_env(env: impl Fn(&str) -> Option<String>) -> Option<String> {
+    let profile = backend(&env);
+    if credential_path(&profile).is_absolute() || env("SCION_CREDENTIALS_FILE").is_some_and(|path| !path.is_empty()) {
+        saved_endpoint(&profile)
+    } else {
+        None
+    }
+}
+
+fn saved_endpoint(b: &Backend) -> Option<String> {
     saved_endpoint_with(b, || legacy_endpoint(b).ok().flatten())
 }
 

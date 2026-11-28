@@ -70,7 +70,7 @@ impl Ctx {
         self.endpoint
             .clone()
             .or_else(|| wc.map(|w| w.state().endpoint.clone()))
-            .or_else(|| crate::creds::saved_endpoint(&crate::creds::backend(env)))
+            .or_else(|| crate::creds::saved_endpoint_from_env(env))
             .unwrap_or_else(|| DEFAULT_ENDPOINT.to_owned())
     }
 }
