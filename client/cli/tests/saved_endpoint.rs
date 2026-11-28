@@ -82,6 +82,72 @@ fn whoami(command: &mut Command, args: &[&str], endpoint: &str, subject: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ignores_relative_config_as_a_default_endpoint() {
+    let (url, pat, _) = server("fixture", None).await;
+    let mut unexpected = Vec::new();
+    for (case, env, path, legacy) in [
+        ("no home", None, ".config", false),
+        ("no home, legacy", None, ".config", true),
+        ("empty home", Some(("HOME", "")), ".config", false),
+        ("relative home", Some(("HOME", "rel")), "rel/.config", false),
+        ("empty XDG", Some(("XDG_CONFIG_HOME", "")), "", false),
+        ("relative XDG", Some(("XDG_CONFIG_HOME", "rel")), "rel", false),
+    ] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let config = root.join(path);
+        let profile = config.join("scion");
+        std::fs::create_dir_all(&profile).expect("config directory");
+        if legacy {
+            let map = serde_json::json!({(url.clone()): pat});
+            std::fs::write(profile.join("credentials.json"), map.to_string()).expect("legacy map");
+        } else {
+            std::fs::write(profile.join("credentials.json.endpoint"), &url).expect("preference");
+        }
+
+        let mut command = scn(root, root);
+        command
+            .env("SCION_CREDENTIALS", "file")
+            .env_remove("HOME")
+            .env_remove("SCION_CREDENTIALS_FILE")
+            .env_remove("XDG_CONFIG_HOME")
+            .envs(env)
+            .args(["whoami", "--json"]);
+        let result = command.output().expect("whoami with relative config");
+        let out: Value = serde_json::from_slice(&result.stdout).expect("whoami response");
+        let selected_loopback = if result.status.success() {
+            out["endpoint"] == "http://127.0.0.1:7080"
+        } else {
+            out["error"]
+                .as_str()
+                .is_some_and(|error| error.starts_with("cannot connect to http://127.0.0.1:7080: "))
+        };
+        if !selected_loopback {
+            unexpected.push(case);
+        }
+        let result = json(
+            command
+                .env("XDG_CONFIG_HOME", &config)
+                .output()
+                .expect("absolute config"),
+        );
+        assert_eq!(result["endpoint"], url, "{case}");
+        let result = json(
+            command
+                .env_remove("XDG_CONFIG_HOME")
+                .env("SCION_CREDENTIALS_FILE", Path::new(path).join("scion/credentials.json"))
+                .output()
+                .expect("explicit relative credentials file"),
+        );
+        assert_eq!(result["endpoint"], url, "{case}");
+    }
+    assert!(
+        unexpected.is_empty(),
+        "relative config selected an endpoint: {unexpected:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn last_successful_login_sets_the_default() {
     let (a, pat_a, _) = server("alice", None).await;
     let (b, pat_b, _) = server("bob", None).await;
