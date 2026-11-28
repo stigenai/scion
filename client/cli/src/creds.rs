@@ -123,7 +123,7 @@ fn endpoint_path(b: &Backend) -> PathBuf {
 }
 
 pub fn saved_endpoint(b: &Backend) -> Option<String> {
-    saved_endpoint_with(b, || legacy_endpoint(b))
+    saved_endpoint_with(b, || legacy_endpoint(b).ok().flatten())
 }
 
 fn saved_endpoint_with(b: &Backend, read_legacy: impl FnOnce() -> Option<String>) -> Option<String> {
@@ -143,12 +143,16 @@ fn saved_endpoint_with(b: &Backend, read_legacy: impl FnOnce() -> Option<String>
     }
 }
 
-fn legacy_endpoint(b: &Backend) -> Option<String> {
-    let map = read_file(credential_path(b)).ok()?;
+fn legacy_endpoint(b: &Backend) -> io::Result<Option<String>> {
+    let map = read_file(credential_path(b))?;
     if map.len() != 1 {
-        return None;
+        return Ok(None);
     }
-    origin(map.first_key_value()?.0).map(str::to_owned)
+    Ok(map
+        .keys()
+        .next()
+        .and_then(|endpoint| origin(endpoint))
+        .map(str::to_owned))
 }
 
 fn parent_dir(path: &Path) -> &Path {
@@ -173,7 +177,7 @@ fn lock_profile(b: &Backend) -> io::Result<(File, File, Option<String>)> {
     let active = match std::fs::read_to_string(&path) {
         Ok(value) if value.is_empty() || origin(&value).is_some() => origin(&value).map(str::to_owned),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            let legacy = legacy_endpoint(b);
+            let legacy = legacy_endpoint(b)?;
             // Record the old default before a credential change can affect legacy fallback.
             write_atomic(&path, legacy.as_deref().unwrap_or_default().as_bytes())?;
             legacy
