@@ -1,5 +1,6 @@
 //! User settings (`scn config`): a small JSON map in `$XDG_CONFIG_HOME/scion/config.json`
-//! (default `~/.config/scion/config.json`; `SCION_CONFIG_FILE` overrides the path).
+//! (default `~/.config/scion/config.json`; `SCION_CONFIG_FILE` overrides the path). A relative or
+//! empty `XDG_CONFIG_HOME` or `HOME` is ignored. With no absolute root and no override, `scn config` fails.
 //!
 //! The commit author comes from, in order: `--author` / `SCION_AUTHOR`, `user.name` and
 //! `user.email` here, then the same keys in git's configuration.
@@ -14,17 +15,31 @@ use crate::output::{CliError, Render};
 /// Keys `scn config` accepts.
 pub const KEYS: [&str; 2] = ["user.name", "user.email"];
 
-/// Where the settings file lives.
-pub fn path(env: impl Fn(&str) -> Option<String>) -> PathBuf {
+/// Where the settings file lives. `SCION_CONFIG_FILE` is used as given. Otherwise only an
+/// absolute `XDG_CONFIG_HOME` or `HOME` counts: a relative root would mean the current directory.
+/// None when no root qualifies.
+pub fn path(env: impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
     if let Some(f) = env("SCION_CONFIG_FILE").filter(|f| !f.is_empty()) {
-        return PathBuf::from(f);
+        return Some(PathBuf::from(f));
     }
-    env("XDG_CONFIG_HOME")
-        .filter(|d| !d.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env("HOME").unwrap_or_else(|| ".".into())).join(".config"))
-        .join("scion")
-        .join("config.json")
+    let root = |k: &str| env(k).map(PathBuf::from).filter(|p| p.is_absolute());
+    let base = root("XDG_CONFIG_HOME").or_else(|| root("HOME").map(|h| h.join(".config")))?;
+    Some(base.join("scion").join("config.json"))
+}
+
+/// The settings path, or a usage error that says which roots to set.
+pub fn require_path(env: impl Fn(&str) -> Option<String>) -> Result<PathBuf, CliError> {
+    path(env).ok_or_else(|| {
+        CliError::Usage("no settings file: set an absolute XDG_CONFIG_HOME or HOME, or set SCION_CONFIG_FILE".into())
+    })
+}
+
+/// The settings at the default path. Empty when there is no safe path: nothing is read then.
+pub fn load_default() -> Result<BTreeMap<String, String>, CliError> {
+    match path(|k| std::env::var(k).ok()) {
+        Some(p) => load(&p),
+        None => Ok(BTreeMap::new()),
+    }
 }
 
 pub fn load(path: &Path) -> Result<BTreeMap<String, String>, CliError> {
@@ -165,17 +180,22 @@ mod tests {
     fn path_precedence() {
         assert_eq!(
             path(env(&[("SCION_CONFIG_FILE", "/x/c.json")])),
-            PathBuf::from("/x/c.json")
+            Some(PathBuf::from("/x/c.json"))
         );
         assert_eq!(
             path(env(&[("XDG_CONFIG_HOME", "/xdg"), ("HOME", "/h")])),
-            PathBuf::from("/xdg/scion/config.json")
+            Some(PathBuf::from("/xdg/scion/config.json"))
         );
         assert_eq!(
             path(env(&[("XDG_CONFIG_HOME", ""), ("HOME", "/h")])),
-            PathBuf::from("/h/.config/scion/config.json")
+            Some(PathBuf::from("/h/.config/scion/config.json"))
         );
-        assert_eq!(path(env(&[])), PathBuf::from("./.config/scion/config.json"));
+        assert_eq!(path(env(&[])), None);
+        assert_eq!(path(env(&[("HOME", "."), ("XDG_CONFIG_HOME", "rel")])), None);
+        assert_eq!(
+            path(env(&[("HOME", "rel"), ("XDG_CONFIG_HOME", "/xdg")])),
+            Some(PathBuf::from("/xdg/scion/config.json"))
+        );
     }
 
     #[test]

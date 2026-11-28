@@ -17,16 +17,22 @@ pub fn enabled(env: impl Fn(&str) -> Option<String>) -> bool {
     !matches!(env("SCION_NO_DAEMON").as_deref().map(str::trim), Some(v) if !v.is_empty() && v != "0")
 }
 
-/// daemon 的配置：默认位置，可用 `SCION_DAEMON_SOCKET`、`SCION_DAEMON_CACHE_DIR` 覆盖。
-pub fn config(env: impl Fn(&str) -> Option<String>) -> DaemonConfig {
-    let mut c = DaemonConfig::default_paths();
-    if let Some(s) = env("SCION_DAEMON_SOCKET").filter(|s| !s.is_empty()) {
-        c.socket = PathBuf::from(s);
+/// The daemon paths: `SCION_DAEMON_SOCKET` and `SCION_DAEMON_CACHE_DIR` are used as given, each one
+/// alone. A path without an override comes from an absolute root. A usage error when either path is missing.
+pub fn config(env: impl Fn(&str) -> Option<String>) -> Result<DaemonConfig, CliError> {
+    let (socket, cache) = DaemonConfig::default_locations(&env, cfg!(target_os = "macos"));
+    let set = |k: &str| env(k).filter(|s| !s.is_empty()).map(PathBuf::from);
+    match (
+        set("SCION_DAEMON_SOCKET").or(socket),
+        set("SCION_DAEMON_CACHE_DIR").or(cache),
+    ) {
+        (Some(s), Some(c)) => Ok(DaemonConfig::at(s, c)),
+        _ => Err(CliError::Usage(
+            "no daemon paths: set an absolute HOME (or XDG_CACHE_HOME and XDG_RUNTIME_DIR), \
+             or set SCION_DAEMON_SOCKET and SCION_DAEMON_CACHE_DIR; SCION_NO_DAEMON=1 turns the daemon off"
+                .into(),
+        )),
     }
-    if let Some(d) = env("SCION_DAEMON_CACHE_DIR").filter(|s| !s.is_empty()) {
-        c.cache_dir = PathBuf::from(d);
-    }
-    c
 }
 
 /// 经 daemon 建立连接；daemon 没在运行时拉起它。失败时返回 `None`，调用方改为直连。
@@ -248,11 +254,20 @@ mod tests {
         let c = config(env(&[
             ("SCION_DAEMON_SOCKET", "/tmp/d.sock"),
             ("SCION_DAEMON_CACHE_DIR", "/tmp/c"),
-        ]));
+        ]))
+        .expect("config");
         assert_eq!(c.socket, PathBuf::from("/tmp/d.sock"));
         assert_eq!(c.cache_dir, PathBuf::from("/tmp/c"));
-        let d = config(env(&[]));
-        assert_eq!(d.socket, DaemonConfig::default_paths().socket);
+        assert!(config(env(&[])).is_err());
+        let d = config(env(&[("HOME", "/h")])).expect("config");
+        assert_eq!(d.socket, PathBuf::from("/h/.cache/scion/daemon.sock"));
+        // a relative override is kept as given
+        let r = config(env(&[
+            ("SCION_DAEMON_SOCKET", "d.sock"),
+            ("SCION_DAEMON_CACHE_DIR", "c"),
+        ]))
+        .expect("config");
+        assert_eq!(r.socket, PathBuf::from("d.sock"));
     }
 
     #[test]
@@ -291,10 +306,7 @@ mod tests {
     #[tokio::test]
     async fn status_and_stop_without_daemon() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let cfg = DaemonConfig {
-            socket: dir.path().join("d.sock"),
-            ..DaemonConfig::default_paths()
-        };
+        let cfg = DaemonConfig::at(dir.path().join("d.sock"), dir.path().join("objects"));
         let s = status(&cfg).await;
         assert!(!s.running && s.pid.is_none());
         // pid 文件残留但 daemon 不在：什么都不做
