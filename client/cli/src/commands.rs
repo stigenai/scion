@@ -153,9 +153,11 @@ pub async fn connect(endpoint: &str, repo: Option<&str>) -> Result<Client, CliEr
     }
     let env = |k: &str| std::env::var(k).ok();
     if crate::daemon::enabled(env) {
-        let socket = crate::daemon::config(env).socket;
-        if let Some(c) = crate::daemon::connect(b.clone(), &socket).await {
-            return Ok(c);
+        // no safe daemon paths: skip the daemon and connect direct
+        if let Ok(cfg) = crate::daemon::config(env) {
+            if let Some(c) = crate::daemon::connect(b.clone(), &cfg.socket).await {
+                return Ok(c);
+            }
         }
     }
     Ok(b.build().await?)
@@ -172,11 +174,8 @@ pub async fn doctor(ctx: &Ctx) -> Result<DoctorOut, CliError> {
     let endpoint = ctx.endpoint_or(ctx.working_copy().as_ref());
     let client = connect(&endpoint, None).await?;
     let mut out = doctor_out(&endpoint, client.server_info());
-    out.objects = if client.via_daemon() {
-        format!(
-            "daemon ({})",
-            crate::daemon::config(|k| std::env::var(k).ok()).socket.display()
-        )
+    out.objects = if let (true, Ok(cfg)) = (client.via_daemon(), crate::daemon::config(|k| std::env::var(k).ok())) {
+        format!("daemon ({})", cfg.socket.display())
     } else {
         client.object_endpoint().to_owned()
     };

@@ -68,7 +68,15 @@ fn config_path_matrix() {
     std::fs::write(cwd.join(".config/scion/config.json"), r#"{"user.name":"Planted"}"#).expect("plant");
     let good_xdg = root.join("xdg").display().to_string();
     let good_home = root.join("home").display().to_string();
-    let classes = |good: &str| [None, Some(String::new()), Some(".".into()), Some("rel".into()), Some(good.into())];
+    let classes = |good: &str| {
+        [
+            None,
+            Some(String::new()),
+            Some(".".into()),
+            Some("rel".into()),
+            Some(good.into()),
+        ]
+    };
     for xdg in classes(&good_xdg) {
         for home in classes(&good_home) {
             let mut env = vec![];
@@ -111,7 +119,11 @@ fn config_path_matrix() {
         }
     }
     // An explicit file is used as given, even when relative; empty selects the defaults.
-    let out = scn(&cwd, &[("SCION_CONFIG_FILE", "own.json")], &["config", "set", "user.name", "Ada"]);
+    let out = scn(
+        &cwd,
+        &[("SCION_CONFIG_FILE", "own.json")],
+        &["config", "set", "user.name", "Ada"],
+    );
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     assert!(cwd.join("own.json").exists());
     let out = scn(&cwd, &[("SCION_CONFIG_FILE", "")], &["config", "list"]);
@@ -219,21 +231,45 @@ fn daemon_path_matrix() {
     let (home, xdg_cache, xdg_run, sock, cache) = (g("home"), g("cache"), g("run"), g("o/d.sock"), g("o/c"));
     let cases: Vec<(Vec<(&str, &str)>, Option<String>)> = vec![
         (vec![("HOME", &home)], Some(format!("{home}/.cache/scion/daemon.sock"))),
-        (vec![("HOME", &home), ("XDG_CACHE_HOME", &xdg_cache)], Some(format!("{xdg_cache}/scion/daemon.sock"))),
-        (vec![("HOME", &home), ("XDG_RUNTIME_DIR", &xdg_run)], Some(format!("{xdg_run}/scion/daemon.sock"))),
+        (
+            vec![("HOME", &home), ("XDG_CACHE_HOME", &xdg_cache)],
+            Some(format!("{xdg_cache}/scion/daemon.sock")),
+        ),
+        (
+            vec![("HOME", &home), ("XDG_RUNTIME_DIR", &xdg_run)],
+            Some(format!("{xdg_run}/scion/daemon.sock")),
+        ),
         (
             vec![("HOME", "rel"), ("XDG_CACHE_HOME", &xdg_cache), ("XDG_RUNTIME_DIR", "")],
             Some(format!("{xdg_cache}/scion/daemon.sock")),
         ),
         (vec![("HOME", "rel"), ("XDG_RUNTIME_DIR", &xdg_run)], None),
-        (vec![("HOME", "rel"), ("XDG_CACHE_HOME", "."), ("XDG_RUNTIME_DIR", "rel")], None),
-        (vec![("HOME", ""), ("XDG_CACHE_HOME", ""), ("XDG_RUNTIME_DIR", "")], None),
+        (
+            vec![("HOME", "rel"), ("XDG_CACHE_HOME", "."), ("XDG_RUNTIME_DIR", "rel")],
+            None,
+        ),
+        (
+            vec![("HOME", ""), ("XDG_CACHE_HOME", ""), ("XDG_RUNTIME_DIR", "")],
+            None,
+        ),
         (vec![], None),
         (vec![("HOME", "."), ("SCION_DAEMON_SOCKET", &sock)], None),
-        (vec![("HOME", &home), ("SCION_DAEMON_SOCKET", &sock)], Some(sock.clone())),
-        (vec![("HOME", &home), ("SCION_DAEMON_CACHE_DIR", &cache)], Some(format!("{home}/.cache/scion/daemon.sock"))),
-        (vec![("SCION_DAEMON_SOCKET", &sock), ("SCION_DAEMON_CACHE_DIR", &cache)], Some(sock.clone())),
-        (vec![("HOME", &home), ("SCION_DAEMON_SOCKET", "")], Some(format!("{home}/.cache/scion/daemon.sock"))),
+        (
+            vec![("HOME", &home), ("SCION_DAEMON_SOCKET", &sock)],
+            Some(sock.clone()),
+        ),
+        (
+            vec![("HOME", &home), ("SCION_DAEMON_CACHE_DIR", &cache)],
+            Some(format!("{home}/.cache/scion/daemon.sock")),
+        ),
+        (
+            vec![("SCION_DAEMON_SOCKET", &sock), ("SCION_DAEMON_CACHE_DIR", &cache)],
+            Some(sock.clone()),
+        ),
+        (
+            vec![("HOME", &home), ("SCION_DAEMON_SOCKET", "")],
+            Some(format!("{home}/.cache/scion/daemon.sock")),
+        ),
     ];
     for (env, want) in cases {
         let before = names(&cwd);
@@ -268,12 +304,18 @@ fn daemon_without_paths() {
         vec![("HOME", "rel"), ("SCION_DAEMON_CACHE_DIR", &cache_s)], // invalid socket, valid cache
     ];
     for env in cases {
-        let spy = env.iter().any(|(k, _)| *k == "SCION_DAEMON_SOCKET").then(|| Spy::at(&sock));
+        let spy = env
+            .iter()
+            .any(|(k, _)| *k == "SCION_DAEMON_SOCKET")
+            .then(|| Spy::at(&sock));
         let pid = over.join("daemon.pid");
         if spy.is_some() {
             std::fs::write(&pid, "1\n").expect("pid");
         }
-        let (before_cwd, before_over) = (names(&cwd), names(&over.parent().map_or(root.clone(), Path::to_path_buf)));
+        let (before_cwd, before_over) = (
+            names(&cwd),
+            names(&over.parent().map_or(root.clone(), Path::to_path_buf)),
+        );
         for args in [&["daemon", "run"][..], &["daemon", "status"], &["daemon", "stop"]] {
             let out = scn(&cwd, &env, args);
             assert_eq!(out.status.code(), Some(2), "{env:?} {args:?}: {out:?}");
@@ -307,7 +349,10 @@ async fn client_skips_daemon_without_paths() {
         for (env, planted) in [
             (vec![], cwd.join(".cache/scion/daemon.sock")),
             (vec![("HOME", "rel")], cwd.join("rel/.cache/scion/daemon.sock")),
-            (vec![("HOME", "rel"), ("SCION_DAEMON_SOCKET", ok_sock_s.as_str())], ok_sock.clone()),
+            (
+                vec![("HOME", "rel"), ("SCION_DAEMON_SOCKET", ok_sock_s.as_str())],
+                ok_sock.clone(),
+            ),
         ] {
             let spy = Spy::at(&planted);
             let out = scn(&cwd, &env, &["doctor", "--json", "--endpoint", &url]);

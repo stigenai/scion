@@ -87,30 +87,34 @@ pub struct DaemonConfig {
 }
 
 impl DaemonConfig {
-    /// 默认位置：socket 在 `$XDG_RUNTIME_DIR/scion/daemon.sock`（macOS 为 `~/Library/Caches/scion/`），
-    /// 对象在 `$XDG_CACHE_HOME/scion/objects`（macOS 为 `~/Library/Caches/scion/objects`）。
-    pub fn default_paths() -> Self {
-        Self::paths_from(|k| std::env::var(k).ok(), cfg!(target_os = "macos"))
-    }
-
-    fn paths_from(env: impl Fn(&str) -> Option<String>, macos: bool) -> Self {
-        let home = PathBuf::from(env("HOME").unwrap_or_else(|| ".".into()));
+    /// The default `(socket, cache_dir)` from `env`. Only an absolute root counts: a relative one
+    /// would mean the current directory. A path is `None` when no root qualifies.
+    ///
+    /// Linux: cache `$XDG_CACHE_HOME/scion/objects`, else `$HOME/.cache/scion/objects`;
+    /// socket `$XDG_RUNTIME_DIR/scion/daemon.sock`, else `daemon.sock` in the cache base.
+    /// macOS: both under `$HOME/Library/Caches/scion`.
+    pub fn default_locations(env: impl Fn(&str) -> Option<String>, macos: bool) -> (Option<PathBuf>, Option<PathBuf>) {
+        let root = |k: &str| env(k).map(PathBuf::from).filter(|p| p.is_absolute());
         let (runtime, cache) = if macos {
-            let d = home.join("Library/Caches/scion");
+            let d = root("HOME").map(|h| h.join("Library/Caches/scion"));
             (d.clone(), d)
         } else {
-            let cache = env("XDG_CACHE_HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| home.join(".cache"))
-                .join("scion");
-            let runtime = env("XDG_RUNTIME_DIR")
-                .map(|d| PathBuf::from(d).join("scion"))
-                .unwrap_or_else(|| cache.clone());
+            let cache = root("XDG_CACHE_HOME")
+                .or_else(|| root("HOME").map(|h| h.join(".cache")))
+                .map(|d| d.join("scion"));
+            let runtime = root("XDG_RUNTIME_DIR")
+                .map(|d| d.join("scion"))
+                .or_else(|| cache.clone());
             (runtime, cache)
         };
+        (runtime.map(|d| d.join("daemon.sock")), cache.map(|d| d.join("objects")))
+    }
+
+    /// The default limits at the given paths.
+    pub fn at(socket: PathBuf, cache_dir: PathBuf) -> Self {
         Self {
-            socket: runtime.join("daemon.sock"),
-            cache_dir: cache.join("objects"),
+            socket,
+            cache_dir,
             disk_bytes: 20 << 30,
             memory_bytes: 256 << 20,
             idle_timeout: Some(Duration::from_secs(30 * 60)),
@@ -371,27 +375,72 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_paths_follow_platform_conventions() {
-        let env = |vars: &'static [(&'static str, &'static str)]| {
+    fn daemon_path_matrix() {
+        let env = |vars: Vec<(&'static str, &'static str)>| {
             move |k: &str| vars.iter().find(|(n, _)| *n == k).map(|(_, v)| (*v).to_string())
         };
-        let mac = DaemonConfig::paths_from(env(&[("HOME", "/Users/a")]), true);
-        assert_eq!(mac.socket, PathBuf::from("/Users/a/Library/Caches/scion/daemon.sock"));
-        assert_eq!(mac.cache_dir, PathBuf::from("/Users/a/Library/Caches/scion/objects"));
-        let linux = DaemonConfig::paths_from(
-            env(&[
-                ("HOME", "/home/a"),
-                ("XDG_RUNTIME_DIR", "/run/user/1"),
+        let p = |s: &str| Some(PathBuf::from(s));
+        let loc = |vars: Vec<(&'static str, &'static str)>, mac| DaemonConfig::default_locations(env(vars), mac);
+        // macOS ignores XDG and needs an absolute HOME
+        let mac = loc(
+            vec![
+                ("HOME", "/Users/a"),
                 ("XDG_CACHE_HOME", "/c"),
-            ]),
+                ("XDG_RUNTIME_DIR", "/r"),
+            ],
+            true,
+        );
+        assert_eq!(
+            mac,
+            (
+                p("/Users/a/Library/Caches/scion/daemon.sock"),
+                p("/Users/a/Library/Caches/scion/objects")
+            )
+        );
+        for h in ["", ".", "rel"] {
+            assert_eq!(loc(vec![("HOME", h), ("XDG_CACHE_HOME", "/c")], true), (None, None));
+        }
+        assert_eq!(loc(vec![], true), (None, None));
+        // Linux: both valid
+        let both = loc(
+            vec![("HOME", "/h"), ("XDG_RUNTIME_DIR", "/run/1"), ("XDG_CACHE_HOME", "/c")],
             false,
         );
-        assert_eq!(linux.socket, PathBuf::from("/run/user/1/scion/daemon.sock"));
-        assert_eq!(linux.cache_dir, PathBuf::from("/c/scion/objects"));
-        let bare = DaemonConfig::paths_from(env(&[("HOME", "/home/a")]), false);
-        assert_eq!(bare.socket, PathBuf::from("/home/a/.cache/scion/daemon.sock"));
-        assert_eq!(pid_file(&bare.socket), PathBuf::from("/home/a/.cache/scion/daemon.pid"));
-        assert!(DaemonConfig::default_paths().idle_timeout.is_some());
+        assert_eq!(both, (p("/run/1/scion/daemon.sock"), p("/c/scion/objects")));
+        // HOME only: the socket goes to the cache base
+        let home = loc(vec![("HOME", "/h")], false);
+        assert_eq!(home, (p("/h/.cache/scion/daemon.sock"), p("/h/.cache/scion/objects")));
+        // each invalid class at each root, with the other root valid and invalid
+        for bad in ["", ".", "rel"] {
+            assert_eq!(
+                loc(
+                    vec![("HOME", "/h"), ("XDG_CACHE_HOME", bad), ("XDG_RUNTIME_DIR", bad)],
+                    false
+                ),
+                home
+            );
+            assert_eq!(
+                loc(vec![("HOME", bad), ("XDG_CACHE_HOME", "/c")], false),
+                (p("/c/scion/daemon.sock"), p("/c/scion/objects"))
+            );
+            assert_eq!(
+                loc(vec![("HOME", bad), ("XDG_RUNTIME_DIR", "/r")], false),
+                (p("/r/scion/daemon.sock"), None)
+            );
+            assert_eq!(
+                loc(
+                    vec![("HOME", bad), ("XDG_CACHE_HOME", bad), ("XDG_RUNTIME_DIR", bad)],
+                    false
+                ),
+                (None, None)
+            );
+        }
+        assert_eq!(loc(vec![], false), (None, None));
+        assert_eq!(
+            pid_file(Path::new("/h/.cache/scion/daemon.sock")),
+            PathBuf::from("/h/.cache/scion/daemon.pid")
+        );
+        assert!(DaemonConfig::at("/s".into(), "/c".into()).idle_timeout.is_some());
     }
 
     #[tokio::test(start_paused = true)]
