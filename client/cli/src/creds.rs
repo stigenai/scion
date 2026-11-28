@@ -7,6 +7,7 @@
 //! would ask, and without a screen to answer on it would wait for ever. `SCION_CREDENTIALS=file`
 //! or `keychain` chooses; `SCION_CREDENTIALS_FILE` names the file (and always uses it). A
 //! keychain that does not answer within [`KEYCHAIN_WAIT`] counts as unavailable.
+//! `scn` does not use a relative `HOME` or `XDG_CONFIG_HOME`; then it needs `SCION_CREDENTIALS_FILE`.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -33,13 +34,19 @@ pub enum Backend {
 }
 
 /// 凭据存储的位置。
-pub fn backend(env: impl Fn(&str) -> Option<String>) -> Backend {
+pub fn backend(env: impl Fn(&str) -> Option<String>) -> std::io::Result<Backend> {
     if let Some(f) = env("SCION_CREDENTIALS_FILE").filter(|f| !f.is_empty()) {
-        return Backend::File(PathBuf::from(f));
+        return Ok(Backend::File(PathBuf::from(f)));
     }
-    let config = env("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env("HOME").unwrap_or_else(|| ".".into())).join(".config"));
+    let xdg = env("XDG_CONFIG_HOME").map(PathBuf::from).filter(|p| p.is_absolute());
+    let home = env("HOME").map(PathBuf::from).filter(|p| p.is_absolute());
+    let config = xdg.or_else(|| home.map(|h| h.join(".config"))).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "no absolute config directory: set HOME or XDG_CONFIG_HOME to an absolute path, \
+             or set SCION_CREDENTIALS_FILE",
+        )
+    })?;
     let file = config.join("scion").join("credentials.json");
     let keychain = match env("SCION_CREDENTIALS").as_deref() {
         Some("file") => false,
@@ -47,9 +54,9 @@ pub fn backend(env: impl Fn(&str) -> Option<String>) -> Backend {
         _ => SIGNED,
     };
     if cfg!(target_os = "macos") && keychain {
-        Backend::Keyring(file)
+        Ok(Backend::Keyring(file))
     } else {
-        Backend::File(file)
+        Ok(Backend::File(file))
     }
 }
 
@@ -183,10 +190,10 @@ mod tests {
             move |k: &str| vars.iter().find(|(n, _)| *n == k).map(|(_, v)| (*v).to_string())
         };
         assert_eq!(
-            backend(env(&[("SCION_CREDENTIALS_FILE", "/tmp/c.json")])),
+            backend(env(&[("SCION_CREDENTIALS_FILE", "/tmp/c.json")])).expect("backend"),
             Backend::File("/tmp/c.json".into())
         );
-        let default = backend(env(&[("HOME", "/home/a")]));
+        let default = backend(env(&[("HOME", "/home/a")])).expect("backend");
         let file = match &default {
             Backend::Keyring(f) | Backend::File(f) => f.clone(),
         };
@@ -196,16 +203,52 @@ mod tests {
             cfg!(target_os = "macos") && SIGNED,
             matches!(default, Backend::Keyring(_))
         );
-        let asked = backend(env(&[("HOME", "/h"), ("SCION_CREDENTIALS", "keychain")]));
+        let asked = backend(env(&[("HOME", "/h"), ("SCION_CREDENTIALS", "keychain")])).expect("backend");
         assert_eq!(cfg!(target_os = "macos"), matches!(asked, Backend::Keyring(_)));
         assert!(matches!(
-            backend(env(&[("HOME", "/h"), ("SCION_CREDENTIALS", "file")])),
+            backend(env(&[("HOME", "/h"), ("SCION_CREDENTIALS", "file")])).expect("backend"),
             Backend::File(_)
         ));
-        let xdg = backend(env(&[("XDG_CONFIG_HOME", "/x"), ("SCION_CREDENTIALS_FILE", "")]));
+        let xdg = backend(env(&[("XDG_CONFIG_HOME", "/x"), ("SCION_CREDENTIALS_FILE", "")])).expect("backend");
         assert!(
             matches!(xdg, Backend::Keyring(f) | Backend::File(f) if f == std::path::Path::new("/x/scion/credentials.json"))
         );
+    }
+
+    #[test]
+    fn backend_needs_an_absolute_config_dir() {
+        type Row = (&'static [(&'static str, &'static str)], Option<&'static str>);
+        let rows: [Row; 12] = [
+            (&[], None),
+            (&[("HOME", "")], None),
+            (&[("HOME", "h")], None),
+            (&[("HOME", "~")], None),
+            (&[("XDG_CONFIG_HOME", "")], None),
+            (&[("XDG_CONFIG_HOME", "x")], None),
+            (&[("SCION_CREDENTIALS_FILE", "")], None),
+            (
+                &[("XDG_CONFIG_HOME", ""), ("HOME", "/h")],
+                Some("/h/.config/scion/credentials.json"),
+            ),
+            (
+                &[("XDG_CONFIG_HOME", "x"), ("HOME", "/h")],
+                Some("/h/.config/scion/credentials.json"),
+            ),
+            (&[("XDG_CONFIG_HOME", "/x")], Some("/x/scion/credentials.json")),
+            (
+                &[("XDG_CONFIG_HOME", "/x"), ("HOME", "h")],
+                Some("/x/scion/credentials.json"),
+            ),
+            (&[("SCION_CREDENTIALS_FILE", "c.json")], Some("c.json")),
+        ];
+        for (vars, want) in rows {
+            let got = backend(|k| vars.iter().find(|(n, _)| *n == k).map(|(_, v)| (*v).to_string()));
+            match (got, want) {
+                (Ok(Backend::Keyring(f) | Backend::File(f)), Some(w)) => assert_eq!(f, PathBuf::from(w), "{vars:?}"),
+                (Err(e), None) => assert!(e.to_string().contains("SCION_CREDENTIALS_FILE"), "{vars:?}"),
+                (got, want) => panic!("{vars:?}: got {got:?}, want {want:?}"),
+            }
+        }
     }
 
     /// The keychain paths, against keyring's in-memory mock (whose entries keep nothing between
