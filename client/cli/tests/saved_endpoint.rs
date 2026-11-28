@@ -105,7 +105,7 @@ async fn endpoint_overrides_and_credential_scope() {
     json(login(root, &a, &pat_a));
     assert_eq!(login(root, &b, &pat_a).status.code(), Some(5));
 
-    // Server B can accept PAT A, so an unauthorized clone detects any use of PAT A.
+    // Give B a copy of A's token record so the clone can detect use of that token.
     let token = store_a.list_tokens(Some("alice")).await.expect("list tokens");
     assert_eq!(token.len(), 1);
     store_b.put_token(&token[0]).await.expect("copy token record");

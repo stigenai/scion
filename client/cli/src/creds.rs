@@ -123,11 +123,15 @@ fn endpoint_path(b: &Backend) -> PathBuf {
 }
 
 pub fn saved_endpoint(b: &Backend) -> Option<String> {
+    saved_endpoint_with(b, || legacy_endpoint(b))
+}
+
+fn saved_endpoint_with(b: &Backend, read_legacy: impl FnOnce() -> Option<String>) -> Option<String> {
     let path = endpoint_path(b);
     match std::fs::read_to_string(&path) {
         Ok(value) => origin(&value).map(str::to_owned),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            let legacy = legacy_endpoint(b);
+            let legacy = read_legacy();
             // A writer can install the preference before it changes the credential map.
             match std::fs::read_to_string(&path) {
                 Ok(value) => origin(&value).map(str::to_owned),
@@ -384,6 +388,17 @@ mod tests {
     }
 
     #[test]
+    fn preference_takes_priority_if_it_appears_during_a_legacy_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let b = Backend::File(dir.path().join("credentials.json"));
+        let selected = saved_endpoint_with(&b, || {
+            std::fs::write(endpoint_path(&b), b"").expect("install preference");
+            Some("http://a".into())
+        });
+        assert_eq!(selected, None);
+    }
+
+    #[test]
     fn logout_only_clears_the_selected_server() {
         let dir = tempfile::tempdir().expect("tempdir");
         let b = Backend::File(dir.path().join("creds.json"));
@@ -473,31 +488,33 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("tempdir");
         let b = Backend::File(dir.path().join("creds.json"));
-        store(&b, "http://a", "alice").expect("login");
-        let lock = lock_credentials(credential_path(&b)).expect("lock");
-        let (started, attempts) = mpsc::channel();
-        let (finished, results) = mpsc::channel();
-        std::thread::scope(|scope| {
-            let login = scope.spawn(|| {
-                started.send(()).expect("start");
-                store(&b, "http://b", "bob").expect("login");
-                finished.send(()).expect("finish");
+        for path in [credential_path(&b), &endpoint_path(&b)] {
+            store(&b, "http://a", "alice").expect("login");
+            let lock = lock_credentials(path).expect("lock");
+            let (started, attempts) = mpsc::channel();
+            let (finished, results) = mpsc::channel();
+            std::thread::scope(|scope| {
+                let login = scope.spawn(|| {
+                    started.send(()).expect("start");
+                    store(&b, "http://b", "bob").expect("login");
+                    finished.send(()).expect("finish");
+                });
+                let logout = scope.spawn(|| {
+                    started.send(()).expect("start");
+                    assert!(remove(&b, "http://a").expect("logout"));
+                    finished.send(()).expect("finish");
+                });
+                attempts.recv().expect("login or logout start");
+                attempts.recv().expect("login and logout start");
+                let blocked = results.recv_timeout(Duration::from_millis(100));
+                drop(lock);
+                login.join().expect("login");
+                logout.join().expect("logout");
+                assert_eq!(blocked, Err(mpsc::RecvTimeoutError::Timeout));
             });
-            let logout = scope.spawn(|| {
-                started.send(()).expect("start");
-                assert!(remove(&b, "http://a").expect("logout"));
-                finished.send(()).expect("finish");
-            });
-            attempts.recv().expect("login or logout start");
-            attempts.recv().expect("login and logout start");
-            let blocked = results.recv_timeout(Duration::from_millis(100));
-            drop(lock);
-            login.join().expect("login");
-            logout.join().expect("logout");
-            assert_eq!(blocked, Err(mpsc::RecvTimeoutError::Timeout));
-        });
-        assert_eq!(saved_endpoint(&b).as_deref(), Some("http://b"));
-        assert_eq!(load(&b, "http://b").as_deref(), Some("bob"));
+            assert_eq!(saved_endpoint(&b).as_deref(), Some("http://b"));
+            assert_eq!(load(&b, "http://b").as_deref(), Some("bob"));
+        }
     }
 
     #[test]
