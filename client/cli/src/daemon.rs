@@ -27,11 +27,15 @@ pub fn config(env: impl Fn(&str) -> Option<String>) -> Result<DaemonConfig, CliE
         set("SCION_DAEMON_CACHE_DIR").or(cache),
     ) {
         (Some(s), Some(c)) => Ok(DaemonConfig::at(s, c)),
-        _ => Err(CliError::Usage(
-            "no daemon paths: set an absolute HOME (or XDG_CACHE_HOME and XDG_RUNTIME_DIR), \
-             or set SCION_DAEMON_SOCKET and SCION_DAEMON_CACHE_DIR; SCION_NO_DAEMON=1 turns the daemon off"
-                .into(),
-        )),
+        _ => Err(CliError::Usage(format!(
+            "no daemon paths: {}, or set SCION_DAEMON_SOCKET and SCION_DAEMON_CACHE_DIR; \
+             SCION_NO_DAEMON=1 turns the daemon off",
+            if cfg!(target_os = "macos") {
+                "set an absolute HOME (macOS ignores XDG_CACHE_HOME and XDG_RUNTIME_DIR)"
+            } else {
+                "set an absolute HOME (or XDG_CACHE_HOME and XDG_RUNTIME_DIR)"
+            }
+        ))),
     }
 }
 
@@ -260,7 +264,29 @@ mod tests {
         assert_eq!(c.cache_dir, PathBuf::from("/tmp/c"));
         assert!(config(env(&[])).is_err());
         let d = config(env(&[("HOME", "/h")])).expect("config");
-        assert_eq!(d.socket, PathBuf::from("/h/.cache/scion/daemon.sock"));
+        let (sock, objects) = if cfg!(target_os = "macos") {
+            ("/h/Library/Caches/scion/daemon.sock", "/h/Library/Caches/scion/objects")
+        } else {
+            ("/h/.cache/scion/daemon.sock", "/h/.cache/scion/objects")
+        };
+        assert_eq!((d.socket, d.cache_dir), (PathBuf::from(sock), PathBuf::from(objects)));
+        // each override stands alone; an empty one selects the default; the cache is checked too
+        let c = config(env(&[
+            ("HOME", "/h"),
+            ("SCION_DAEMON_CACHE_DIR", "rel"),
+            ("SCION_DAEMON_SOCKET", ""),
+        ]))
+        .expect("config");
+        assert_eq!((c.socket, c.cache_dir), (PathBuf::from(sock), PathBuf::from("rel")));
+        let e = config(env(&[("HOME", "/h"), ("SCION_DAEMON_CACHE_DIR", "")])).expect("config");
+        assert_eq!(e.cache_dir, PathBuf::from(objects));
+        let s = config(env(&[("HOME", "rel"), ("SCION_DAEMON_SOCKET", "/o/d.sock")]));
+        assert!(
+            s.is_err(),
+            "a valid socket does not make a relative HOME usable for the cache"
+        );
+        let msg = config(env(&[])).expect_err("no paths").to_string();
+        assert_eq!(msg.contains("macOS ignores"), cfg!(target_os = "macos"), "{msg}");
         // a relative override is kept as given
         let r = config(env(&[
             ("SCION_DAEMON_SOCKET", "d.sock"),
