@@ -32,7 +32,8 @@ use crate::output::{CliError, Render, error_out, render, version_out};
 #[derive(Debug, Parser)]
 #[command(name = "scn", version, about = "Scion command line client")]
 struct Cli {
-    /// Server address. The CLI uses the working copy, saved login, or http://127.0.0.1:7080 in that order.
+    /// Server address. If the command uses a working copy, its server has priority.
+    /// The other defaults are the saved login, then http://127.0.0.1:7080.
     #[arg(
         long,
         global = true,

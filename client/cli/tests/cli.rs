@@ -31,6 +31,29 @@ fn usage_error_exits_2() {
     assert_eq!(scn(&["no-such-command"]).status.code(), Some(2));
 }
 
+fn assert_endpoint_help(args: &[&str]) {
+    let out = scn(args);
+    assert!(out.status.success());
+    let help = String::from_utf8(out.stdout).expect("help text");
+    let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        help.contains("If the command uses a working copy, its server has priority."),
+        "{help}"
+    );
+    assert!(help.contains("the saved login, then http://127.0.0.1:7080"));
+    assert!(!help.contains("The CLI uses the working copy, saved login"));
+}
+
+#[test]
+fn clone_endpoint_help() {
+    assert_endpoint_help(&["clone", "--help"]);
+}
+
+#[test]
+fn git_import_endpoint_help() {
+    assert_endpoint_help(&["import", "git", "--help"]);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn doctor_against_live_server() {
     let store = Arc::new(MemStore::new());

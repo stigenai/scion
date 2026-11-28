@@ -32,7 +32,11 @@ fn private_profiles_in_shared_directory() {
         let action = std::env::var("SCION_SHARED_PROFILE_ACTION").expect("action");
         let uid = Command::new("id").arg("-u").output().expect("effective UID");
         assert!(uid.status.success());
-        let uid: u32 = String::from_utf8(uid.stdout).unwrap().trim().parse().unwrap();
+        let uid: u32 = String::from_utf8(uid.stdout)
+            .expect("UID text")
+            .trim()
+            .parse()
+            .expect("UID number");
         assert_ne!(uid, 0);
         println!("UID {uid}: {action}");
         if action == "store" {
