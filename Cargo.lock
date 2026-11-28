@@ -3030,6 +3030,7 @@ dependencies = [
  "clap",
  "hyper-util",
  "keyring",
+ "libc",
  "regex",
  "scion-api",
  "scion-auth",

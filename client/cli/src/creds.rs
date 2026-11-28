@@ -162,23 +162,47 @@ fn parent_dir(path: &Path) -> &Path {
 }
 
 fn lock_credentials(path: &Path) -> io::Result<File> {
-    // Profile file replacements cannot replace this directory. The parent only needs search and write access.
-    let dir = parent_dir(path).join(".scion-credentials.lock");
-    std::fs::create_dir_all(&dir)?;
-    if !std::fs::symlink_metadata(&dir)?.is_dir() {
+    let dir = sibling_path(path, ".scion-lock");
+    std::fs::create_dir_all(parent_dir(path))?;
+    let builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    let builder = {
+        use std::os::unix::fs::DirBuilderExt;
+        let mut builder = builder;
+        builder.mode(0o700);
+        builder
+    };
+    match builder.create(&dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e),
+    }
+    let mut options = File::options();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(not(unix))]
+    let metadata = std::fs::symlink_metadata(&dir)?;
+    let file = options.open(&dir)?;
+    #[cfg(unix)]
+    let metadata = file.metadata()?;
+    if !metadata.is_dir() {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             format!("{} must be a lock directory", dir.display()),
         ));
     }
-    let file = File::open(dir)?;
     file.lock()?;
     Ok(file)
 }
 
-fn lock_profile(b: &Backend) -> io::Result<(File, Option<String>)> {
-    let lock = lock_credentials(credential_path(b))?;
+fn lock_profile(b: &Backend) -> io::Result<([File; 2], Option<String>)> {
     let path = endpoint_path(b);
+    // The credential path is a prefix of the preference path. Lock it first.
+    let locks = [lock_credentials(credential_path(b))?, lock_credentials(&path)?];
     let active = match std::fs::read_to_string(&path) {
         Ok(value) if value.is_empty() || origin(&value).is_some() => origin(&value).map(str::to_owned),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -195,7 +219,7 @@ fn lock_profile(b: &Backend) -> io::Result<(File, Option<String>)> {
             ));
         }
     };
-    Ok((lock, active))
+    Ok((locks, active))
 }
 
 fn write_atomic(path: &Path, body: &[u8]) -> io::Result<()> {
@@ -592,6 +616,33 @@ mod tests {
             });
             assert_eq!(saved_endpoint(&b).as_deref(), Some("http://b"));
             assert_eq!(load(&b, "http://b").as_deref(), Some("bob"));
+            assert_eq!(load(&b, "http://a"), None);
+        }
+    }
+
+    #[test]
+    fn overlapping_profiles_preserve_the_first_profile() {
+        for preference_first in [true, false] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let a = Backend::File(dir.path().join("c"));
+            let b = Backend::File(endpoint_path(&a));
+            let (first, second) = if preference_first { (&a, &b) } else { (&b, &a) };
+            store(first, "http://a", "alice").expect("create first profile");
+            let shared = std::fs::read(endpoint_path(&a)).expect("shared file");
+            let lock = lock_credentials(&endpoint_path(&a)).expect("shared lock");
+            let (done, result) = std::sync::mpsc::channel();
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    done.send(store(second, "http://b", "bob")).expect("store result");
+                });
+                let blocked = result.recv_timeout(std::time::Duration::from_millis(100));
+                drop(lock);
+                assert!(matches!(blocked, Err(std::sync::mpsc::RecvTimeoutError::Timeout)));
+                assert!(result.recv().expect("store result").is_err());
+            });
+            assert!(remove(second, "http://b").is_err());
+            assert_eq!(std::fs::read(endpoint_path(&a)).expect("shared file"), shared);
+            assert_eq!(load(first, "http://a").as_deref(), Some("alice"));
         }
     }
 
