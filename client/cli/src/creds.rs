@@ -299,6 +299,10 @@ pub fn remove(b: &Backend, endpoint: &str) -> std::io::Result<bool> {
     Ok(found)
 }
 
+#[cfg(all(test, unix))]
+#[path = "creds/permissions_tests.rs"]
+mod permissions_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
