@@ -162,9 +162,15 @@ fn parent_dir(path: &Path) -> &Path {
 }
 
 fn lock_credentials(path: &Path) -> io::Result<File> {
-    // Profile files can have any name. Lock the parent directory itself.
-    let dir = parent_dir(path);
-    std::fs::create_dir_all(dir)?;
+    // Profile file replacements cannot replace this directory. The parent only needs search and write access.
+    let dir = parent_dir(path).join(".scion-credentials.lock");
+    std::fs::create_dir_all(&dir)?;
+    if !std::fs::symlink_metadata(&dir)?.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("{} must be a lock directory", dir.display()),
+        ));
+    }
     let file = File::open(dir)?;
     file.lock()?;
     Ok(file)
