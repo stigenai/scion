@@ -54,9 +54,14 @@
 ## 2. 连接与端点发现
 
 优先级从高到低：
-1. 命令行参数 `--endpoint`，或环境变量 `SCION_ENDPOINT`
-2. 工作副本中 `.scion/state.toml` 记录的 endpoint
-3. 全局配置 `~/.config/scion/config.toml`
+1. 位置参数 URL 中的端点
+2. 命令行参数 `--endpoint`
+3. 环境变量 `SCION_ENDPOINT`
+4. 如果命令使用工作副本，则使用 `.scion/state.toml` 中的端点
+5. 已保存的登录端点
+6. `http://127.0.0.1:7080`
+
+`scn clone` 和 `scn import git` 跳过第 4 项。
 
 **读写分流**（由 `scion-client` 自动完成）：
 - 存在 daemon socket（`$XDG_RUNTIME_DIR/scion/daemon.sock`，macOS 上是 `~/Library/Caches/scion/daemon.sock`）时，**所有请求都发给 daemon**，由它决定就地应答还是转发。

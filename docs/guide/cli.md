@@ -88,7 +88,16 @@ A repository can be named in two ways:
 - **A URL, as with git:** `http(s)://host[:port]/REPO`, such as `scn clone http://scion.example.com:7080/org/app`. It works wherever a repository is named: `clone`, `--repo` (`scn cat README.md --repo http://host/org/app`), and `repo create / info / set / rm / restore / fork / ls`. Commands about the server alone take its address: `scn login URL`, `scn logout URL`, `scn whoami URL`, `scn doctor URL`.
 - **A name and a server:** `scn --endpoint http://host:7080 clone org/app`, or `SCION_ENDPOINT` set once.
 
-A working copy remembers the server it was cloned from, so inside it `status`, `commit`, `land`, `sync`, `log` and the rest need no address. Where several are given, the address in a URL comes first, then `--endpoint` / `SCION_ENDPOINT`, then the working copy's, then `http://127.0.0.1:7080`.
+A working copy records its server for commands such as `status`, `commit`, `land`, `sync`, and `log`. The CLI uses the first available address in the order below.
+
+1. The address in a positional URL.
+2. The `--endpoint` option.
+3. The `SCION_ENDPOINT` variable.
+4. The address from the working copy, when the command uses a working copy.
+5. The address from the last successful login.
+6. `http://127.0.0.1:7080`.
+
+If an older credentials file has one server, the CLI can use that server as the default. Logout from the default server clears the default.
 
 When the server moves (a new IP or host name), point the working copy at it with `scn remote set-url http://NEW-HOST:7080/REPO`; `scn remote -v` shows the current one. The new address must have the commits the working copy is on, so a fork or a migrated copy of the repository works too.
 

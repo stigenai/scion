@@ -88,7 +88,14 @@ cargo run -p scion -- admin reindex --lite --data-dir ./.scion-data
 - **URL，与 git 相同**：`http(s)://host[:port]/REPO`，例如 `scn clone http://scion.example.com:7080/org/app`。凡是写仓库的地方都可以用：`clone`、`--repo`（`scn cat README.md --repo http://host/org/app`），以及 `repo create / info / set / rm / restore / fork / ls`。只涉及服务端的命令直接写地址：`scn login URL`、`scn logout URL`、`scn whoami URL`、`scn doctor URL`。
 - **仓库名加服务端**：`scn --endpoint http://host:7080 clone org/app`，或者设置一次 `SCION_ENDPOINT`。
 
-工作副本会记住克隆时的服务端，所以进入目录后 `status`、`commit`、`land`、`sync`、`log` 等命令都不用再写地址。同时给出多个地址时，优先级依次是 URL 中的地址、`--endpoint` / `SCION_ENDPOINT`、工作副本记录的地址、`http://127.0.0.1:7080`。
+工作副本会记住克隆时的服务端，所以进入目录后 `status`、`commit`、`land`、`sync`、`log` 等命令都不用再写地址。CLI 按下列顺序选择第一个可用的地址：
+
+1. 位置参数 URL 中的地址。
+2. `--endpoint` 参数指定的地址。
+3. `SCION_ENDPOINT` 环境变量指定的地址。
+4. 如果命令使用工作副本，则使用工作副本记录的地址。
+5. 已保存的登录地址。
+6. `http://127.0.0.1:7080`。
 
 服务端换了地址（新的 IP 或主机名）时，用 `scn remote set-url http://新地址:7080/仓库` 让工作副本指向它；`scn remote -v` 显示当前地址。新地址上必须有工作副本所在的提交，所以也可以换成 fork 或迁移后的同一个仓库。
 

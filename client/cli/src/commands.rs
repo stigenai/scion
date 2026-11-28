@@ -56,16 +56,21 @@ impl Ctx {
         Ok(format!("{current}{rest}"))
     }
 
-    /// 服务端地址：命令行或环境变量 > 当前工作副本记录 > 默认值。
+    /// Resolve the server address with the current working copy.
     pub fn endpoint_or_default(&self) -> String {
         self.endpoint_or(self.working_copy().as_ref())
     }
 
-    /// 服务端地址：命令行或环境变量 > 工作副本记录 > 默认值。
+    /// Resolve the server address with an optional working copy.
     pub(crate) fn endpoint_or(&self, wc: Option<&WorkingCopy>) -> String {
+        self.endpoint_or_with(wc, |k| std::env::var(k).ok())
+    }
+
+    fn endpoint_or_with(&self, wc: Option<&WorkingCopy>, env: impl Fn(&str) -> Option<String>) -> String {
         self.endpoint
             .clone()
             .or_else(|| wc.map(|w| w.state().endpoint.clone()))
+            .or_else(|| crate::creds::saved_endpoint_from_env(env))
             .unwrap_or_else(|| DEFAULT_ENDPOINT.to_owned())
     }
 }
@@ -246,7 +251,7 @@ pub async fn clone(
         Some(dirs) => Sparse::dirs(dirs)?,
         None => Sparse::full(),
     };
-    let endpoint = ctx.endpoint.clone().unwrap_or_else(|| DEFAULT_ENDPOINT.to_owned());
+    let endpoint = ctx.endpoint_or(None);
     let client = connect(&endpoint, Some(repo)).await?;
     let dir = dir.unwrap_or_else(|| Path::new(default_dir(repo)));
     let target = ctx.cwd.join(dir);
@@ -1816,7 +1821,7 @@ pub async fn import_git(ctx: &Ctx, git_dir: &Path, git_ref: &str, target_ref: &s
         .repo
         .clone()
         .ok_or_else(|| CliError::Usage("--repo is required for import".into()))?;
-    let endpoint = ctx.endpoint.clone().unwrap_or_else(|| DEFAULT_ENDPOINT.to_owned());
+    let endpoint = ctx.endpoint_or(None);
     let client = connect(&endpoint, Some(&repo)).await?;
     let meter = Meter::stderr(ctx.chatty);
     let summary = scion_gitimport::import(&client, &ctx.cwd.join(git_dir), git_ref, target_ref, |done, total| {
@@ -2713,7 +2718,9 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(ctx.endpoint_or(None), "http://flag");
-        assert_eq!(Ctx::default().endpoint_or(None), DEFAULT_ENDPOINT);
+        let dir = tempfile::tempdir().expect("config");
+        let env = |key: &str| (key == "XDG_CONFIG_HOME").then(|| dir.path().display().to_string());
+        assert_eq!(Ctx::default().endpoint_or_with(None, env), DEFAULT_ENDPOINT);
     }
 
     #[tokio::test]

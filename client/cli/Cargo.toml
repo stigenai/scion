@@ -26,7 +26,11 @@ serde.workspace = true
 similar = "3"
 regex = "1"
 serde_json.workspace = true
+tempfile.workspace = true
 tokio = { workspace = true, features = ["io-std", "io-util"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }
@@ -35,7 +39,6 @@ keyring = { version = "3", features = ["apple-native"] }
 workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true
 scion-api.workspace = true
 scion-store.workspace = true
 scion-auth = { workspace = true, features = ["testing"] }

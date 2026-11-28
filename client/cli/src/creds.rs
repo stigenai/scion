@@ -9,7 +9,11 @@
 //! keychain that does not answer within [`KEYCHAIN_WAIT`] counts as unavailable.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::fs::File;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+
+use tonic::codegen::http::uri::Authority;
 
 /// 钥匙串条目的服务名。
 #[cfg(target_os = "macos")]
@@ -80,7 +84,165 @@ fn key(endpoint: &str) -> String {
     endpoint.trim_end_matches('/').to_owned()
 }
 
-fn read_file(path: &PathBuf) -> std::io::Result<BTreeMap<String, String>> {
+fn origin(endpoint: &str) -> Option<&str> {
+    let endpoint = endpoint.strip_suffix('/').unwrap_or(endpoint);
+    let authority = endpoint
+        .strip_prefix("http://")
+        .or_else(|| endpoint.strip_prefix("https://"))?;
+    if authority.contains(['/', '@', '?', '#']) {
+        return None;
+    }
+    let authority: Authority = authority.parse().ok()?;
+    let host = authority.host();
+    let port = &authority.as_str()[host.len()..];
+    if host.is_empty() || (!port.is_empty() && (!port.starts_with(':') || authority.port_u16().is_none())) {
+        return None;
+    }
+    if let Some(ip) = host.strip_prefix('[') {
+        ip.strip_suffix(']')?.parse::<std::net::Ipv6Addr>().ok()?;
+    } else if host.contains(['[', ']']) {
+        return None;
+    }
+    Some(endpoint)
+}
+
+fn credential_path(b: &Backend) -> &Path {
+    match b {
+        Backend::File(path) | Backend::Keyring(path) => path,
+    }
+}
+
+fn sibling_path(path: &Path, suffix: &str) -> PathBuf {
+    let mut path = path.as_os_str().to_owned();
+    path.push(suffix);
+    path.into()
+}
+
+fn endpoint_path(b: &Backend) -> PathBuf {
+    sibling_path(credential_path(b), ".endpoint")
+}
+
+pub fn saved_endpoint_from_env(env: impl Fn(&str) -> Option<String>) -> Option<String> {
+    let profile = backend(&env);
+    if credential_path(&profile).is_absolute() || env("SCION_CREDENTIALS_FILE").is_some_and(|path| !path.is_empty()) {
+        saved_endpoint(&profile)
+    } else {
+        None
+    }
+}
+
+fn saved_endpoint(b: &Backend) -> Option<String> {
+    saved_endpoint_with(b, || legacy_endpoint(b).ok().flatten())
+}
+
+fn saved_endpoint_with(b: &Backend, read_legacy: impl FnOnce() -> Option<String>) -> Option<String> {
+    let path = endpoint_path(b);
+    match std::fs::read_to_string(&path) {
+        Ok(value) => origin(&value).map(str::to_owned),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            let legacy = read_legacy();
+            // A writer can install the preference before it changes the credential map.
+            match std::fs::read_to_string(&path) {
+                Ok(value) => origin(&value).map(str::to_owned),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => legacy,
+                Err(_) => None,
+            }
+        }
+        Err(_) => None,
+    }
+}
+
+fn legacy_endpoint(b: &Backend) -> io::Result<Option<String>> {
+    let map = read_file(credential_path(b))?;
+    if map.len() != 1 {
+        return Ok(None);
+    }
+    Ok(map
+        .keys()
+        .next()
+        .and_then(|endpoint| origin(endpoint))
+        .map(str::to_owned))
+}
+
+fn parent_dir(path: &Path) -> &Path {
+    path.parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
+}
+
+fn lock_credentials(path: &Path) -> io::Result<File> {
+    let dir = sibling_path(path, ".scion-lock");
+    std::fs::create_dir_all(parent_dir(path))?;
+    let builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    let builder = {
+        use std::os::unix::fs::DirBuilderExt;
+        let mut builder = builder;
+        builder.mode(0o700);
+        builder
+    };
+    match builder.create(&dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e),
+    }
+    let mut options = File::options();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(not(unix))]
+    let metadata = std::fs::symlink_metadata(&dir)?;
+    let file = options.open(&dir)?;
+    #[cfg(unix)]
+    let metadata = file.metadata()?;
+    if !metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("{} must be a lock directory", dir.display()),
+        ));
+    }
+    file.lock()?;
+    Ok(file)
+}
+
+fn lock_profile(b: &Backend) -> io::Result<([File; 2], Option<String>)> {
+    let path = endpoint_path(b);
+    // The credential path is a prefix of the preference path. Lock it first.
+    let locks = [lock_credentials(credential_path(b))?, lock_credentials(&path)?];
+    let active = match std::fs::read_to_string(&path) {
+        Ok(value) if value.is_empty() || origin(&value).is_some() => origin(&value).map(str::to_owned),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            let legacy = legacy_endpoint(b)?;
+            // Record the old default before a credential change can affect legacy fallback.
+            write_atomic(&path, legacy.as_deref().unwrap_or_default().as_bytes())?;
+            legacy
+        }
+        Err(e) => return Err(e),
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("{} contains data that is not an endpoint preference", path.display()),
+            ));
+        }
+    };
+    Ok((locks, active))
+}
+
+fn write_atomic(path: &Path, body: &[u8]) -> io::Result<()> {
+    let mut temp = tempfile::NamedTempFile::new_in(parent_dir(path))?;
+    temp.write_all(body)?;
+    #[cfg(test)]
+    if tests::FAIL_PREFERENCE_WRITE.with_borrow(|target| target.as_deref() == Some(path)) {
+        return Err(io::ErrorKind::StorageFull.into());
+    }
+    temp.persist(path)?;
+    Ok(())
+}
+
+fn read_file(path: &Path) -> std::io::Result<BTreeMap<String, String>> {
     match std::fs::read(path) {
         Ok(b) => serde_json::from_slice(&b).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
@@ -88,25 +250,14 @@ fn read_file(path: &PathBuf) -> std::io::Result<BTreeMap<String, String>> {
     }
 }
 
-fn write_file(path: &PathBuf, map: &BTreeMap<String, String>) -> std::io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let tmp = path.with_extension("tmp");
+fn write_file(path: &Path, map: &BTreeMap<String, String>) -> std::io::Result<()> {
     let body = serde_json::to_vec_pretty(map).map_err(std::io::Error::other)?;
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
+    write_atomic(path, &body)?;
+    #[cfg(test)]
+    if tests::INTERRUPT_CREDENTIAL_UPDATE.take() {
+        return Err(io::ErrorKind::StorageFull.into());
     }
-    {
-        use std::io::Write;
-        let mut f = opts.open(&tmp)?;
-        f.write_all(&body)?;
-    }
-    std::fs::rename(&tmp, path)
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -129,8 +280,17 @@ pub fn load(b: &Backend, endpoint: &str) -> Option<String> {
     }
 }
 
-/// 保存凭据，返回保存的位置（用于提示）。
+/// Save the credentials and select this server for future commands.
 pub fn store(b: &Backend, endpoint: &str, secret: &str) -> std::io::Result<String> {
+    let endpoint = origin(endpoint)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "expected an HTTP(S) server origin"))?;
+    let _profile = lock_profile(b)?;
+    let location = store_secret(b, endpoint, secret)?;
+    write_atomic(&endpoint_path(b), endpoint.as_bytes())?;
+    Ok(location)
+}
+
+fn store_secret(b: &Backend, endpoint: &str, secret: &str) -> io::Result<String> {
     let file = match b {
         Backend::Keyring(file) => {
             #[cfg(target_os = "macos")]
@@ -150,8 +310,9 @@ pub fn store(b: &Backend, endpoint: &str, secret: &str) -> std::io::Result<Strin
     Ok(file.display().to_string())
 }
 
-/// 删除凭据，返回是否存在。
+/// Delete the credentials. Clear the default if it selects this server.
 pub fn remove(b: &Backend, endpoint: &str) -> std::io::Result<bool> {
+    let (_lock, active_endpoint) = lock_profile(b)?;
     let (file, mut found) = match b {
         Backend::Keyring(file) => {
             #[cfg(target_os = "macos")]
@@ -170,12 +331,25 @@ pub fn remove(b: &Backend, endpoint: &str) -> std::io::Result<bool> {
         write_file(file, &map)?;
         found = true;
     }
+    if active_endpoint.is_some_and(|saved| saved == endpoint.trim_end_matches('/')) {
+        // An empty preference prevents a fallback to an older account.
+        write_atomic(&endpoint_path(b), b"")?;
+    }
     Ok(found)
 }
+
+#[cfg(all(test, unix))]
+#[path = "creds/permissions_tests.rs"]
+mod permissions_tests;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        pub(super) static INTERRUPT_CREDENTIAL_UPDATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        pub(super) static FAIL_PREFERENCE_WRITE: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+    }
 
     #[test]
     fn backend_selection() {
@@ -217,8 +391,316 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let b = Backend::Keyring(dir.path().join("credentials.json"));
         assert_eq!(store(&b, "http://k", "s").expect("store"), "the system keychain");
+        assert_eq!(
+            std::fs::read_to_string(endpoint_path(&b)).expect("preference"),
+            "http://k"
+        );
+        assert!(!credential_path(&b).exists());
         assert_eq!(load(&b, "http://k"), None);
         assert!(!remove(&b, "http://k").expect("remove"));
+        assert_eq!(saved_endpoint(&b), None);
+    }
+
+    #[test]
+    fn legacy_and_malformed_preferences() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("credentials.json");
+        let b = Backend::File(file.clone());
+        assert_eq!(saved_endpoint(&b), None);
+        std::fs::write(&file, br#"{"https://[::1]:7080":"older"}"#).expect("legacy account");
+        assert_eq!(saved_endpoint(&b).as_deref(), Some("https://[::1]:7080"));
+        for invalid in [
+            "",
+            "http://a\nhttp://b",
+            "ftp://a",
+            "http://",
+            "http://:80",
+            "http://a b",
+            "http://user@a",
+            "http://u:pw@a:80",
+            "http://a/path",
+            "http://a//",
+            "http://a?",
+            "http://a#",
+            "http://a:65536",
+            "http://a:",
+            "http://[invalid]",
+            "http://[::1]x:80",
+            "http://a[x]:80",
+        ] {
+            std::fs::write(endpoint_path(&b), invalid).expect("preference");
+            assert_eq!(saved_endpoint(&b), None, "{invalid:?}");
+        }
+        std::fs::remove_file(endpoint_path(&b)).expect("remove preference");
+        std::fs::write(&file, br#"{"http://a":"older","http://b":"old"}"#).expect("legacy accounts");
+        assert_eq!(saved_endpoint(&b), None);
+        std::fs::write(&file, br#"{"http://a/path":"older"}"#).expect("invalid legacy endpoint");
+        assert_eq!(saved_endpoint(&b), None);
+    }
+
+    #[test]
+    fn preference_takes_priority_if_it_appears_during_a_legacy_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let b = Backend::File(dir.path().join("credentials.json"));
+        let path = endpoint_path(&b);
+        let selected = saved_endpoint_with(&b, || {
+            std::fs::write(&path, b"").expect("install preference");
+            Some("http://a".into())
+        });
+        assert_eq!(selected, None);
+        std::fs::remove_file(&path).expect("remove preference");
+        let selected = saved_endpoint_with(&b, || {
+            std::fs::create_dir(&path).expect("make preference unreadable");
+            Some("http://a".into())
+        });
+        assert_eq!(selected, None);
+    }
+
+    #[test]
+    fn logout_only_clears_the_selected_server() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let b = Backend::File(dir.path().join("creds.json"));
+        store(&b, "http://b", "bob").expect("login");
+        store(&b, "https://a/", "alice").expect("login");
+        assert_eq!(
+            std::fs::read_to_string(endpoint_path(&b)).expect("preference"),
+            "https://a"
+        );
+        let other = Backend::File(dir.path().join("creds-other.json"));
+        assert_eq!(saved_endpoint(&other), None);
+        assert!(remove(&b, "http://b").expect("logout"));
+        assert_eq!(saved_endpoint(&b).as_deref(), Some("https://a"));
+
+        store(&b, "http://b", "bob").expect("login");
+        assert!(remove(&b, "http://b/").expect("logout"));
+        assert_eq!(saved_endpoint(&b), None);
+        assert_eq!(load(&b, "https://a").as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn login_and_logout_preserve_a_colliding_credential_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let first = Backend::File(dir.path().join("c"));
+        let second = Backend::File(endpoint_path(&first));
+        std::fs::write(credential_path(&first), br#"{"http://a":"alice"}"#).expect("legacy account");
+        store(&second, "http://b", "bob").expect("login to the second profile");
+
+        assert!(store(&first, "http://a", "new").is_err());
+        assert_eq!(load(&second, "http://b").as_deref(), Some("bob"));
+        assert!(remove(&first, "http://a").is_err());
+        assert_eq!(load(&first, "http://a").as_deref(), Some("alice"));
+        assert_eq!(load(&second, "http://b").as_deref(), Some("bob"));
+        assert!(remove(&second, "http://b").expect("logout from the second profile"));
+        assert_eq!(load(&first, "http://a").as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn logout_does_not_select_a_remaining_legacy_account() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("creds.json");
+        let b = Backend::File(file.clone());
+        std::fs::write(&file, br#"{"http://a":"alice","http://b":"bob"}"#).expect("legacy accounts");
+        assert!(remove(&b, "http://b").expect("logout"));
+        assert_eq!(saved_endpoint(&b), None);
+        assert_eq!(load(&b, "http://a").as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn credential_read_error_preserves_legacy_default() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("credentials.json");
+        let backup = dir.path().join("legacy.json");
+        let b = Backend::File(path.clone());
+        std::fs::write(&path, br#"{"http://a":"alice"}"#).expect("legacy account");
+        for login in [true, false] {
+            std::fs::rename(&path, &backup).expect("save legacy account");
+            std::fs::create_dir(&path).expect("block read");
+            let result = if login {
+                store(&b, "http://b", "bob").map(|_| ())
+            } else {
+                remove(&b, "http://a").map(|_| ())
+            };
+            assert!(result.is_err());
+            std::fs::remove_dir(&path).expect("restore access");
+            std::fs::rename(&backup, &path).expect("restore legacy account");
+            assert_eq!(saved_endpoint(&b).as_deref(), Some("http://a"));
+        }
+    }
+
+    #[test]
+    fn interrupted_login_preserves_the_default_without_a_preference() {
+        for legacy_endpoint in [None, Some("http://a")] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let b = Backend::File(dir.path().join("credentials.json"));
+            if legacy_endpoint.is_some() {
+                std::fs::write(credential_path(&b), br#"{"http://a":"alice"}"#).expect("legacy account");
+            }
+            assert!(!endpoint_path(&b).exists());
+            assert_eq!(saved_endpoint(&b).as_deref(), legacy_endpoint);
+
+            INTERRUPT_CREDENTIAL_UPDATE.set(true);
+            let error = store(&b, "http://b", "bob").expect_err("interrupted login");
+            assert_eq!(error.kind(), io::ErrorKind::StorageFull);
+            assert_eq!(load(&b, "http://b").as_deref(), Some("bob"));
+            assert_eq!(saved_endpoint(&b).as_deref(), legacy_endpoint);
+        }
+    }
+
+    #[test]
+    fn interrupted_logout_preserves_the_default_without_a_preference() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let b = Backend::File(dir.path().join("credentials.json"));
+        std::fs::write(credential_path(&b), br#"{"http://a":"alice","http://b":"bob"}"#).expect("legacy accounts");
+        assert!(!endpoint_path(&b).exists());
+        assert_eq!(saved_endpoint(&b), None);
+
+        INTERRUPT_CREDENTIAL_UPDATE.set(true);
+        let error = remove(&b, "http://b").expect_err("interrupted logout");
+        assert_eq!(error.kind(), io::ErrorKind::StorageFull);
+        assert_eq!(load(&b, "http://b"), None);
+        assert_eq!(saved_endpoint(&b), None);
+    }
+
+    #[test]
+    fn profile_locks_do_not_alias_credential_files() {
+        for suffix in [".lock", ".endpoint.lock"] {
+            for second_first in [true, false] {
+                let dir = tempfile::tempdir().expect("tempdir");
+                let first = Backend::File(dir.path().join("c"));
+                let second = Backend::File(sibling_path(credential_path(&first), suffix));
+                if second_first {
+                    store(&second, "http://b", "old").expect("login to second profile first");
+                }
+                store(&first, "http://a", "alice").expect("login to first profile");
+                store(&second, "http://b", "bob").expect("save second profile");
+
+                let path = if suffix == ".lock" {
+                    credential_path(&first).to_owned()
+                } else {
+                    endpoint_path(&first)
+                };
+                let lock = lock_credentials(&path).expect("lock first profile");
+                File::open(credential_path(&second))
+                    .expect("open second profile")
+                    .try_lock()
+                    .expect("second profile data has no lock");
+                drop(lock);
+
+                assert_eq!(load(&first, "http://a").as_deref(), Some("alice"));
+                assert_eq!(load(&second, "http://b").as_deref(), Some("bob"));
+            }
+        }
+    }
+
+    #[test]
+    fn login_and_logout_use_the_same_lock() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let b = Backend::File(dir.path().join("creds.json"));
+        for path in [credential_path(&b), &endpoint_path(&b)] {
+            store(&b, "http://a", "alice").expect("login");
+            let lock = lock_credentials(path).expect("lock");
+            let (started, attempts) = mpsc::channel();
+            let (finished, results) = mpsc::channel();
+            std::thread::scope(|scope| {
+                let login = scope.spawn(|| {
+                    started.send(()).expect("start");
+                    store(&b, "http://b", "bob").expect("login");
+                    finished.send(()).expect("finish");
+                });
+                let logout = scope.spawn(|| {
+                    started.send(()).expect("start");
+                    assert!(remove(&b, "http://a").expect("logout"));
+                    finished.send(()).expect("finish");
+                });
+                attempts.recv().expect("login or logout start");
+                attempts.recv().expect("login and logout start");
+                let blocked = results.recv_timeout(Duration::from_millis(100));
+                drop(lock);
+                login.join().expect("login");
+                logout.join().expect("logout");
+                assert_eq!(blocked, Err(mpsc::RecvTimeoutError::Timeout));
+            });
+            assert_eq!(saved_endpoint(&b).as_deref(), Some("http://b"));
+            assert_eq!(load(&b, "http://b").as_deref(), Some("bob"));
+            assert_eq!(load(&b, "http://a"), None);
+        }
+    }
+
+    #[test]
+    fn overlapping_profiles_preserve_the_first_profile() {
+        for preference_first in [true, false] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let a = Backend::File(dir.path().join("c"));
+            let b = Backend::File(endpoint_path(&a));
+            let (first, second) = if preference_first { (&a, &b) } else { (&b, &a) };
+            store(first, "http://a", "alice").expect("create first profile");
+            let shared = std::fs::read(endpoint_path(&a)).expect("shared file");
+            let lock = lock_credentials(&endpoint_path(&a)).expect("shared lock");
+            let (done, result) = std::sync::mpsc::channel();
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    done.send(store(second, "http://b", "bob")).expect("store result");
+                });
+                let blocked = result.recv_timeout(std::time::Duration::from_millis(100));
+                drop(lock);
+                assert!(matches!(blocked, Err(std::sync::mpsc::RecvTimeoutError::Timeout)));
+                assert!(result.recv().expect("store result").is_err());
+            });
+            assert!(remove(second, "http://b").is_err());
+            assert_eq!(std::fs::read(endpoint_path(&a)).expect("shared file"), shared);
+            assert_eq!(load(first, "http://a").as_deref(), Some("alice"));
+        }
+    }
+
+    #[test]
+    fn failed_store_keeps_the_previous_server() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let b = Backend::File(dir.path().join("creds.json"));
+        store(&b, "http://a", "alice").expect("login");
+        assert!(store(&b, "http://b/path", "bob").is_err());
+        assert_eq!(load(&b, "http://b/path"), None);
+        std::fs::write(credential_path(&b), "invalid json").expect("corrupt credentials");
+        assert!(store(&b, "http://b", "bob").is_err());
+        assert_eq!(saved_endpoint(&b).as_deref(), Some("http://a"));
+    }
+
+    #[test]
+    fn preference_read_error_reaches_the_caller() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let b = Backend::File(dir.path().join("creds.json"));
+        std::fs::create_dir(endpoint_path(&b)).expect("block preference read");
+        assert!(store(&b, "http://a", "alice").is_err());
+        assert_eq!(saved_endpoint(&b), None);
+        assert_eq!(load(&b, "http://a"), None);
+    }
+
+    #[test]
+    fn final_login_preference_write_error_preserves_the_default() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let b = Backend::File(dir.path().join("creds.json"));
+        store(&b, "http://a", "alice").expect("login to a");
+
+        FAIL_PREFERENCE_WRITE.replace(Some(endpoint_path(&b)));
+        let error = store(&b, "http://b", "bob").expect_err("preference write error");
+        assert_eq!(error.kind(), io::ErrorKind::StorageFull);
+        assert_eq!(load(&b, "http://b").as_deref(), Some("bob"));
+        assert_eq!(saved_endpoint(&b).as_deref(), Some("http://a"));
+    }
+
+    #[test]
+    fn final_logout_preference_write_error_preserves_the_default() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let b = Backend::File(dir.path().join("creds.json"));
+        store(&b, "http://a", "alice").expect("login to a");
+
+        FAIL_PREFERENCE_WRITE.replace(Some(endpoint_path(&b)));
+        let error = remove(&b, "http://a").expect_err("preference write error");
+        assert_eq!(error.kind(), io::ErrorKind::StorageFull);
+        assert_eq!(load(&b, "http://a"), None);
+        assert_eq!(saved_endpoint(&b).as_deref(), Some("http://a"));
     }
 
     #[test]
