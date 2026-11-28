@@ -455,6 +455,28 @@ mod tests {
     }
 
     #[test]
+    fn credential_read_error_preserves_legacy_default() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("credentials.json");
+        let backup = dir.path().join("legacy.json");
+        let b = Backend::File(path.clone());
+        std::fs::write(&path, br#"{"http://a":"alice"}"#).expect("legacy account");
+        for login in [true, false] {
+            std::fs::rename(&path, &backup).expect("save legacy account");
+            std::fs::create_dir(&path).expect("block read");
+            let result = if login {
+                store(&b, "http://b", "bob").map(|_| ())
+            } else {
+                remove(&b, "http://a").map(|_| ())
+            };
+            assert!(result.is_err());
+            std::fs::remove_dir(&path).expect("restore access");
+            std::fs::rename(&backup, &path).expect("restore legacy account");
+            assert_eq!(saved_endpoint(&b).as_deref(), Some("http://a"));
+        }
+    }
+
+    #[test]
     fn interrupted_login_preserves_the_default_without_a_preference() {
         for legacy_endpoint in [None, Some("http://a")] {
             let dir = tempfile::tempdir().expect("tempdir");
