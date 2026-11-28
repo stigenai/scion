@@ -9,7 +9,7 @@ use scion_store::{MemStore, MetaStore};
 use serde_json::Value;
 use tokio::net::TcpListener;
 
-async fn server(subject: &str, oidc_issuer: Option<String>) -> (String, String) {
+async fn server(subject: &str, oidc_issuer: Option<String>) -> (String, String, Arc<MemStore>) {
     let store = Arc::new(MemStore::new());
     store.create_repo("mono").await.expect("repo");
     let config = oidc_issuer
@@ -35,10 +35,10 @@ async fn server(subject: &str, oidc_issuer: Option<String>) -> (String, String) 
             ..ServerConfig::default()
         }),
         meta: store.clone(),
-        blobs: store,
+        blobs: store.clone(),
     };
     tokio::spawn(serve(listener, app, std::future::pending()));
-    (url, pat)
+    (url, pat, store)
 }
 
 fn scn(root: &Path, cwd: &Path) -> Command {
@@ -83,8 +83,8 @@ fn whoami(command: &mut Command, args: &[&str], endpoint: &str, subject: &str) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn last_successful_login_sets_the_default() {
-    let (a, pat_a) = server("alice", None).await;
-    let (b, pat_b) = server("bob", None).await;
+    let (a, pat_a, _) = server("alice", None).await;
+    let (b, pat_b, _) = server("bob", None).await;
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
 
@@ -98,16 +98,30 @@ async fn last_successful_login_sets_the_default() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn endpoint_overrides_and_credential_scope() {
-    let (a, pat_a) = server("alice", None).await;
-    let (b, pat_b) = server("bob", None).await;
+    let (a, pat_a, store_a) = server("alice", None).await;
+    let (b, pat_b, store_b) = server("bob", None).await;
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     json(login(root, &a, &pat_a));
-    let anonymous = json(scn(root, root).args(["whoami", &b, "--json"]).output().expect("whoami"));
-    assert_eq!(anonymous["endpoint"], b);
-    assert_eq!(anonymous["subject"], "anonymous");
-    assert_eq!(anonymous["auth_required"], true);
     assert_eq!(login(root, &b, &pat_a).status.code(), Some(5));
+
+    // Server B can accept PAT A, so an unauthorized clone detects any use of PAT A.
+    let token = store_a.list_tokens(Some("alice")).await.expect("list tokens");
+    assert_eq!(token.len(), 1);
+    store_b.put_token(&token[0]).await.expect("copy token record");
+    let repo_b = format!("{b}/mono");
+    let denied = scn(root, root)
+        .args(["clone", &repo_b, "denied", "--json"])
+        .output()
+        .expect("clone without a credential for B");
+    assert_eq!(denied.status.code(), Some(5));
+    json(
+        scn(root, root)
+            .env("SCION_TOKEN", &pat_a)
+            .args(["clone", &repo_b, "allowed", "--json"])
+            .output()
+            .expect("clone with a credential for B"),
+    );
 
     json(login(root, &b, &pat_b));
     json(login(root, &a, &pat_a));
@@ -133,7 +147,7 @@ async fn endpoint_overrides_and_credential_scope() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn device_login_sets_the_default() {
     let idp = scion_api::scion_auth::testing::FakeIdp::start().await;
-    let (url, _) = server("unused", Some(idp.base())).await;
+    let (url, _, _) = server("unused", Some(idp.base())).await;
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     let mut child = scn(root, root)
@@ -154,7 +168,7 @@ async fn device_login_sets_the_default() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn clone_and_import_use_the_saved_server() {
-    let (url, pat) = server("alice", None).await;
+    let (url, pat, _) = server("alice", None).await;
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     json(login(root, &url, &pat));
