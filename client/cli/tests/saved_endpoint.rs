@@ -168,17 +168,27 @@ async fn device_login_sets_the_default() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn clone_and_import_use_the_saved_server() {
-    let (url, pat, _) = server("alice", None).await;
+    let (a, pat_a, store_a) = server("alice", None).await;
+    let (b, pat_b, store_b) = server("bob", None).await;
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
-    json(login(root, &url, &pat));
+    let wc_b = root.join("b");
+    json(login(root, &b, &pat_b));
     json(
         scn(root, root)
-            .args(["clone", "mono", "--json"])
+            .args(["clone", &format!("{b}/mono"), "b", "--json"])
+            .output()
+            .expect("clone B"),
+    );
+    json(login(root, &a, &pat_a));
+    whoami(&mut scn(root, &wc_b), &[], &b, "bob");
+    json(
+        scn(root, &wc_b)
+            .args(["clone", "mono", "../mono", "--json"])
             .output()
             .expect("clone"),
     );
-    whoami(&mut scn(root, &root.join("mono")), &[], &url, "alice");
+    whoami(&mut scn(root, &root.join("mono")), &[], &a, "alice");
 
     let git = |args: &[&str]| {
         assert!(
@@ -196,11 +206,18 @@ async fn clone_and_import_use_the_saved_server() {
     git(&["init", "-q", "-b", "main", "source"]);
     git(&["-C", "source", "commit", "-q", "--allow-empty", "-m", "First commit"]);
     let imported = json(
-        scn(root, root)
+        scn(root, &wc_b)
             .env("PATH", std::env::var_os("PATH").expect("PATH"))
-            .args(["import", "git", "source", "--repo", "mono", "--json"])
+            .args(["import", "git", "../source", "--repo", "mono", "--json"])
             .output()
             .expect("import"),
     );
     assert_eq!(imported["commits"], 1);
+    let tip_a = store_a
+        .get_ref("mono", "main")
+        .await
+        .expect("ref on A")
+        .expect("import on A");
+    assert_eq!(imported["tip"], tip_a.target.to_string());
+    assert!(store_b.get_ref("mono", "main").await.expect("ref on B").is_none());
 }
