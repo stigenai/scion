@@ -229,7 +229,8 @@ fn daemon_path_matrix() {
     std::fs::create_dir_all(&cwd).expect("cwd");
     let g = |s: &str| root.join(s).display().to_string();
     let (home, xdg_cache, xdg_run, sock, cache) = (g("home"), g("cache"), g("run"), g("o/d.sock"), g("o/c"));
-    let cases: Vec<(Vec<(&str, &str)>, Option<String>)> = vec![
+    type Case<'a> = (Vec<(&'a str, &'a str)>, Option<String>);
+    let cases: Vec<Case> = vec![
         (vec![("HOME", &home)], Some(format!("{home}/.cache/scion/daemon.sock"))),
         (
             vec![("HOME", &home), ("XDG_CACHE_HOME", &xdg_cache)],

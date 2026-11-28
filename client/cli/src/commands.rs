@@ -154,10 +154,10 @@ pub async fn connect(endpoint: &str, repo: Option<&str>) -> Result<Client, CliEr
     let env = |k: &str| std::env::var(k).ok();
     if crate::daemon::enabled(env) {
         // no safe daemon paths: skip the daemon and connect direct
-        if let Ok(cfg) = crate::daemon::config(env) {
-            if let Some(c) = crate::daemon::connect(b.clone(), &cfg.socket).await {
-                return Ok(c);
-            }
+        if let Ok(cfg) = crate::daemon::config(env)
+            && let Some(c) = crate::daemon::connect(b.clone(), &cfg.socket).await
+        {
+            return Ok(c);
         }
     }
     Ok(b.build().await?)
