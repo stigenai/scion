@@ -391,8 +391,15 @@ mod tests {
     fn preference_takes_priority_if_it_appears_during_a_legacy_read() {
         let dir = tempfile::tempdir().expect("tempdir");
         let b = Backend::File(dir.path().join("credentials.json"));
+        let path = endpoint_path(&b);
         let selected = saved_endpoint_with(&b, || {
-            std::fs::write(endpoint_path(&b), b"").expect("install preference");
+            std::fs::write(&path, b"").expect("install preference");
+            Some("http://a".into())
+        });
+        assert_eq!(selected, None);
+        std::fs::remove_file(&path).expect("remove preference");
+        let selected = saved_endpoint_with(&b, || {
+            std::fs::create_dir(&path).expect("make preference unreadable");
             Some("http://a".into())
         });
         assert_eq!(selected, None);
@@ -536,6 +543,7 @@ mod tests {
         std::fs::create_dir(endpoint_path(&b)).expect("block preference write");
         assert!(store(&b, "http://a", "alice").is_err());
         assert_eq!(saved_endpoint(&b), None);
+        assert_eq!(load(&b, "http://a"), None);
     }
 
     #[test]
