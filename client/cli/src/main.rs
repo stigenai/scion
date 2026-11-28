@@ -1807,7 +1807,7 @@ async fn run(cli: Cli) -> ExitCode {
         Command::Config {
             cmd, key, value, unset, ..
         } => {
-            let path = config::path(|k| std::env::var(k).ok());
+            let path = arg!(config::require_path(|k| std::env::var(k).ok()));
             let cmd = match (cmd, key, value, unset) {
                 (Some(cmd), ..) => cmd,
                 (None, _, _, Some(key)) => ConfigCmd::Unset { key },

@@ -1435,7 +1435,7 @@ pub(crate) fn own_author() -> Option<(String, String)> {
     if let Some(a) = std::env::var("SCION_AUTHOR").ok().and_then(|a| parse_author(&a).ok()) {
         return Some(a);
     }
-    let settings = crate::config::load(&crate::config::path(|k| std::env::var(k).ok())).ok()?;
+    let settings = crate::config::load_default().ok()?;
     crate::config::author(&settings, crate::config::git_config)
 }
 
@@ -1493,7 +1493,7 @@ fn resolve_author(author: Option<&str>) -> Result<Option<(String, String)>, CliE
     Ok(match author {
         Some(a) => Some(parse_author(a)?),
         None => {
-            let settings = crate::config::load(&crate::config::path(|k| std::env::var(k).ok()))?;
+            let settings = crate::config::load_default()?;
             let found = crate::config::author(&settings, crate::config::git_config);
             if found.is_none() {
                 eprintln!(
