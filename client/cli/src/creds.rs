@@ -162,18 +162,17 @@ fn parent_dir(path: &Path) -> &Path {
 }
 
 fn lock_credentials(path: &Path) -> io::Result<File> {
-    let path = sibling_path(path, ".lock");
-    std::fs::create_dir_all(parent_dir(&path))?;
-    let file = File::options().write(true).create(true).truncate(false).open(path)?;
+    // Profile files can have any name. Lock the parent directory itself.
+    let dir = parent_dir(path);
+    std::fs::create_dir_all(dir)?;
+    let file = File::open(dir)?;
     file.lock()?;
     Ok(file)
 }
 
-fn lock_profile(b: &Backend) -> io::Result<(File, File, Option<String>)> {
-    let credentials = lock_credentials(credential_path(b))?;
+fn lock_profile(b: &Backend) -> io::Result<(File, Option<String>)> {
+    let lock = lock_credentials(credential_path(b))?;
     let path = endpoint_path(b);
-    // This lock also protects the file if another profile uses it for credentials.
-    let preference = lock_credentials(&path)?;
     let active = match std::fs::read_to_string(&path) {
         Ok(value) if value.is_empty() || origin(&value).is_some() => origin(&value).map(str::to_owned),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -190,7 +189,7 @@ fn lock_profile(b: &Backend) -> io::Result<(File, File, Option<String>)> {
             ));
         }
     };
-    Ok((credentials, preference, active))
+    Ok((lock, active))
 }
 
 fn write_atomic(path: &Path, body: &[u8]) -> io::Result<()> {
@@ -242,7 +241,7 @@ pub fn load(b: &Backend, endpoint: &str) -> Option<String> {
 pub fn store(b: &Backend, endpoint: &str, secret: &str) -> std::io::Result<String> {
     let endpoint = origin(endpoint)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "expected an HTTP(S) server origin"))?;
-    let _locks = lock_profile(b)?;
+    let _profile = lock_profile(b)?;
     let location = store_secret(b, endpoint, secret)?;
     write_atomic(&endpoint_path(b), endpoint.as_bytes())?;
     Ok(location)
@@ -270,7 +269,7 @@ fn store_secret(b: &Backend, endpoint: &str, secret: &str) -> io::Result<String>
 
 /// Delete the credentials. Clear the default if it selects this server.
 pub fn remove(b: &Backend, endpoint: &str) -> std::io::Result<bool> {
-    let (_credentials, _preference, active_endpoint) = lock_profile(b)?;
+    let (_lock, active_endpoint) = lock_profile(b)?;
     let (file, mut found) = match b {
         Backend::Keyring(file) => {
             #[cfg(target_os = "macos")]
